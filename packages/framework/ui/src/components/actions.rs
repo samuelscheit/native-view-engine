@@ -5,8 +5,8 @@ use dioxus_core_macro::Props;
 use nve_abi::{FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 
-use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
 use crate::components::roles::{badge_colors, button_colors, ControlColors};
+use crate::surface::{SurfaceStyleExt, TypedSurfaceStyle, TypedTextStyle};
 use crate::theme::{use_theme, Theme};
 
 /// Visual hierarchy variants for [`Button`] and [`IconButton`].
@@ -90,7 +90,7 @@ pub fn Button(
     #[props(default)] popovertarget: Option<String>,
     #[props(default)] popovertargetaction: Option<String>,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     children: Element,
 ) -> Element {
     let theme = use_theme();
@@ -101,7 +101,7 @@ pub fn Button(
         button_colors(&theme, variant, focused(), blocked);
     let (min_h, pad_x, pad_y, font_size) = button_metrics(&theme, size);
 
-    let btn_style = TypedStyleBuilder::new()
+    let btn_style = TypedStyle::new()
         .flex_row()
         .justify_content(FlexJustify::Center)
         .align_items(FlexAlign::Center)
@@ -116,17 +116,15 @@ pub fn Button(
             opacity: if blocked { 0.5 } else { 1.0 },
             box_shadow: None,
         })
-        .finish();
+        .merge_opt(nve_style.as_ref());
 
-    let text_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: fg,
-            font_size,
-            font_weight: "600",
-            text_align: "center",
-            opacity: 1.0,
-        })
-        .finish();
+    let text_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: fg,
+        font_size,
+        font_weight: 600,
+        text_align: TextAlign::Center,
+        opacity: 1.0,
+    });
 
     let tab_index = if blocked { -1 } else { 0 };
     let on_press_click = on_press;
@@ -154,7 +152,6 @@ pub fn Button(
             disabled: blocked,
             tab_index: tab_index,
             nve_style: btn_style,
-            style: style,
             onfocus: move |_| focused.set(true),
             onblur: move |_| focused.set(false),
             onpress: move |_| {
@@ -207,7 +204,7 @@ pub fn IconButton(
     #[props(default)] popovertarget: Option<String>,
     #[props(default)] popovertargetaction: Option<String>,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     #[props(default)] children: Option<Element>,
 ) -> Element {
     let theme = use_theme();
@@ -227,7 +224,7 @@ pub fn IconButton(
         ButtonSize::Lg => theme.typography.title.size,
     };
 
-    let btn_style = TypedStyleBuilder::new()
+    let btn_style = TypedStyle::new()
         .width_px(dim)
         .height_px(dim)
         .justify_content(FlexJustify::Center)
@@ -240,17 +237,15 @@ pub fn IconButton(
             opacity: if blocked { 0.5 } else { 1.0 },
             box_shadow: None,
         })
-        .finish();
+        .merge_opt(nve_style.as_ref());
 
-    let text_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: fg,
-            font_size,
-            font_weight: "600",
-            text_align: "center",
-            opacity: 1.0,
-        })
-        .finish();
+    let text_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: fg,
+        font_size,
+        font_weight: 600,
+        text_align: TextAlign::Center,
+        opacity: 1.0,
+    });
 
     let tab_index = if blocked { -1 } else { 0 };
     let on_press_click = on_press;
@@ -278,7 +273,6 @@ pub fn IconButton(
             disabled: blocked,
             tab_index: tab_index,
             nve_style: btn_style,
-            style: style,
             onfocus: move |_| focused.set(true),
             onblur: move |_| focused.set(false),
             onpress: move |_| {
@@ -313,12 +307,12 @@ pub fn Badge(
     #[props(default)] variant: BadgeVariant,
     #[props(default)] accessibility_label: Option<String>,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
 ) -> Element {
     let theme = use_theme();
     let ControlColors { bg, fg, border: border_color, .. } = badge_colors(&theme, variant);
 
-    let pill_style = TypedStyleBuilder::new()
+    let pill_style = TypedStyle::new()
         .flex_row()
         .align_items(FlexAlign::Center)
         .justify_content(FlexJustify::Center)
@@ -331,17 +325,15 @@ pub fn Badge(
             opacity: 1.0,
             box_shadow: None,
         })
-        .finish();
+        .merge_opt(nve_style.as_ref());
 
-    let text_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: fg,
-            font_size: theme.typography.caption.size,
-            font_weight: "600",
-            text_align: "center",
-            opacity: 1.0,
-        })
-        .finish();
+    let text_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: fg,
+        font_size: theme.typography.caption.size,
+        font_weight: 600,
+        text_align: TextAlign::Center,
+        opacity: 1.0,
+    });
 
     rsx! {
         view {
@@ -349,7 +341,6 @@ pub fn Badge(
             accessibility_role: "status",
             accessibility_label: accessibility_label,
             nve_style: pill_style,
-            style: style,
             text {
                 nve_style: text_style,
                 "{label}"

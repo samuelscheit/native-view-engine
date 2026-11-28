@@ -8,7 +8,7 @@ use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 use nve_motion::{MotionPreference, SpringSpec, SpringState};
 
-use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
+use crate::surface::{SurfaceStyleExt, TypedSurfaceStyle, TypedTextStyle};
 use crate::theme::use_theme;
 
 /// Physics-backed disclosure animation state using [`SpringSpec`] for native hosts while Web
@@ -91,7 +91,7 @@ pub fn Disclosure(
     #[props(default)] on_open_change: Option<EventHandler<bool>>,
     #[props(default)] id: Option<String>,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     children: Element,
 ) -> Element {
     let theme = use_theme();
@@ -113,7 +113,7 @@ pub fn Disclosure(
     let content_id = format!("{base_id}-content");
     let aria_expanded = if is_open { "true" } else { "false" };
 
-    let container_style = TypedStyleBuilder::new()
+    let container_style = TypedStyle::new()
         .flex_col()
         .width_pct(100.0)
         .surface(TypedSurfaceStyle {
@@ -124,9 +124,9 @@ pub fn Disclosure(
             opacity: if disabled { 0.55 } else { 1.0 },
             box_shadow: None,
         })
-        .finish();
+        .merge_opt(nve_style.as_ref());
 
-    let summary_style = TypedStyleBuilder::new()
+    let summary_style = TypedStyle::new()
         .flex_row()
         .justify_content(FlexJustify::SpaceBetween)
         .align_items(FlexAlign::Center)
@@ -142,24 +142,20 @@ pub fn Disclosure(
             border_radius: theme.radius.md,
             opacity: 1.0,
             box_shadow: None,
-        })
-        .finish();
+        });
 
-    let summary_text_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.text.primary,
-            font_size: theme.typography.body.size,
-            font_weight: "600",
-            text_align: "left",
-            opacity: 1.0,
-        })
-        .finish();
+    let summary_text_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.text.primary,
+        font_size: theme.typography.body.size,
+        font_weight: 600,
+        text_align: TextAlign::Left,
+        opacity: 1.0,
+    });
 
-    let content_style = TypedStyleBuilder::new()
+    let content_style = TypedStyle::new()
         .flex_col()
         .padding_xy(theme.spacing.md, theme.spacing.sm)
-        .gap(theme.spacing.xs)
-        .finish();
+        .gap(theme.spacing.xs);
 
     let is_controlled = open.is_some();
     let tab_index = if disabled { -1 } else { 0 };
@@ -172,7 +168,6 @@ pub fn Disclosure(
             test_id: "{base_id}",
             nve_table: details_table,
             nve_style: container_style,
-            style: style,
             view {
                 test_id: "{summary_id}",
                 nve_table: summary_table,
@@ -268,7 +263,7 @@ pub fn Accordion(
     #[props(default)] group_name: Option<String>,
     #[props(default)] on_toggle: Option<EventHandler<(String, bool)>>,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
 ) -> Element {
     let theme = use_theme();
     let mut open_ids = use_signal(|| {
@@ -285,21 +280,19 @@ pub fn Accordion(
         None
     };
 
-    let wrap_style = TypedStyleBuilder::new()
+    let wrap_style = TypedStyle::new()
         .flex_col()
         .gap(theme.spacing.xs)
         .width_pct(100.0)
-        .finish();
+        .merge_opt(nve_style.as_ref());
 
-    let body_text_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.text.secondary,
-            font_size: theme.typography.ui.size,
-            font_weight: "400",
-            text_align: "left",
-            opacity: 1.0,
-        })
-        .finish();
+    let body_text_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.text.secondary,
+        font_size: theme.typography.ui.size,
+        font_weight: 400,
+        text_align: TextAlign::Left,
+        opacity: 1.0,
+    });
 
     let mut rendered = Vec::with_capacity(items.len());
     for item in items {
@@ -349,7 +342,6 @@ pub fn Accordion(
             test_id: "{base_id}",
             accessibility_role: "region",
             nve_style: wrap_style,
-            style: style,
             {rendered.into_iter()}
         }
     }

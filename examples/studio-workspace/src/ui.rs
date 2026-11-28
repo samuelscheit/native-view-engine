@@ -19,14 +19,16 @@ use nve_interop::traits::{ColorScheme, HighContrast, SizeClass};
 use nve_router::Routable;
 use nve_ui::{
     Appearance, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant,
-    ColorHex, ThemeProvider,
+    ThemeProvider,
 };
 
 use crate::sdk::StudioHostServices;
 use crate::state::{ActiveView, ChannelKind, WorkspaceState};
-use crate::theme::{LayoutMetrics, STRETCH_COL, badge_min_w, studio_theme};
+use crate::theme::{LayoutMetrics, badge_min_w, studio_theme};
 use crate::traits::{StudioAccentTrait, resolve_studio_layout, size_class_label};
-use crate::ui::style::data_attrs;
+use crate::ui::style::{
+    StudioStyleExt, data_attrs, fixed_dims, row_center, text_style, use_studio_style,
+};
 use crate::ui_board::BoardView;
 use crate::ui_channels::ChannelView;
 use crate::ui_chrome::{DesktopSidebar, MobileChrome, RouteNavBar};
@@ -38,7 +40,6 @@ use crate::ui_stream::Stream100kPanel;
 use crate::ui_studio::StudioPanel;
 use crate::ui_workbench::WorkbenchView;
 use store::{StudioStore, use_studio};
-use style::use_studio_style;
 
 thread_local! {
     /// Hands a module-owned `Arc<Mutex<WorkspaceState>>` into the `DioxusSurface` root hook
@@ -130,12 +131,15 @@ fn StudioShell() -> Element {
         ("size-class", size_class_label(size_class).to_owned()),
         ("active-route", route_path),
     ]);
-    let root_flex_dir = if is_mobile { "column" } else { "row" };
-    let center_size = if is_mobile {
-        "width: 100%; flex: 1;"
-    } else {
-        "flex: 1; height: 100%;"
-    };
+    let root_style = TypedStyle::new()
+        .width_pct(100.0)
+        .height_pct(100.0)
+        .flex_direction(if is_mobile {
+            FlexDirection::Column
+        } else {
+            FlexDirection::Row
+        })
+        .bg(theme.surface.canvas);
 
     rsx! {
         ThemeProvider {
@@ -144,7 +148,7 @@ fn StudioShell() -> Element {
                 test_id: "workspace-root",
                 accessibility_label: "Aether Studio Workspace",
                 nve_table: root_attrs,
-                style: "width: 100%; height: 100%; flex-direction: {root_flex_dir}; background-color: {theme.surface.canvas.hex()};",
+                nve_style: root_style,
 
                 if is_mobile {
                     MobileChrome {}
@@ -156,7 +160,6 @@ fn StudioShell() -> Element {
                 }
 
                 CenterWorkspace {
-                    size: center_size,
                     pad: resolved.center_pad,
                     compact_header,
                     is_mobile,
@@ -174,7 +177,6 @@ fn StudioShell() -> Element {
 
 #[component]
 fn CenterWorkspace(
-    size: &'static str,
     pad: u32,
     compact_header: bool,
     is_mobile: bool,
@@ -183,17 +185,29 @@ fn CenterWorkspace(
 ) -> Element {
     nve_dioxus::render_probe::record_render("CenterWorkspace");
     let s = use_studio_style();
+    let base = if is_mobile {
+        TypedStyle::new().width_pct(100.0).flex_1()
+    } else {
+        TypedStyle::new().flex_1().height_pct(100.0)
+    };
+    let center_style = base
+        .flex_col()
+        .padding(pad as f32)
+        .gap(s.m.main_gap as f32)
+        .bg(s.t.surface.canvas)
+        .outline(s.panel());
+
     rsx! {
         view {
             test_id: "center-workspace",
-            style: "{size} flex-direction: column; padding: {pad}px; gap: {s.m.main_gap}px; background-color: {s.t.surface.canvas.hex()}; {s.panel()}",
+            nve_style: center_style,
 
             WorkspaceHeader { title: active_view.title(), compact_header }
             RouteNavBar { compact_header }
 
             if palette_open {
                 view {
-                    style: "width: 100%; flex: 1; flex-direction: column;",
+                    nve_style: TypedStyle::new().width_pct(100.0).flex_1().flex_col(),
                     CommandPalette {}
                 }
             } else {
@@ -234,24 +248,31 @@ fn WorkspaceHeader(title: &'static str, compact_header: bool) -> Element {
     };
     drop(insp);
 
-    let header_card_style = format!(
-        "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 8px; padding-vertical: 6px; gap: 6px; background-color: {}; border-radius: {}px; {}",
-        s.t.surface.base.hex(),
-        s.m.button_radius,
-        s.card()
-    );
-    let status_pill_style = format!(
-        "min-width: {}px; height: 22px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 4px; padding-vertical: 0px; background-color: {}; border-radius: {}px; {}",
-        badge_min_w(&status_pill_label),
-        s.t.status.accent.subtle.hex(),
+    let header_card_style = TypedStyle::new()
+        .width_pct(100.0)
+        .flex_shrink(0.0)
+        .flex_row()
+        .justify_content(FlexJustify::SpaceBetween)
+        .align_items(FlexAlign::Center)
+        .padding_xy(8.0, 6.0)
+        .gap(6.0)
+        .bg(s.t.surface.base)
+        .radius(s.m.button_radius as f32)
+        .outline(s.card());
+    let status_pill_style = TypedStyle::new()
+        .min_width_px(badge_min_w(&status_pill_label) as f32)
+        .height_px(22.0)
+        .flex_shrink(0.0)
+        .stretch_col()
+        .padding_xy(4.0, 0.0)
+        .bg(s.t.status.accent.subtle)
+        .radius(s.m.pill_radius as f32)
+        .outline(s.control(true));
+    let cmdk_btn_style = s.compact_control(
+        fixed_dims(52.0, 22.0),
+        2,
         s.m.pill_radius,
-        s.control(true)
-    );
-    let cmdk_btn_style = format!(
-        "width: 52px; height: 22px; min-height: 22px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {}; border-radius: {}px; {}",
-        s.control_bg(palette_open),
-        s.m.pill_radius,
-        s.control(palette_open)
+        Some(palette_open),
     );
 
     rsx! {
@@ -259,23 +280,23 @@ fn WorkspaceHeader(title: &'static str, compact_header: bool) -> Element {
             variant: CardVariant::Outlined,
             padding: Some(6.0),
             gap: Some(6.0),
-            style: Some(header_card_style),
-            text { style: "color: {s.t.text.primary.hex()}; font-size: 12px;", "{title}" }
+            nve_style: Some(header_card_style),
+            text { nve_style: text_style(s.t.text.primary, 12.0), "{title}" }
             view {
-                style: "flex-direction: row; align-items: center; gap: 5px; flex-shrink: 0;",
+                nve_style: row_center(5.0).flex_shrink(0.0),
                 Button {
                     variant: ButtonVariant::Secondary,
                     size: ButtonSize::Sm,
                     test_id: Some("btn-command-palette".into()),
                     accessibility_label: Some("Open Cmd+K Command Palette".into()),
-                    style: Some(cmdk_btn_style),
+                    nve_style: Some(cmdk_btn_style),
                     on_press: move |_| store.update(|st| st.toggle_palette()),
                     "Cmd+K"
                 }
                 Badge {
                     label: status_pill_label,
                     variant: BadgeVariant::Neutral,
-                    style: Some(status_pill_style),
+                    nve_style: Some(status_pill_style),
                 }
             }
         }

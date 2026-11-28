@@ -1,6 +1,10 @@
-//! Static text/string-style Tier-1 behavior carried over from the string-only differ.
+//! Static text, standalone numeric, and `nve_style: TypedStyle::...` Tier-1 binary `RowPatch` tests.
 
 use std::path::PathBuf;
+
+use nve_engine::hot_patch_template_key;
+use nve_store::{Length, Rgba};
+use nve_tables::tables::{Layout, Typography, Visual};
 
 use super::super::{DiffOutcome, RsxWatchCache};
 use super::{diff_rsx_source, expect_patch, expect_tier1};
@@ -14,15 +18,17 @@ pub fn DemoCard() -> Element {
     rsx! {
         view {
             test_id: "card-root",
-            style: "width: 100%; padding: 12px; background-color: #0f172a;",
+            padding: 12.0,
+            nve_style: TypedStyle::col().bg(ColorRgba::rgb(15, 23, 42)),
             text {
                 test_id: "channel-title",
-                style: "color: #ffffff; font-size: 16px;",
+                font_size: 16.0,
+                nve_style: TypedStyle::new().color(ColorRgba::rgb(255, 255, 255)),
                 "# engineering"
             }
             pressable {
                 test_id: "cta-btn",
-                background_color: "#2563eb",
+                nve_style: TypedStyle::new().bg(ColorRgba::rgb(37, 99, 235)),
                 onpress: move |_| count += 1,
                 text { "Count: {count}" }
                 text { "Ship It" }
@@ -32,9 +38,9 @@ pub fn DemoCard() -> Element {
 }
 "##;
 
-fn assert_tier2(template_id: &str, old_src: &str, new_src: &str, generation: u64) {
+fn assert_tier2(rel_file: &str, old_src: &str, new_src: &str, generation: u64) {
     assert!(matches!(
-        diff_rsx_source(template_id, old_src, new_src, generation),
+        diff_rsx_source(rel_file, old_src, new_src, generation),
         DiffOutcome::RequireTier2Rebuild { .. }
     ));
 }
@@ -44,8 +50,8 @@ fn tier1_text_only_edit_inside_rsx_emits_targeted_replacement() {
     let updated = SAMPLE_COMPONENT.replace("\"# engineering\"", "\"# ergoiherg\"");
     let patch = expect_patch(diff_rsx_source("demo.rs", SAMPLE_COMPONENT, &updated, 2));
     assert_eq!(patch.generation, 2);
-    assert_eq!(patch.template_id, "demo.rs");
-    assert!(patch.attr_updates.is_empty());
+    assert_eq!(patch.template_key, hot_patch_template_key("demo.rs", 0));
+    assert!(patch.row_patch_words.is_empty());
     assert_eq!(
         patch.text_replacements,
         vec![("# engineering".into(), "# ergoiherg".into())]
@@ -56,25 +62,21 @@ fn tier1_text_only_edit_inside_rsx_emits_targeted_replacement() {
 }
 
 #[test]
-fn tier1_style_and_attr_literal_edits_target_exact_test_id() {
-    let updated = SAMPLE_COMPONENT.replace(
-        "width: 100%; padding: 12px; background-color: #0f172a;",
-        "width: 100%; padding: 24px; background-color: #1e293b;",
-    );
+fn tier1_typed_attr_and_nve_style_literal_edits_emit_binary_row_patch_words() {
+    let updated = SAMPLE_COMPONENT
+        .replace("padding: 12.0,", "padding: 24.0,")
+        .replace("ColorRgba::rgb(15, 23, 42)", "ColorRgba::rgb(30, 41, 59)");
     let patch = expect_patch(diff_rsx_source("demo.rs", SAMPLE_COMPONENT, &updated, 3));
-    assert_eq!(
-        patch.attr_updates,
-        vec![(
-            "style".into(),
-            "width: 100%; padding: 24px; background-color: #1e293b;".into()
-        )]
-    );
+    assert_eq!(patch.prop(Layout::PADDING_TOP), Some(Length::points(24.0)));
+    assert_eq!(patch.prop(Visual::BACKGROUND), Some(Rgba::rgb(30, 41, 59)));
     assert!(patch.text_replacements.is_empty());
     assert_eq!(patch.target_test_id.as_deref(), Some("card-root"));
     assert_eq!(patch.node_path, vec![0]);
 
-    // Direct typed attribute (`background_color` -> normalized `background-color`).
-    let updated_attr = SAMPLE_COMPONENT.replace("\"#2563eb\"", "\"#16a34a\"");
+    let updated_attr = SAMPLE_COMPONENT.replace(
+        "ColorRgba::rgb(37, 99, 235)",
+        "ColorRgba::rgb(22, 163, 74)",
+    );
     let attr_patch = expect_patch(diff_rsx_source(
         "demo.rs",
         SAMPLE_COMPONENT,
@@ -82,8 +84,8 @@ fn tier1_style_and_attr_literal_edits_target_exact_test_id() {
         4,
     ));
     assert_eq!(
-        attr_patch.attr_updates,
-        vec![("background-color".into(), "#16a34a".into())]
+        attr_patch.prop(Visual::BACKGROUND),
+        Some(Rgba::rgb(22, 163, 74))
     );
     assert_eq!(attr_patch.target_test_id.as_deref(), Some("cta-btn"));
 }
@@ -92,22 +94,22 @@ fn tier1_style_and_attr_literal_edits_target_exact_test_id() {
 fn tier1_multiple_edits_in_one_save_split_text_and_element_messages() {
     let updated = SAMPLE_COMPONENT
         .replace(
-            "color: #ffffff; font-size: 16px;",
-            "color: #38bdf8; font-size: 18px;",
+            "ColorRgba::rgb(255, 255, 255)",
+            "ColorRgba::rgb(56, 189, 248)",
         )
+        .replace("font_size: 16.0,", "font_size: 18.0,")
         .replace("\"# engineering\"", "\"# platform\"")
         .replace("\"Ship It\"", "\"Deploy Now\"");
 
     let (patch, messages) = expect_tier1(diff_rsx_source("demo.rs", SAMPLE_COMPONENT, &updated, 5));
-    assert_eq!(patch.attr_changes.len(), 1);
+    assert_eq!(patch.attr_changes.len(), 2);
     assert_eq!(patch.text_changes.len(), 2);
     assert_eq!(
         messages.len(),
         3,
-        "one message per text node + one per element"
+        "one message per text node + one merged RowPatch per element"
     );
 
-    // Each text replacement is scoped to its own owner's subtree, never the `style` edit's.
     let owners: Vec<_> = messages[..2]
         .iter()
         .map(|m| (m.target_test_id.as_deref(), m.text_replacements.clone()))
@@ -125,41 +127,35 @@ fn tier1_multiple_edits_in_one_save_split_text_and_element_messages() {
             ),
         ]
     );
-    assert!(messages[..2].iter().all(|m| m.attr_updates.is_empty()));
+    assert!(messages[..2].iter().all(|m| m.row_patch_words.is_empty()));
 
     let attr = &messages[2];
-    assert_eq!(
-        attr.attr_updates,
-        vec![("style".into(), "color: #38bdf8; font-size: 18px;".into())]
-    );
+    assert_eq!(attr.prop(Typography::COLOR), Some(Rgba::rgb(56, 189, 248)));
+    assert_eq!(attr.prop(Typography::FONT_SIZE), Some(18.0));
     assert_eq!(attr.target_test_id.as_deref(), Some("channel-title"));
     assert!(attr.text_replacements.is_empty() && attr.text_updates.is_empty());
 }
 
 #[test]
 fn interpolated_literal_structural_logic_handler_and_syntax_edits_fallback_to_tier2() {
-    // 1. Format `{expr}` interpolation literal changed -> Tier-2.
     assert_tier2(
         "demo.rs",
         SAMPLE_COMPONENT,
         &SAMPLE_COMPONENT.replace("\"Count: {count}\"", "\"Total: {count}\""),
         2,
     );
-    // 2. Adding interpolation braces to a previously static literal -> Tier-2.
     assert_tier2(
         "demo.rs",
         SAMPLE_COMPONENT,
         &SAMPLE_COMPONENT.replace("\"Ship It\"", "\"Ship {count}\""),
         2,
     );
-    // 3. Event handler logic changed -> Tier-2.
     assert_tier2(
         "demo.rs",
         SAMPLE_COMPONENT,
         &SAMPLE_COMPONENT.replace("count += 1", "count += 2"),
         2,
     );
-    // 4. Structural edit (adding a new element) -> Tier-2.
     assert_tier2(
         "demo.rs",
         SAMPLE_COMPONENT,
@@ -169,14 +165,12 @@ fn interpolated_literal_structural_logic_handler_and_syntax_edits_fallback_to_ti
         ),
         2,
     );
-    // 5. Editing `test_id` itself -> Tier-2.
     assert_tier2(
         "demo.rs",
         SAMPLE_COMPONENT,
         &SAMPLE_COMPONENT.replace("test_id: \"cta-btn\"", "test_id: \"cta-btn-2\""),
         2,
     );
-    // 6. Syntax error (unclosed string / unbalanced brace) -> Tier-2.
     assert_tier2(
         "demo.rs",
         SAMPLE_COMPONENT,
@@ -189,7 +183,6 @@ fn interpolated_literal_structural_logic_handler_and_syntax_edits_fallback_to_ti
         &format!("{SAMPLE_COMPONENT}\n}}"),
         2,
     );
-    // 7. String literal outside `rsx!` changed -> Tier-2.
     let with_rust_str = format!("const LABEL: &str = \"hello\";\n{SAMPLE_COMPONENT}");
     let with_rust_str_edited = format!("const LABEL: &str = \"world\";\n{SAMPLE_COMPONENT}");
     assert_tier2("demo.rs", &with_rust_str, &with_rust_str_edited, 2);
@@ -198,20 +191,23 @@ fn interpolated_literal_structural_logic_handler_and_syntax_edits_fallback_to_ti
 #[test]
 fn attribute_edits_on_two_elements_emit_one_targeted_message_per_element() {
     let two_elems = SAMPLE_COMPONENT
-        .replace("padding: 12px;", "padding: 20px;")
-        .replace("\"#2563eb\"", "\"#ef4444\"");
+        .replace("padding: 12.0,", "padding: 20.0,")
+        .replace(
+            "ColorRgba::rgb(37, 99, 235)",
+            "ColorRgba::rgb(239, 68, 68)",
+        );
     let (patch, messages) =
         expect_tier1(diff_rsx_source("demo.rs", SAMPLE_COMPONENT, &two_elems, 2));
     assert_eq!(patch.attr_changes.len(), 2);
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].target_test_id.as_deref(), Some("card-root"));
     assert_eq!(messages[0].node_path, vec![0]);
-    assert_eq!(messages[0].attr_updates[0].0, "style");
+    assert_eq!(messages[0].prop(Layout::PADDING_TOP), Some(Length::points(20.0)));
     assert_eq!(messages[1].target_test_id.as_deref(), Some("cta-btn"));
     assert_eq!(messages[1].node_path, vec![0, 1]);
     assert_eq!(
-        messages[1].attr_updates,
-        vec![("background-color".into(), "#ef4444".into())]
+        messages[1].prop(Visual::BACKGROUND),
+        Some(Rgba::rgb(239, 68, 68))
     );
 }
 
@@ -228,13 +224,13 @@ fn comment_and_whitespace_only_edits_are_noop() {
 }
 
 #[test]
-fn raw_string_literals_in_rsx_text_and_attrs() {
+fn raw_string_literals_in_rsx_text_and_typed_style_str_helpers() {
     let base = r###"
 pub fn RawDemo() -> Element {
     rsx! {
         view {
             test_id: "raw-card",
-            style: r#"width: 100%; background-color: #0f172a;"#,
+            nve_style: TypedStyle::new().flex_direction_str(r#"row"#),
             text {
                 test_id: "raw-quote",
                 r#"Say "hello" with \slashes\ and {{braces}}"#
@@ -244,8 +240,6 @@ pub fn RawDemo() -> Element {
 }
 "###;
 
-    // 1. Editing raw string text containing quotes, backslashes, and escaped `{{}}` -> Tier-1.
-    //    Values are the rendered text: `rsx!` format escapes `{{`/`}}` collapse to `{`/`}`.
     let edited_text = base.replace(
         r###"r#"Say "hello" with \slashes\ and {{braces}}"#"###,
         r###"r##"Say "world" with \paths\ and {{ok}}"##"###,
@@ -260,24 +254,15 @@ pub fn RawDemo() -> Element {
         )]
     );
 
-    // 2. Switching between `r#"..."#` and normal `"..."` with identical content is NoOp.
-    let normalized = base.replace(
-        r###"r#"width: 100%; background-color: #0f172a;"#"###,
-        r#""width: 100%; background-color: #0f172a;""#,
-    );
+    let normalized = base.replace(r###"r#"row"#"###, r##""row""##);
     assert_eq!(
         diff_rsx_source("raw.rs", base, &normalized, 3),
         DiffOutcome::NoOp
     );
 
-    // 3. Adding unescaped `{expr}` interpolation inside a raw string -> Tier-2.
     assert_tier2("raw.rs", base, &base.replace("{{braces}}", "{count}"), 4);
 
-    // 4. Unterminated raw string -> Tier-2.
-    let unterminated = base.replace(
-        r###"r#"width: 100%; background-color: #0f172a;"#"###,
-        r###"r#"width: 100%;"###,
-    );
+    let unterminated = base.replace(r###"r#"row"#"###, r###"r#"row"###);
     assert_tier2("raw.rs", base, &unterminated, 5);
 }
 
@@ -295,7 +280,7 @@ pub fn NestedDemo(show: bool) -> Element {
                 true => rsx! {
                     view {
                         test_id: "match-card",
-                        style: "padding: 8px;",
+                        padding: 8.0,
                         text { "Match On" }
                     }
                 },
@@ -313,7 +298,6 @@ pub fn NestedDemo(show: bool) -> Element {
 }
 "#;
 
-    // 1. Edit text inside `header: rsx! { ... }` prop expression.
     let prop_patch = expect_patch(diff_rsx_source(
         "nested.rs",
         base,
@@ -326,20 +310,18 @@ pub fn NestedDemo(show: bool) -> Element {
         vec![("Header Alpha".into(), "Header Beta".into())]
     );
 
-    // 2. Edit style inside `match` arm's nested `rsx! { ... }`.
     let match_patch = expect_patch(diff_rsx_source(
         "nested.rs",
         base,
-        &base.replace("\"padding: 8px;\"", "\"padding: 16px;\""),
+        &base.replace("padding: 8.0,", "padding: 16.0,"),
         3,
     ));
     assert_eq!(match_patch.target_test_id.as_deref(), Some("match-card"));
     assert_eq!(
-        match_patch.attr_updates,
-        vec![("style".into(), "padding: 16px;".into())]
+        match_patch.prop(Layout::PADDING_TOP),
+        Some(Length::points(16.0))
     );
 
-    // 3. Edit text inside embedded `{ let sub = rsx! { ... }; sub }` Rust block.
     let block_patch = expect_patch(diff_rsx_source(
         "nested.rs",
         base,
@@ -352,7 +334,6 @@ pub fn NestedDemo(show: bool) -> Element {
         vec![("Block Leaf".into(), "Updated Leaf".into())]
     );
 
-    // 4. Edit text inside a direct child `rsx! { ... }`.
     let direct_patch = expect_patch(diff_rsx_source(
         "nested.rs",
         base,
@@ -366,60 +347,6 @@ pub fn NestedDemo(show: bool) -> Element {
     assert_eq!(
         direct_patch.text_replacements,
         vec![("Direct Child".into(), "Direct Updated".into())]
-    );
-}
-
-#[test]
-fn multiline_style_attribute_edits_with_newlines_and_line_continuations() {
-    let base_newlines = r#"
-pub fn MultiLineStyle() -> Element {
-    rsx! {
-        view {
-            test_id: "panel",
-            style: "
-                width: 100%;
-                padding: 12px;
-                background-color: #0f172a;
-            ",
-            text { "Panel" }
-        }
-    }
-}
-"#;
-    let patch = expect_patch(diff_rsx_source(
-        "multiline.rs",
-        base_newlines,
-        &base_newlines.replace("padding: 12px;", "padding: 24px;"),
-        2,
-    ));
-    assert_eq!(patch.target_test_id.as_deref(), Some("panel"));
-    assert_eq!(patch.attr_updates.len(), 1);
-    assert_eq!(patch.attr_updates[0].0, "style");
-    assert!(patch.attr_updates[0].1.contains("padding: 24px;"));
-    assert!(patch.attr_updates[0].1.contains('\n'));
-
-    // Rust backslash line-continuation style string collapses indentation cleanly.
-    let base_cont = "pub fn Cont() -> Element {\n    rsx! {\n        view {\n            test_id: \"hero\",\n            style: \"width: 100%; \\\n                padding: 12px; \\\n                background-color: #0f172a;\",\n        }\n    }\n}\n";
-    let cont_patch = expect_patch(diff_rsx_source(
-        "cont.rs",
-        base_cont,
-        &base_cont.replace("padding: 12px;", "padding: 20px;"),
-        3,
-    ));
-    assert_eq!(cont_patch.target_test_id.as_deref(), Some("hero"));
-    assert_eq!(
-        cont_patch.attr_updates,
-        vec![(
-            "style".into(),
-            "width: 100%; padding: 20px; background-color: #0f172a;".into()
-        )]
-    );
-
-    // Re-indenting after `\` without changing the logical style value is a NoOp.
-    let reindented = base_cont.replace("                padding:", "        padding:");
-    assert_eq!(
-        diff_rsx_source("cont.rs", base_cont, &reindented, 4),
-        DiffOutcome::NoOp
     );
 }
 
@@ -443,7 +370,6 @@ fn watch_cache_chains_consecutive_tier1_patches_and_protects_baseline_on_error()
         vec![("# core".into(), "# runtime".into())]
     );
 
-    // Broken syntax edit triggers Tier-2 and preserves `v2` as baseline.
     let broken = v2.replace("\"# runtime\"", "\"# runtime");
     assert!(matches!(
         cache.diff_file(&path, &broken, 4),

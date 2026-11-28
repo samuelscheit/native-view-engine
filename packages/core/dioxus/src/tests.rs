@@ -35,7 +35,7 @@ fn CounterApp() -> Element {
         .radius(12.0)
         .color(ColorRgba::WHITE)
         .font_size(18.0)
-        .font_weight("bold")
+        .font_weight(700)
         .cursor(CursorKind::Pointer);
 
     rsx! {
@@ -159,12 +159,18 @@ fn MultiCardApp() -> Element {
         view {
             view {
                 test_id: "card-alpha",
-                style: "padding: 8px; background-color: #111111; border-radius: 4px;",
+                nve_style: TypedStyle::new()
+                    .padding(8.0)
+                    .bg(ColorRgba::rgb(0x11, 0x11, 0x11))
+                    .radius(4.0),
                 text { "# engineering" }
             }
             view {
                 test_id: "card-beta",
-                style: "padding: 8px; background-color: #222222; border-radius: 4px;",
+                nve_style: TypedStyle::new()
+                    .padding(8.0)
+                    .bg(ColorRgba::rgb(0x22, 0x22, 0x22))
+                    .radius(4.0),
                 text { "# design-sync" }
             }
         }
@@ -180,16 +186,19 @@ fn targeted_hot_patch_updates_only_addressed_node_and_text() {
     let beta = find_by_test_id(surface.store(), "card-beta");
     let beta_bg = surface.store().try_row::<Visual>(beta).unwrap().background();
 
+    let mut rp = nve_store::RowPatch::new();
+    rp.set(Visual::BACKGROUND, Rgba::rgb(37, 99, 235));
+    rp.set(Visual::BORDER_RADIUS, 16.0);
+    let mut row_patch_words = Vec::new();
+    assert!(nve_store::FlatResource::write_words(&rp, &mut row_patch_words));
+
     assert!(surface.apply_hot_patch(&HotPatchMsg::TemplatePatch {
         generation: 2,
-        template_id: "ui.rs".into(),
-        attr_updates: vec![(
-            "style".into(),
-            "background-color: #2563eb; border-radius: 16px;".into(),
-        )],
-        text_updates: vec![],
-        target_test_id: Some("card-alpha".into()),
+        template_key: 0,
         node_path: vec![0, 0],
+        target_test_id: Some("card-alpha".into()),
+        row_patch_words,
+        text_updates: vec![],
         text_replacements: vec![("# engineering".into(), "# runtime".into())],
     }));
     surface.reconcile(FrameId(2));
@@ -553,7 +562,7 @@ fn pointer_event_data_cancel_capture_fixed_and_controlled_scroll_seq() {
                 requested_scroll_seq: 3u32,
                 view {
                     test_id: "thumb",
-                    style: thumb_style,
+                    nve_style: thumb_style,
                     onpointermove: move |e: PointerEvent| {
                         let d = e.data();
                         on_move.borrow_mut().push((

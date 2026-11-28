@@ -12,7 +12,8 @@ use std::rc::Rc;
 
 pub use dioxus_core::{throw_error, CapturedError, ErrorContext};
 use dioxus_core::{provide_context, use_hook, Element, EventHandler};
-use dioxus_core_macro::{component, rsx, Props};
+use crate::rsx;
+use dioxus_core_macro::{component, Props};
 
 use crate::dioxus_elements;
 

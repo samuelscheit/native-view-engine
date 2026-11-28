@@ -13,6 +13,7 @@ use nve_engine::{BackendApplyStats, BackendError, HotPatchMsg, StoreBackend};
 use nve_store::wire::WireEncoder;
 use nve_store::{ChangeSet, NodeId, NodeStore};
 
+use crate::hot_patch::PendingHotPatchQueue;
 use crate::signal_archive::{HydrationReport, SignalArchiveError, SignalRegistry};
 use crate::writer::NveMutationWriter;
 
@@ -53,7 +54,7 @@ pub struct DioxusSurface {
     pub(crate) writer: NveMutationWriter,
     pub(crate) event_slots: crate::events::EventSlots,
     initialized: bool,
-    pending_hot_patches: Vec<HotPatchMsg>,
+    pending_hot_patches: PendingHotPatchQueue,
     signal_registry: SignalRegistry,
     wire_encoder: WireEncoder,
     wire_buf: Vec<u8>,
@@ -67,7 +68,7 @@ impl DioxusSurface {
             writer: NveMutationWriter::new(surface_id),
             event_slots: crate::events::EventSlots::new(),
             initialized: false,
-            pending_hot_patches: Vec::new(),
+            pending_hot_patches: PendingHotPatchQueue::default(),
             signal_registry: SignalRegistry::new(1),
             wire_encoder: WireEncoder::default(),
             wire_buf: Vec::new(),
@@ -221,9 +222,7 @@ impl DioxusSurface {
             // that throws keeps its last good nodes and emits zero edits).
             vdom.render_immediate(mtx);
             vdom.render_immediate(mtx);
-            for patch in patches.drain(..) {
-                mtx.apply_hot_patch(&patch);
-            }
+            patches.apply_all(mtx);
         });
         t_rec.elapsed_us()
     }
@@ -282,11 +281,12 @@ impl DioxusSurface {
     }
 
     pub fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> bool {
-        if matches!(patch, HotPatchMsg::TemplatePatch { .. }) {
-            self.pending_hot_patches.push(patch.clone());
-            true
-        } else {
-            false
-        }
+        self.pending_hot_patches.push(patch)
+    }
+
+    /// Applies one Tier-1 hot patch immediately onto `NodeStore` (populating [`Self::last_changes`])
+    /// without queuing or touching the `VirtualDom`. Zero steady-state heap allocations.
+    pub fn apply_hot_patch_now(&mut self, patch: &HotPatchMsg) -> bool {
+        self.writer.apply_hot_patch(patch)
     }
 }

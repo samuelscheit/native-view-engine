@@ -13,7 +13,6 @@ pub use sidebar::{DocsSidebar, route_test_id_slug};
 pub use toc::DocsToc;
 
 use nve_abi::EdgeInsets;
-use nve_ui::ColorHex;
 use nve_dioxus::prelude::*;
 use nve_ui::ThemeProvider;
 
@@ -66,7 +65,12 @@ pub fn DocsShell() -> Element {
                     ("route".to_owned(), active_route.clone()),
                     ("viewport-mode".to_owned(), viewport_mode.to_owned()),
                 ]),
-                style: "width: 100%; height: 100%; flex-direction: column; background-color: {theme.surface.canvas.hex()}; color: {theme.text.primary.hex()};",
+                nve_style: TypedStyle::new()
+                    .width_pct(100.0)
+                    .height_pct(100.0)
+                    .flex_col()
+                    .bg(theme.surface.canvas)
+                    .color(theme.text.primary),
                 onkeydown: move |ev: KeyEvent| {
                     let data = ev.data();
                     let is_k = data.key.eq_ignore_ascii_case("k");
@@ -93,13 +97,25 @@ pub fn DocsShell() -> Element {
                 // Body row: Full-bleed custom page OR 3-column Fumadocs layout
                 view {
                     test_id: "docs-body",
-                    style: "flex-grow: 1; flex-shrink: 1; width: 100%; flex-direction: row; background-color: {theme.surface.canvas.hex()};",
+                    nve_style: TypedStyle::new()
+                        .flex_grow(1.0)
+                        .flex_shrink(1.0)
+                        .width_pct(100.0)
+                        .flex_row()
+                        .bg(theme.surface.canvas),
 
                     if let Some(render_custom) = custom_page {
                         scrollview {
                             test_id: "docs-custom-scroll",
                             accessibility_role: "main",
-                            style: "flex-grow: 1; flex-shrink: 1; width: 100%; height: 100%; flex-direction: column; align-items: center; background-color: {theme.surface.canvas.hex()};",
+                            nve_style: TypedStyle::new()
+                                .flex_grow(1.0)
+                                .flex_shrink(1.0)
+                                .width_pct(100.0)
+                                .height_pct(100.0)
+                                .flex_col()
+                                .align_items(FlexAlign::Center)
+                                .bg(theme.surface.canvas),
                             {render_custom()}
                         }
                     } else {
@@ -109,7 +125,13 @@ pub fn DocsShell() -> Element {
                         scrollview {
                             test_id: "docs-main-scroll",
                             accessibility_role: "main",
-                            style: "flex-grow: 1; flex-shrink: 1; min-width: 0px; height: 100%; flex-direction: column; background-color: {theme.surface.canvas.hex()};",
+                            nve_style: TypedStyle::new()
+                                .flex_grow(1.0)
+                                .flex_shrink(1.0)
+                                .min_width_px(0.0)
+                                .height_pct(100.0)
+                                .flex_col()
+                                .bg(theme.surface.canvas),
                             view {
                                 test_id: "docs-article-container",
                                 nve_style: article_container_style,
@@ -121,9 +143,13 @@ pub fn DocsShell() -> Element {
                                 } else {
                                     view {
                                         test_id: "docs-empty-page",
-                                        style: "padding: 24px; border-width: 1px; border-color: {theme.border.default.hex()}; border-radius: 10px; background-color: {theme.surface.base.hex()};",
+                                        nve_style: TypedStyle::new()
+                                            .padding(24.0)
+                                            .border(1.0, theme.border.default)
+                                            .radius(10.0)
+                                            .bg(theme.surface.base),
                                         text {
-                                            style: "font-size: 16px; color: {theme.text.secondary.hex()};",
+                                            nve_style: TypedStyle::new().font_size(16.0).color(theme.text.secondary),
                                             "No documentation pages found for this route."
                                         }
                                     }

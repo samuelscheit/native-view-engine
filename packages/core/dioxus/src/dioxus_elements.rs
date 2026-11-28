@@ -244,7 +244,6 @@ macro_rules! define_element {
             pub const NAME_SPACE: Option<&'static str> = None;
 
             define_attrs! {
-                style => "style",
                 nve_style => "nve_style",
                 nve_show_on => "nve-show-on",
                 nve_table => "nve_table",
@@ -254,9 +253,6 @@ macro_rules! define_element {
                 min_height => "min-height",
                 max_width => "max-width",
                 max_height => "max-height",
-                flex_direction => "flex-direction",
-                justify_content => "justify-content",
-                align_items => "align-items",
                 flex => "flex",
                 flex_grow => "flex-grow",
                 flex_shrink => "flex-shrink",
@@ -266,10 +262,6 @@ macro_rules! define_element {
                 padding_horizontal => "padding-horizontal",
                 padding_vertical => "padding-vertical",
                 margin => "margin",
-                background => "background",
-                background_color => "background-color",
-                color => "color",
-                border_color => "border-color",
                 border_width => "border-width",
                 border_radius => "border-radius",
                 opacity => "opacity",
@@ -412,7 +404,6 @@ rsx_events! {
 pub mod GlobalAttributes {
     use super::AttributeDescription;
     define_attrs! {
-        style => "style",
         nve_style => "nve_style",
         nve_show_on => "nve-show-on",
         nve_table => "nve_table",

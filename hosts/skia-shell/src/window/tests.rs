@@ -130,16 +130,14 @@ impl DesktopApp for MockCounterApp {
         match HotPatchMsg::from_bytes(patch_nvp1) {
             Ok(HotPatchMsg::TemplatePatch {
                 text_updates,
-                attr_updates,
+                row_patch_words,
                 ..
             }) => {
                 for (_, text) in text_updates {
                     self.label = text;
                 }
-                for (k, v) in attr_updates {
-                    if k == "button_color" && v == "orange" {
-                        self.button_color = ColorRgba::rgb(249, 115, 22);
-                    }
+                if !row_patch_words.is_empty() {
+                    self.button_color = ColorRgba::rgb(249, 115, 22);
                 }
                 true
             }
@@ -222,10 +220,10 @@ fn handles_tier1_template_patch_tier2_dylib_reload_and_dev_status() {
     let updated = session
         .handle_hot_patch(HotPatchMsg::TemplatePatch {
             generation: 2,
-            template_id: "counter".into(),
+            template_key: nve_engine::hot_patch_template_key("counter.rs", 0),
+            node_path: vec![0],
             target_test_id: None,
-            node_path: vec![],
-            attr_updates: vec![("button_color".into(), "orange".into())],
+            row_patch_words: vec![0],
             text_updates: vec![(0, "Live".into())],
             text_replacements: vec![],
         })

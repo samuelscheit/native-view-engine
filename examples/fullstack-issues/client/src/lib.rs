@@ -127,12 +127,12 @@ pub fn IssuesWorkspace(#[props(default = IssueId(1))] featured_issue_id: IssueId
     let selected_issue = selected_id()
         .and_then(|id| issues_list.iter().find(|it| it.id == id).cloned());
 
-    let bg_hex = theme.surface.subtle.hex();
-    let surface_hex = theme.surface.base.hex();
-    let border_hex = theme.border.default.hex();
-    let fg_hex = theme.text.primary.hex();
-    let muted_hex = theme.text.secondary.hex();
-    let danger_hex = theme.status.danger.text.hex();
+    let bg = theme.surface.subtle;
+    let surface = theme.surface.base;
+    let border = theme.border.default;
+    let fg = theme.text.primary;
+    let muted = theme.text.secondary;
+    let danger = theme.status.danger.text;
 
     let count_label = if issues_list.len() == 1 {
         "1 issue".to_owned()
@@ -150,19 +150,31 @@ pub fn IssuesWorkspace(#[props(default = IssueId(1))] featured_issue_id: IssueId
     rsx! {
         scrollview {
             test_id: "issues-root",
-            style: "flex: 1; width: 100%; height: 100%; overflow-y: auto; background: {bg_hex}; padding: 16px; align-items: center;",
+            nve_style: TypedStyle::new()
+                .flex_1()
+                .width_pct(100.0)
+                .height_pct(100.0)
+                .overflow_y(Overflow::Auto)
+                .bg(bg)
+                .padding(16.0)
+                .align_items(FlexAlign::Center),
             view {
-                style: "width: 100%; max-width: 880px; display: flex; flex-direction: column; align-items: stretch; gap: 16px;",
+                nve_style: TypedStyle::new()
+                    .width_pct(100.0)
+                    .max_width_px(880.0)
+                    .flex_col()
+                    .align_items(FlexAlign::Stretch)
+                    .gap(16.0),
 
                 // Header row
                 Row {
                     justify: Some("space-between".to_owned()),
-                    style: Some("flex-wrap: wrap; gap: 12px;".to_owned()),
+                    nve_style: Some(TypedStyle::new().flex_wrap(FlexWrap::Wrap).gap(12.0)),
                     Row {
                         gap: Some(10.0),
                         text {
                             test_id: "issues-heading",
-                            style: "font-size: 22px; font-weight: 700; color: {fg_hex};",
+                            nve_style: TypedStyle::new().font_size(22.0).font_weight(700).color(fg),
                             "Issue Tracker"
                         }
                         Badge {
@@ -197,7 +209,7 @@ pub fn IssuesWorkspace(#[props(default = IssueId(1))] featured_issue_id: IssueId
                 // Filter tabs
                 Row {
                     gap: Some(8.0),
-                    style: Some("flex-wrap: wrap;".to_owned()),
+                    nve_style: Some(TypedStyle::new().flex_wrap(FlexWrap::Wrap)),
                     for tab in FilterTab::ALL {
                         Button {
                             key: "{tab.test_id()}",
@@ -222,7 +234,7 @@ pub fn IssuesWorkspace(#[props(default = IssueId(1))] featured_issue_id: IssueId
                     padding: Some(16.0),
                     gap: Some(10.0),
                     text {
-                        style: "font-size: 13px; font-weight: 600; color: {muted_hex};",
+                        nve_style: TypedStyle::new().font_size(13.0).font_weight(600).color(muted),
                         "Create Issue"
                     }
                     ActionForm::<CreateIssue> {
@@ -240,15 +252,23 @@ pub fn IssuesWorkspace(#[props(default = IssueId(1))] featured_issue_id: IssueId
                         Row {
                             gap: Some(10.0),
                             align: Some("flex-start".to_owned()),
-                            style: Some("flex-wrap: wrap; width: 100%;".to_owned()),
+                            nve_style: Some(
+                                TypedStyle::new()
+                                    .flex_wrap(FlexWrap::Wrap)
+                                    .width_pct(100.0),
+                            ),
                             view {
-                                style: "flex: 1 1 280px; min-width: 200px;",
+                                nve_style: TypedStyle::new()
+                                    .flex_grow(1.0)
+                                    .flex_shrink(1.0)
+                                    .flex_basis_px(280.0)
+                                    .min_width_px(200.0),
                                 FormField {
                                     name: "title".to_owned(),
                                     test_id: "create-title-input".to_owned(),
                                     placeholder: "New issue title...".to_owned(),
                                     required: true,
-                                    style: Some("width: 100%;".to_owned()),
+                                    nve_style: Some(TypedStyle::new().width_pct(100.0)),
                                 }
                             }
                             FormSubmitButton {
@@ -264,9 +284,13 @@ pub fn IssuesWorkspace(#[props(default = IssueId(1))] featured_issue_id: IssueId
                 if let Some(ref banner) = status_banner() {
                     view {
                         test_id: "issues-status-banner",
-                        style: "padding: 12px; border-radius: 8px; border: 1px solid {border_hex}; background: {surface_hex};",
+                        nve_style: TypedStyle::new()
+                            .padding(12.0)
+                            .radius(8.0)
+                            .border(1.0, border)
+                            .bg(surface),
                         text {
-                            style: "font-size: 13px; color: {fg_hex};",
+                            nve_style: TypedStyle::new().font_size(13.0).color(fg),
                             "{banner}"
                         }
                     }
@@ -275,9 +299,17 @@ pub fn IssuesWorkspace(#[props(default = IssueId(1))] featured_issue_id: IssueId
                 if let Some(ref err_msg) = query_err_text {
                     view {
                         test_id: "issues-query-error",
-                        style: "padding: 12px; border-radius: 8px; border: 1px solid {danger_hex}; background: {surface_hex}; display: flex; justify-content: space-between; align-items: center; gap: 12px;",
+                        nve_style: TypedStyle::new()
+                            .padding(12.0)
+                            .radius(8.0)
+                            .border(1.0, danger)
+                            .bg(surface)
+                            .flex_row()
+                            .justify_content(FlexJustify::SpaceBetween)
+                            .align_items(FlexAlign::Center)
+                            .gap(12.0),
                         text {
-                            style: "font-size: 13px; color: {danger_hex};",
+                            nve_style: TypedStyle::new().font_size(13.0).color(danger),
                             "Failed to load issues: {err_msg}"
                         }
                         Button {
@@ -293,9 +325,13 @@ pub fn IssuesWorkspace(#[props(default = IssueId(1))] featured_issue_id: IssueId
                 if let Some(ref err_msg) = close_err_text {
                     view {
                         test_id: "issues-close-error",
-                        style: "padding: 12px; border-radius: 8px; border: 1px solid {danger_hex}; background: {surface_hex};",
+                        nve_style: TypedStyle::new()
+                            .padding(12.0)
+                            .radius(8.0)
+                            .border(1.0, danger)
+                            .bg(surface),
                         text {
-                            style: "font-size: 13px; color: {danger_hex};",
+                            nve_style: TypedStyle::new().font_size(13.0).color(danger),
                             "Close failed (rolled back): {err_msg}"
                         }
                     }
@@ -304,22 +340,29 @@ pub fn IssuesWorkspace(#[props(default = IssueId(1))] featured_issue_id: IssueId
                 // Issue list surface
                 view {
                     test_id: "issues-list",
-                    style: "width: 100%; display: flex; flex-direction: column; align-items: stretch; border-width: 1px; border-color: {border_hex}; border-radius: 10px; background: {surface_hex}; overflow: hidden;",
+                    nve_style: TypedStyle::new()
+                        .width_pct(100.0)
+                        .flex_col()
+                        .align_items(FlexAlign::Stretch)
+                        .border(1.0, border)
+                        .radius(10.0)
+                        .bg(surface)
+                        .overflow_mode(Overflow::Hidden),
                     if issues_query.is_loading() {
                         view {
                             test_id: "issues-loading",
-                            style: "padding: 24px;",
+                            nve_style: TypedStyle::new().padding(24.0),
                             text {
-                                style: "font-size: 14px; color: {muted_hex};",
+                                nve_style: TypedStyle::new().font_size(14.0).color(muted),
                                 "Loading issues..."
                             }
                         }
                     } else if issues_list.is_empty() {
                         view {
                             test_id: "issues-empty",
-                            style: "padding: 24px;",
+                            nve_style: TypedStyle::new().padding(24.0),
                             text {
-                                style: "font-size: 14px; color: {muted_hex};",
+                                nve_style: TypedStyle::new().font_size(14.0).color(muted),
                                 "No issues match this filter."
                             }
                         }
@@ -392,14 +435,13 @@ fn IssueRowItem(
     on_close: EventHandler<IssueId>,
 ) -> Element {
     let theme = use_theme();
-    let fg_hex = theme.text.primary.hex();
-    let muted_hex = theme.text.secondary.hex();
+    let fg = theme.text.primary;
+    let muted = theme.text.secondary;
     let selected_bg = if is_selected {
         theme.state.selected
     } else {
         with_alpha(theme.state.selected, 0)
-    }
-    .hex();
+    };
     let (badge_text, badge_variant) = state_badge(issue.state);
     let id = issue.id;
     let id_num = id.0;
@@ -412,27 +454,44 @@ fn IssueRowItem(
 
     rsx! {
         view {
-            style: "width: 100%; display: flex; flex-direction: column; align-items: stretch;",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .flex_col()
+                .align_items(FlexAlign::Stretch),
             if show_divider {
                 Separator {}
             }
             view {
                 test_id: "issue-row-{id_num}",
-                style: "width: 100%; display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 14px; background: {selected_bg};",
+                nve_style: TypedStyle::new()
+                    .width_pct(100.0)
+                    .flex_row()
+                    .flex_wrap(FlexWrap::Wrap)
+                    .align_items(FlexAlign::Center)
+                    .justify_content(FlexJustify::SpaceBetween)
+                    .gap(12.0)
+                    .padding(14.0)
+                    .bg(selected_bg),
             Col {
                 gap: Some(6.0),
                 align: Some("flex-start".to_owned()),
-                style: Some("flex: 1 1 260px; min-width: 0;".to_owned()),
+                nve_style: Some(
+                    TypedStyle::new()
+                        .flex_grow(1.0)
+                        .flex_shrink(1.0)
+                        .flex_basis(Dimension::Points(260.0))
+                        .min_width_px(0.0),
+                ),
                 Row {
                     gap: Some(8.0),
-                    style: Some("flex-wrap: wrap;".to_owned()),
+                    nve_style: Some(TypedStyle::new().flex_wrap(FlexWrap::Wrap)),
                     text {
-                        style: "font-size: 12px; font-weight: 600; color: {muted_hex};",
+                        nve_style: TypedStyle::new().font_size(12.0).font_weight(600).color(muted),
                         "#{id_num}"
                     }
                     text {
                         test_id: "issue-title-{id_num}",
-                        style: "font-size: 15px; font-weight: 600; color: {fg_hex};",
+                        nve_style: TypedStyle::new().font_size(15.0).font_weight(600).color(fg),
                         "{issue.title}"
                     }
                 }
@@ -445,7 +504,7 @@ fn IssueRowItem(
                     }
                     text {
                         test_id: "issue-comments-count-{id_num}",
-                        style: "font-size: 12px; color: {muted_hex};",
+                        nve_style: TypedStyle::new().font_size(12.0).color(muted),
                         "{comments_label}"
                     }
                 }

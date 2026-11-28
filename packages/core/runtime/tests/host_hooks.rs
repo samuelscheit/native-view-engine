@@ -210,11 +210,11 @@ unsafe extern "C" {
 fn hot_patch_bytes() -> Vec<u8> {
     HotPatchMsg::TemplatePatch {
         generation: 1,
-        template_id: "t".into(),
-        attr_updates: vec![],
-        text_updates: vec![(0, "x".into())],
-        target_test_id: None,
+        template_key: 0,
         node_path: vec![],
+        target_test_id: None,
+        row_patch_words: vec![],
+        text_updates: vec![(0, "x".into())],
         text_replacements: vec![],
     }
     .to_bytes()

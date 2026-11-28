@@ -1,7 +1,7 @@
 //! Sticky top navbar (`accessibility_role: "banner"`) with brand, sections, `⌘K` search, theme toggle, and mobile drawer toggle.
 
 use nve_dioxus::prelude::*;
-use nve_ui::{accent_indicator, tab_colors, ColorHex, Hex, ThemeMode};
+use nve_ui::{accent_indicator, tab_colors, ThemeMode};
 
 use crate::route::DocsRoute;
 use crate::state::{navigate_to, use_docs_state};
@@ -24,10 +24,14 @@ fn ThemeModeOption(mode: ThemeMode, selected: bool) -> Element {
             accessibility_role: "radio",
             accessibility_label: "{hint}",
             aria_checked: if selected { "true" } else { "false" },
-            style: "padding-horizontal: 8px; padding-vertical: 4px; border-radius: 6px; background-color: {c.bg.hex()}; border-width: 1px; border-color: {c.border.hex()};",
+            nve_style: TypedStyle::new()
+                .padding_xy(8.0, 4.0)
+                .radius(6.0)
+                .bg(c.bg)
+                .border(1.0, c.border),
             onpress: move |_| state.write().set_theme_mode(mode),
             text {
-                style: "font-size: 12px; font-weight: 600; color: {c.fg.hex()};",
+                nve_style: TypedStyle::new().font_size(12.0).font_weight(600).color(c.fg),
                 "{mode.label()}"
             }
         }
@@ -78,11 +82,22 @@ pub fn DocsNavbar() -> Element {
             test_id: "docs-navbar",
             accessibility_role: "banner",
             accessibility_label: "{site_title} navigation",
-            style: "width: 100%; height: 56px; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 16px; gap: 12px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()}; z-index: 50;",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .height_px(56.0)
+                .flex_shrink(0.0)
+                .flex_row()
+                .justify_content(FlexJustify::SpaceBetween)
+                .align_items(FlexAlign::Center)
+                .padding_x(16.0)
+                .gap(12.0)
+                .bg(theme.surface.base)
+                .border(1.0, theme.border.default)
+                .z_index(50),
 
             // Left cluster: mobile drawer toggle + brand mark + section tabs
             view {
-                style: "flex-direction: row; align-items: center; gap: 12px;",
+                nve_style: TypedStyle::new().flex_row().align_items(FlexAlign::Center).gap(12.0),
 
                 pressable {
                     test_id: "docs-mobile-menu-toggle",
@@ -91,12 +106,16 @@ pub fn DocsNavbar() -> Element {
                     accessibility_label: "Toggle navigation sidebar",
                     aria_expanded: "{menu_expanded}",
                     aria_controls: "docs-sidebar-drawer",
-                    style: "padding-horizontal: 10px; padding-vertical: 6px; border-radius: 6px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: {theme.surface.subtle.hex()};",
+                    nve_style: TypedStyle::new()
+                        .padding_xy(10.0, 6.0)
+                        .radius(6.0)
+                        .border(1.0, theme.border.default)
+                        .bg(theme.surface.subtle),
                     onpress: move |_| {
                         state.write().toggle_mobile_drawer();
                     },
                     text {
-                        style: "font-size: 13px; font-weight: 600; color: {theme.text.primary.hex()};",
+                        nve_style: TypedStyle::new().font_size(13.0).font_weight(600).color(theme.text.primary),
                         "{menu_label}"
                     }
                 }
@@ -107,21 +126,29 @@ pub fn DocsNavbar() -> Element {
                     accessibility_role: "link",
                     accessibility_label: "{site_title} home",
                     "href": "{home_href}",
-                    style: "flex-direction: row; align-items: center; gap: 8px; padding-vertical: 4px;",
+                    nve_style: TypedStyle::new()
+                        .flex_row()
+                        .align_items(FlexAlign::Center)
+                        .gap(8.0)
+                        .padding_y(4.0),
                     onpress: move |_| {
                         navigate_to(state, DocsRoute::root());
                     },
                     view {
-                        style: "padding-horizontal: 7px; padding-vertical: 3px; border-radius: 6px; background-color: {theme.status.accent.subtle.hex()}; border-width: 1px; border-color: {theme.status.accent.border.hex()};",
+                        nve_style: TypedStyle::new()
+                            .padding_xy(7.0, 3.0)
+                            .radius(6.0)
+                            .bg(theme.status.accent.subtle)
+                            .border(1.0, theme.status.accent.border),
                         text {
-                            style: "font-size: 11px; font-weight: 700; color: {theme.text.link.hex()};",
+                            nve_style: TypedStyle::new().font_size(11.0).font_weight(700).color(theme.text.link),
                             "{brand_mark}"
                         }
                     }
                     text {
                         test_id: "docs-brand-title",
                         nve_show_on: ShowOn(MediaQuery::min_width(960)),
-                        style: "font-size: 15px; font-weight: 700; color: {theme.text.primary.hex()};",
+                        nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(theme.text.primary),
                         "{site_title}"
                     }
                 }
@@ -133,12 +160,12 @@ pub fn DocsNavbar() -> Element {
                         nve_show_on: ShowOn(MediaQuery::min_width(960)),
                         accessibility_role: "navigation",
                         accessibility_label: "Documentation sections",
-                        style: "flex-direction: row; align-items: center; gap: 4px; margin: 0px;",
+                        nve_style: TypedStyle::new().flex_row().align_items(FlexAlign::Center).gap(4.0).margin(0.0),
                         for (sec_id, sec_label, sec_route, sec_href, sec_badge, is_active) in sections {
                             {
-                                let bg = if is_active { theme.status.accent.subtle.hex() } else { Hex::TRANSPARENT };
-                                let fg = if is_active { theme.text.link.hex() } else { theme.text.secondary.hex() };
-                                let border_c = if is_active { accent_indicator(&theme).hex() } else { Hex::TRANSPARENT };
+                                let bg = if is_active { theme.status.accent.subtle } else { ColorRgba::TRANSPARENT };
+                                let fg = if is_active { theme.text.link } else { theme.text.secondary };
+                                let border_c = if is_active { accent_indicator(&theme) } else { ColorRgba::TRANSPARENT };
                                 let tid = format!("docs-section-{sec_id}");
                                 let target_route = DocsRoute::new(&sec_route);
                                 rsx! {
@@ -147,19 +174,30 @@ pub fn DocsNavbar() -> Element {
                                         test_id: "{tid}",
                                         accessibility_role: "link",
                                         "href": "{sec_href}",
-                                        style: "flex-direction: row; align-items: center; gap: 6px; padding-horizontal: 10px; padding-vertical: 6px; border-radius: 6px; background-color: {bg}; border-width: 1px; border-color: {border_c};",
+                                        nve_style: TypedStyle::new()
+                                            .flex_row()
+                                            .align_items(FlexAlign::Center)
+                                            .gap(6.0)
+                                            .padding_xy(10.0, 6.0)
+                                            .radius(6.0)
+                                            .bg(bg)
+                                            .border(1.0, border_c),
                                         onpress: move |_| {
                                             navigate_to(state, target_route.clone());
                                         },
                                         text {
-                                            style: "font-size: 13px; font-weight: 500; color: {fg};",
+                                            nve_style: TypedStyle::new().font_size(13.0).font_weight(500).color(fg),
                                             "{sec_label}"
                                         }
                                         if let Some(badge_txt) = sec_badge {
                                             view {
-                                                style: "padding-horizontal: 5px; padding-vertical: 1px; border-radius: 999px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                                                nve_style: TypedStyle::new()
+                                                    .padding_xy(5.0, 1.0)
+                                                    .radius(999.0)
+                                                    .bg(theme.surface.subtle)
+                                                    .border(1.0, theme.border.default),
                                                 text {
-                                                    style: "font-size: 10px; font-weight: 600; color: {theme.status.info.text.hex()};",
+                                                    nve_style: TypedStyle::new().font_size(10.0).font_weight(600).color(theme.status.info.text),
                                                     "{badge_txt}"
                                                 }
                                             }
@@ -174,31 +212,43 @@ pub fn DocsNavbar() -> Element {
 
             // Right cluster: ⌘K search trigger pill, Dark/Light toggle, GitHub link
             view {
-                style: "flex-direction: row; align-items: center; gap: 8px;",
+                nve_style: TypedStyle::new().flex_row().align_items(FlexAlign::Center).gap(8.0),
 
                 pressable {
                     test_id: "docs-search-trigger",
                     accessibility_role: "button",
                     accessibility_label: "Search documentation (Command K)",
-                    style: "flex-direction: row; align-items: center; justify-content: space-between; gap: 14px; padding-horizontal: 10px; padding-vertical: 6px; border-radius: 8px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                    nve_style: TypedStyle::new()
+                        .flex_row()
+                        .align_items(FlexAlign::Center)
+                        .justify_content(FlexJustify::SpaceBetween)
+                        .gap(14.0)
+                        .padding_xy(10.0, 6.0)
+                        .radius(8.0)
+                        .bg(theme.surface.subtle)
+                        .border(1.0, theme.border.default),
                     onpress: move |_| {
                         state.write().open_search();
                     },
                     text {
                         nve_show_on: ShowOn(MediaQuery::min_width(960)),
-                        style: "font-size: 13px; color: {theme.text.secondary.hex()};",
+                        nve_style: TypedStyle::new().font_size(13.0).color(theme.text.secondary),
                         "Search docs..."
                     }
                     text {
                         nve_show_on: ShowOn(MediaQuery::max_width(959)),
-                        style: "font-size: 13px; color: {theme.text.secondary.hex()};",
+                        nve_style: TypedStyle::new().font_size(13.0).color(theme.text.secondary),
                         "Search"
                     }
                     view {
                         nve_show_on: ShowOn(MediaQuery::min_width(960)),
-                        style: "padding-horizontal: 6px; padding-vertical: 2px; border-radius: 4px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                        nve_style: TypedStyle::new()
+                            .padding_xy(6.0, 2.0)
+                            .radius(4.0)
+                            .bg(theme.surface.base)
+                            .border(1.0, theme.border.default),
                         text {
-                            style: "font-size: 11px; font-weight: 600; color: {theme.text.secondary.hex()};",
+                            nve_style: TypedStyle::new().font_size(11.0).font_weight(600).color(theme.text.secondary),
                             "⌘K"
                         }
                     }
@@ -208,7 +258,13 @@ pub fn DocsNavbar() -> Element {
                     test_id: "docs-theme-mode",
                     accessibility_role: "radiogroup",
                     accessibility_label: "Color theme",
-                    style: "flex-direction: row; gap: 2px; padding: 2px; border-radius: 8px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                    nve_style: TypedStyle::new()
+                        .flex_row()
+                        .gap(2.0)
+                        .padding(2.0)
+                        .radius(8.0)
+                        .bg(theme.surface.subtle)
+                        .border(1.0, theme.border.default),
                     for mode in ThemeMode::ALL {
                         ThemeModeOption { key: "{mode.as_str()}", mode, selected: mode == theme_mode }
                     }
@@ -221,9 +277,13 @@ pub fn DocsNavbar() -> Element {
                         accessibility_role: "link",
                         accessibility_label: "GitHub repository",
                         "href": "{repo_url}",
-                        style: "padding-horizontal: 10px; padding-vertical: 6px; border-radius: 8px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                        nve_style: TypedStyle::new()
+                            .padding_xy(10.0, 6.0)
+                            .radius(8.0)
+                            .bg(theme.surface.subtle)
+                            .border(1.0, theme.border.default),
                         text {
-                            style: "font-size: 12px; font-weight: 600; color: {theme.text.secondary.hex()};",
+                            nve_style: TypedStyle::new().font_size(12.0).font_weight(600).color(theme.text.secondary),
                             "GitHub"
                         }
                     }

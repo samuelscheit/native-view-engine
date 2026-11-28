@@ -161,10 +161,45 @@ impl RsxWatchCache {
                 reason: format!("new uncached Rust file: {}", path.display()),
             };
         };
-        baseline.diff(&path.to_string_lossy(), new_source, generation)
+        let rel_file = workspace_relative_path(path);
+        baseline.diff(&rel_file, new_source, generation)
     }
 }
 
 fn normalize_cache_key(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Normalizes `path` to a workspace-relative POSIX path matching `Span::call_site().file()` in
+/// `nve-dioxus-macros` so `hot_patch_template_key(rel_file, ordinal)` hashes identically in
+/// `nve dev` (which receives absolute paths from `notify`) and the compiled app.
+fn workspace_relative_path(path: &Path) -> String {
+    let canon = normalize_cache_key(path);
+    let candidate = if let Some(root) = find_workspace_root(&canon)
+        && let Ok(stripped) = canon.strip_prefix(&root)
+    {
+        stripped.to_string_lossy().into_owned()
+    } else {
+        path.to_string_lossy().into_owned()
+    };
+    let mut norm = candidate.replace('\\', "/");
+    while let Some(rest) = norm.strip_prefix("./") {
+        norm = rest.to_owned();
+    }
+    norm
+}
+
+fn find_workspace_root(path: &Path) -> Option<PathBuf> {
+    let mut cur = path.parent();
+    while let Some(dir) = cur {
+        let manifest = dir.join("Cargo.toml");
+        if manifest.is_file()
+            && let Ok(text) = std::fs::read_to_string(&manifest)
+            && text.contains("[workspace]")
+        {
+            return Some(dir.to_path_buf());
+        }
+        cur = dir.parent();
+    }
+    None
 }

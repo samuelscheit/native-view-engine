@@ -1,6 +1,7 @@
 //! Global-allocator (`CountingAlloc`) zero-allocation hot-path guard for `nve-tables`:
-//! CSS/color/dim parsing, 2D affine transforms, normalized gradient sampling, zero-copy
-//! `RowPatchView` snapshot application, and steady-state `NodeStore` resource view iteration.
+//! 2D affine transforms, normalized gradient sampling, zero-copy `RowPatchView` snapshot
+//! application, steady-state `RowPatch` transactions, `effective_text_color`, and flat
+//! `NodeStore` resource view iteration.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -10,16 +11,14 @@ use nve_abi::ColorRgba;
 use nve_store::{ChangeSet, FlatResource, NodeId, NodeStore, Rgba, RowPatch, RowPatchView};
 use nve_tables::layout_ext::GridTrack;
 use nve_tables::tables::{
-    BackgroundFillRes, BackgroundFillView, BoxShadow, BoxShadows, GridLayout, GridTracks,
-    Layout as LayoutTable, Visual,
+    register_core_tables, BackgroundFillRes, BackgroundFillView, BoxShadow, BoxShadows, GridLayout,
+    GridTracks, Layout as LayoutTable, Typography, Visual,
 };
 use nve_tables::{
-    affine_concat, affine_inverse_map_point, affine_map_point, apply_inline_style_layers_to_tx,
-    apply_patch_view_to_layout, apply_patch_view_to_layout_ext, apply_patch_view_to_visual,
-    parse_color, parse_dim, parse_flex_align, parse_flex_direction, parse_flex_justify,
-    parse_font_weight, sample_normalized_stops, transform_from_patch_view, BackgroundFill,
-    GradientStop, LayoutExt, LayoutSnapshot, StylePatchExt, Transform2D, VisualSnapshot,
-    STYLE_LAYER_ALL,
+    affine_concat, affine_inverse_map_point, affine_map_point, apply_patch_view_to_layout,
+    apply_patch_view_to_layout_ext, apply_patch_view_to_visual, effective_text_color,
+    sample_normalized_stops, transform_from_patch_view, BackgroundFill, GradientStop, LayoutExt,
+    LayoutSnapshot, StylePatchExt, Transform2D, VisualSnapshot,
 };
 
 thread_local! {
@@ -59,16 +58,8 @@ fn measure_allocs<R>(f: impl FnOnce() -> R) -> (usize, R) {
 }
 
 #[test]
-fn css_parsers_transforms_gradients_and_patch_views_allocate_zero_bytes() {
-    let colors = [
-        "#2563eb",
-        "#fff",
-        "rgba(37, 99, 235, 0.75)",
-        "rgb(15, 23, 42)",
-        "transparent",
-        "#10b981cc",
-    ];
-    let dims = ["auto", "100%", "24px", "12.5px", "320", "50%"];
+fn transforms_gradients_patch_views_and_row_patches_allocate_zero_bytes() {
+    register_core_tables();
     let stops = [
         GradientStop::new(0.0, ColorRgba::rgb(37, 99, 235)),
         GradientStop::new(0.5, ColorRgba::rgb(139, 92, 246)),
@@ -98,18 +89,31 @@ fn css_parsers_transforms_gradients_and_patch_views_allocate_zero_bytes() {
         .width_px(240.0)
         .padding(16.0)
         .rotate(12.0);
+    let patch_alt = RowPatch::new()
+        .bg(ColorRgba::rgb(30, 41, 59))
+        .opacity(0.75)
+        .flex_col()
+        .width_px(260.0)
+        .padding(12.0)
+        .rotate(0.0);
     let mut patch_words = Vec::new();
     assert!(patch.write_words(&mut patch_words));
     let patch_view = RowPatchView::from_words(&patch_words).expect("valid patch view");
+    let mut patch_alt_words = Vec::new();
+    assert!(patch_alt.write_words(&mut patch_alt_words));
+    let patch_alt_view = RowPatchView::from_words(&patch_alt_words).expect("valid alt patch view");
 
-    // Pre-populate a NodeStore with flat resources & warm layout/visual columns.
+    // Pre-populate a NodeStore with flat resources & warm layout/visual/typography columns.
     let mut store = NodeStore::new();
     let mut changes = ChangeSet::default();
-    let node = {
+    let (node, leaf) = {
         let mut tx = store.tx();
         let n = tx.create();
+        let child = tx.create();
         tx.set_children(NodeId::ROOT, &[n]);
+        tx.set_children(n, &[child]);
         tx.edit::<LayoutTable>(n);
+        tx.edit::<Typography>(n).color(Rgba::rgb(226, 232, 240));
         tx.edit::<Visual>(n)
             .box_shadows(Some(BoxShadows::new(vec![BoxShadow::new(
                 0.0,
@@ -127,38 +131,20 @@ fn css_parsers_transforms_gradients_and_patch_views_allocate_zero_bytes() {
                 GridTrack::Fr(1.0),
             ])));
         tx.commit_into(&mut changes);
-        n
+        (n, child)
     };
 
-    // Warm inline-style write path once so table rows & dirty lists have steady-state capacity.
-    {
+    // Warm typed RowPatch write path once so table rows & dirty lists have steady-state capacity.
+    for p in [patch_view, patch_alt_view] {
         let mut tx = store.tx();
-        apply_inline_style_layers_to_tx(
-            &mut tx,
-            node,
-            "width: 240px; height: 48px; flex-direction: row; opacity: 0.9; background-color: #0f172a;",
-            STYLE_LAYER_ALL,
-        );
+        tx.apply_row_patch(node, p);
         tx.commit_into(&mut changes);
     }
 
     let (allocs, (acc, bg_stops_seen)) = measure_allocs(|| {
         let mut sum = 0u64;
         let mut bg_stops = 0usize;
-        for _ in 0..32 {
-            for &raw in black_box(&colors) {
-                if let Some(c) = parse_color(raw) {
-                    sum = sum.wrapping_add(u64::from(c.to_u32()));
-                }
-            }
-            for &raw in black_box(&dims) {
-                let _ = black_box(parse_dim(raw));
-            }
-            let _ = black_box(parse_flex_direction("row-reverse"));
-            let _ = black_box(parse_flex_justify("space-between"));
-            let _ = black_box(parse_flex_align("center"));
-            sum = sum.wrapping_add(u64::from(parse_font_weight("bold")));
-
+        for step in 0..32 {
             let m1 = black_box(&t1).to_matrix_2d(100.0, 50.0);
             let m2 = black_box(&t2).to_matrix_2d(100.0, 50.0);
             let m = affine_concat(&m1, &m2);
@@ -179,7 +165,8 @@ fn css_parsers_transforms_gradients_and_patch_views_allocate_zero_bytes() {
             let tf = transform_from_patch_view(patch_view);
             sum = sum.wrapping_add(u64::from(vis.background.to_u32()) + u64::from(tf.is_some()));
 
-            // Zero-alloc flat resource views from NodeStore.
+            // Zero-alloc inherited text color walk + flat resource views from NodeStore.
+            sum = sum.wrapping_add(u64::from(effective_text_color(&store, leaf).0));
             let v = store.row::<Visual>(node);
             if let Some(sh) = store.resource::<BoxShadows>(v.box_shadows()) {
                 for s in sh.iter() {
@@ -213,14 +200,10 @@ fn css_parsers_transforms_gradients_and_patch_views_allocate_zero_bytes() {
                 sum = sum.wrapping_add(tracks.iter().count() as u64);
             }
 
-            // Steady-state inline CSS application directly onto warm NodeStore rows.
+            // Steady-state typed RowPatch application directly onto warm NodeStore rows.
+            let active = if step % 2 == 0 { patch_view } else { patch_alt_view };
             let mut tx = store.tx();
-            apply_inline_style_layers_to_tx(
-                &mut tx,
-                node,
-                "width: 260px; height: 52px; flex-direction: column; opacity: 0.75; background-color: #1e293b;",
-                STYLE_LAYER_ALL,
-            );
+            tx.apply_row_patch(node, active);
             tx.commit_into(&mut changes);
         }
         (sum, bg_stops)
@@ -230,6 +213,6 @@ fn css_parsers_transforms_gradients_and_patch_views_allocate_zero_bytes() {
     assert_eq!(bg_stops_seen, 32 * stops.len(), "BackgroundFillRes stops must be iterated");
     assert_eq!(
         allocs, 0,
-        "steady-state nve-tables hot paths (parsers, transforms, gradients, patch views, flat resources, inline style tx) must allocate 0 bytes"
+        "steady-state nve-tables hot paths (transforms, gradients, patch views, flat resources, typed RowPatch tx) must allocate 0 bytes"
     );
 }

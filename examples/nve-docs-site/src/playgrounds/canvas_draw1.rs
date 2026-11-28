@@ -11,8 +11,7 @@ use nve_canvas::{
 use nve_dioxus::prelude::*;
 use nve_dioxus::table_attr_fn;
 use nve_ui::{
-    Accent, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, ColorHex, Theme, use_theme,
-    with_alpha,
+    Accent, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Theme, use_theme, with_alpha,
 };
 
 static DEMO_RECORDED_GEN: AtomicU32 = AtomicU32::new(1);
@@ -38,7 +37,7 @@ rsx! {
                 paint_scene(p, size, &theme);
             });
         }),
-        style: "width: 100%; height: 152px; border-radius: 8px;",
+        nve_style: TypedStyle::new().width_pct(100.0).height_px(152.0).radius(8.0),
     }
 }"#;
 
@@ -209,13 +208,21 @@ pub fn CanvasDraw1Demo() -> Element {
     rsx! {
         view {
             test_id: "pg-canvas-root",
-            style: "width: 100%; flex-direction: column; gap: 12px;",
+            nve_style: TypedStyle::col().width_pct(100.0).gap(12.0),
 
             // Telemetry bar
             view {
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;",
+                nve_style: TypedStyle::row()
+                    .width_pct(100.0)
+                    .justify(FlexJustify::SpaceBetween)
+                    .align(FlexAlign::Center)
+                    .flex_wrap(FlexWrap::Wrap)
+                    .gap(8.0),
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; gap: 6px; align-items: center;",
+                    nve_style: TypedStyle::row()
+                        .flex_wrap(FlexWrap::Wrap)
+                        .gap(6.0)
+                        .align(FlexAlign::Center),
                     Badge {
                         test_id: Some("pg-canvas-ops".to_string()),
                         label: ops_badge,
@@ -233,7 +240,7 @@ pub fn CanvasDraw1Demo() -> Element {
                     }
                 }
                 text {
-                    style: "font-size: 11px; color: {theme.text.tertiary.hex()};",
+                    nve_style: TypedStyle::new().font_size(11.0).color(theme.text.tertiary),
                     "{stream_caption}"
                 }
             }
@@ -271,14 +278,23 @@ pub fn CanvasDraw1Demo() -> Element {
                         );
                     }
                 }),
-                style: "width: 100%; height: 152px; border-radius: 8px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: {theme.surface.sunken.hex()};",
+                nve_style: TypedStyle::new()
+                    .width_pct(100.0)
+                    .height_px(152.0)
+                    .radius(8.0)
+                    .border(1.0, theme.border.default)
+                    .bg(theme.surface.sunken),
             }
 
             // Controls row: Shape mode | Palette | Stroke width
             view {
-                style: "width: 100%; flex-direction: row; justify-content: space-between; flex-wrap: wrap; gap: 8px;",
+                nve_style: TypedStyle::row()
+                    .width_pct(100.0)
+                    .justify(FlexJustify::SpaceBetween)
+                    .flex_wrap(FlexWrap::Wrap)
+                    .gap(8.0),
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; gap: 6px;",
+                    nve_style: TypedStyle::row().flex_wrap(FlexWrap::Wrap).gap(6.0),
                     for (id, lbl, m) in [
                         ("sparkline", "Sparkline", SceneMode::Sparkline),
                         ("bars", "Bars", SceneMode::Bars),
@@ -295,7 +311,7 @@ pub fn CanvasDraw1Demo() -> Element {
                     }
                 }
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; gap: 6px;",
+                    nve_style: TypedStyle::row().flex_wrap(FlexWrap::Wrap).gap(6.0),
                     for (id, lbl, p) in [
                         ("cyan", "Cyan", PaletteChoice::Cyan),
                         ("violet", "Violet", PaletteChoice::Violet),

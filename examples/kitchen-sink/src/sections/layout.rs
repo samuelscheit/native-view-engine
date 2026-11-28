@@ -3,8 +3,9 @@
 //! controls, and `KeyboardAvoidingView` preview.
 
 use dioxus_core::Callback;
+use nve_abi::{FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
-use nve_ui::{ColorHex, 
+use nve_ui::{
     effective_bottom_inset, use_theme, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant,
     Card, CardVariant, KeyboardAvoidingView, KeyboardInsets, Orientation, RowHeights, SplitBound,
     SplitPane, TabList, TabPanel, TabTrigger, TabsRoot, VirtualList,
@@ -44,12 +45,12 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
         )
     };
 
-    let text_primary = theme.text.primary.hex();
-    let text_secondary = theme.text.secondary.hex();
-    let text_muted = theme.text.tertiary.hex();
-    let surface_subtle = theme.surface.subtle.hex();
-    let border = theme.border.default.hex();
-    let accent = theme.status.accent.text.hex();
+    let text_primary = theme.text.primary;
+    let text_secondary = theme.text.secondary;
+    let text_muted = theme.text.tertiary;
+    let surface_subtle = theme.surface.subtle;
+    let border = theme.border.default;
+    let accent = theme.status.accent.text;
 
     let kb_insets = KeyboardInsets {
         height: simulated_kb_px(),
@@ -59,14 +60,11 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
     let effective_kb = effective_bottom_inset(0.0, kb_insets, false);
 
     let selected_label = selected_row().map_or_else(|| "None".to_owned(), |i| format!("#{i}"));
-    let row_accent = accent.to_owned();
-    let row_primary = text_primary.to_owned();
-    let row_muted = text_muted.to_owned();
 
     rsx! {
         view {
             test_id: "section-layout",
-            style: "width: 100%; flex-direction: column; gap: 16px;",
+            nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(16.0),
 
             SectionHeader {
                 title: copy("Layout & Virtualization", pseudo),
@@ -81,7 +79,7 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
                 padding: Some(16.0),
                 gap: Some(10.0),
                 text {
-                    style: "font-size: 15px; font-weight: 700; color: {text_primary};",
+                    nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(text_primary),
                     "{copy(\"TabsRoot / TabList / TabTrigger / TabPanel\", pseudo)}"
                 }
                 TabsRoot {
@@ -107,21 +105,21 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
                     TabPanel {
                         value: "architecture".to_owned(),
                         text {
-                            style: "font-size: 13px; color: {text_secondary};",
+                            nve_style: TypedStyle::new().font_size(13.0).color(text_secondary),
                             "One Dioxus rsx! tree compiles to flat binary CommandBuffers targeting Web DOM, Skia GPU, SwiftUI/AppKit, Jetpack Compose, and Win32."
                         }
                     }
                     TabPanel {
                         value: "binary".to_owned(),
                         text {
-                            style: "font-size: 13px; color: {text_secondary};",
+                            nve_style: TypedStyle::new().font_size(13.0).color(text_secondary),
                             "Direct binary encoding on hot paths: direct #[repr(C)] slabs, borrowed NveSceneView slices, and compact versioned state snapshots."
                         }
                     }
                     TabPanel {
                         value: "a11y".to_owned(),
                         text {
-                            style: "font-size: 13px; color: {text_secondary};",
+                            nve_style: TypedStyle::new().font_size(13.0).color(text_secondary),
                             "Roving tabindex, FocusTrap, ARIA roles/expanded/selected attributes, and ReducedMotion preferences are first-class."
                         }
                     }
@@ -135,9 +133,14 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
                 padding: Some(16.0),
                 gap: Some(10.0),
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;",
+                    nve_style: TypedStyle::new()
+                        .flex_row()
+                        .flex_wrap(FlexWrap::Wrap)
+                        .align_items(FlexAlign::Center)
+                        .justify_content(FlexJustify::SpaceBetween)
+                        .gap(8.0),
                     text {
-                        style: "font-size: 15px; font-weight: 700; color: {text_primary};",
+                        nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(text_primary),
                         "{copy(\"Resizable SplitPane\", pseudo)}"
                     }
                     Badge {
@@ -146,7 +149,7 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
                     }
                 }
                 view {
-                    style: "width: 100%; height: 150px;",
+                    nve_style: TypedStyle::new().width_pct(100.0).height_px(150.0),
                     SplitPane {
                         test_id: Some("ks-split-pane".to_owned()),
                         orientation: Orientation::Horizontal,
@@ -157,16 +160,28 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
                         on_change: move |r: f32| split_ratio.set(r),
                         primary: rsx! {
                             view {
-                                style: "width: 100%; height: 100%; padding: 12px; gap: 6px; background-color: {surface_subtle}; border-radius: 8px;",
-                                text { style: "font-size: 13px; font-weight: 700; color: {text_primary};", "Primary Pane" }
-                                text { style: "font-size: 12px; color: {text_muted};", "Drag or use Left/Right arrows on the divider." }
+                                nve_style: TypedStyle::new()
+                                    .width_pct(100.0)
+                                    .height_pct(100.0)
+                                    .padding(12.0)
+                                    .gap(6.0)
+                                    .bg(surface_subtle)
+                                    .radius(8.0),
+                                text { nve_style: TypedStyle::new().font_size(13.0).font_weight(700).color(text_primary), "Primary Pane" }
+                                text { nve_style: TypedStyle::new().font_size(12.0).color(text_muted), "Drag or use Left/Right arrows on the divider." }
                             }
                         },
                         secondary: rsx! {
                             view {
-                                style: "width: 100%; height: 100%; padding: 12px; gap: 6px; background-color: {surface_subtle}; border-radius: 8px;",
-                                text { style: "font-size: 13px; font-weight: 700; color: {text_primary};", "Secondary Pane" }
-                                text { style: "font-size: 12px; color: {text_muted};", "Collapsible inspector pane with min/max bounds." }
+                                nve_style: TypedStyle::new()
+                                    .width_pct(100.0)
+                                    .height_pct(100.0)
+                                    .padding(12.0)
+                                    .gap(6.0)
+                                    .bg(surface_subtle)
+                                    .radius(8.0),
+                                text { nve_style: TypedStyle::new().font_size(13.0).font_weight(700).color(text_primary), "Secondary Pane" }
+                                text { nve_style: TypedStyle::new().font_size(12.0).color(text_muted), "Collapsible inspector pane with min/max bounds." }
                             }
                         },
                     }
@@ -180,9 +195,14 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
                 padding: Some(16.0),
                 gap: Some(12.0),
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;",
+                    nve_style: TypedStyle::new()
+                        .flex_row()
+                        .flex_wrap(FlexWrap::Wrap)
+                        .align_items(FlexAlign::Center)
+                        .justify_content(FlexJustify::SpaceBetween)
+                        .gap(8.0),
                     text {
-                        style: "font-size: 15px; font-weight: 700; color: {text_primary};",
+                        nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(text_primary),
                         "{copy(\"VirtualList — 1,000 Variable-Height Rows\", pseudo)}"
                     }
                     Badge {
@@ -191,7 +211,11 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
                     }
                 }
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; gap: 6px; align-items: center;",
+                    nve_style: TypedStyle::new()
+                        .flex_row()
+                        .flex_wrap(FlexWrap::Wrap)
+                        .gap(6.0)
+                        .align_items(FlexAlign::Center),
                     for (target_idx, target_off) in jump_targets {
                         Button {
                             key: "{target_idx}",
@@ -212,7 +236,7 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
                     }
                     text {
                         test_id: "ks-vl-selected",
-                        style: "font-size: 12px; color: {text_muted};",
+                        nve_style: TypedStyle::new().font_size(12.0).color(text_muted),
                         "Selected row: {selected_label}"
                     }
                 }
@@ -227,26 +251,30 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
                         initial_scroll_offset: target_offset(),
                         initial_selected: selected_row(),
                         on_select: move |idx: usize| selected_row.set(Some(idx)),
-                        render_row: Callback::new({
-                            move |(idx, is_sel): (usize, bool)| {
-                                let row_h = match idx % 4 {
-                                    0 => 38,
-                                    1 => 48,
-                                    2 => 58,
-                                    _ => 44,
-                                };
-                                let label_col = if is_sel { &row_accent } else { &row_primary };
-                                rsx! {
-                                    view {
-                                        style: "width: 100%; flex-direction: row; align-items: center; justify-content: space-between; padding-horizontal: 12px; gap: 8px;",
-                                        text {
-                                            style: "font-size: 13px; font-weight: 600; color: {label_col};",
-                                            "Row #{idx} — Variable Height Telemetry Entry"
-                                        }
-                                        text {
-                                            style: "font-size: 11px; color: {row_muted};",
-                                            "{row_h}px"
-                                        }
+                        render_row: Callback::new(move |(idx, is_sel): (usize, bool)| {
+                            let row_h = match idx % 4 {
+                                0 => 38,
+                                1 => 48,
+                                2 => 58,
+                                _ => 44,
+                            };
+                            let label_col = if is_sel { accent } else { text_primary };
+                            rsx! {
+                                view {
+                                    nve_style: TypedStyle::new()
+                                        .width_pct(100.0)
+                                        .flex_row()
+                                        .align_items(FlexAlign::Center)
+                                        .justify_content(FlexJustify::SpaceBetween)
+                                        .padding_x(12.0)
+                                        .gap(8.0),
+                                    text {
+                                        nve_style: TypedStyle::new().font_size(13.0).font_weight(600).color(label_col),
+                                        "Row #{idx} — Variable Height Telemetry Entry"
+                                    }
+                                    text {
+                                        nve_style: TypedStyle::new().font_size(11.0).color(text_muted),
+                                        "{row_h}px"
                                     }
                                 }
                             }
@@ -262,13 +290,18 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
                 padding: Some(16.0),
                 gap: Some(10.0),
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;",
+                    nve_style: TypedStyle::new()
+                        .flex_row()
+                        .flex_wrap(FlexWrap::Wrap)
+                        .align_items(FlexAlign::Center)
+                        .justify_content(FlexJustify::SpaceBetween)
+                        .gap(8.0),
                     text {
-                        style: "font-size: 15px; font-weight: 700; color: {text_primary};",
+                        nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(text_primary),
                         "{copy(\"KeyboardAvoidingView Preview\", pseudo)}"
                     }
                     view {
-                        style: "flex-direction: row; gap: 6px; flex-wrap: wrap;",
+                        nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(6.0),
                         Button {
                             test_id: Some("ks-kb-toggle".to_owned()),
                             variant: ButtonVariant::Secondary,
@@ -288,14 +321,22 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
                     }
                 }
                 view {
-                    style: "width: 100%; border-width: 1px; border-color: {border}; border-radius: 8px; padding: 10px;",
+                    nve_style: TypedStyle::new()
+                        .width_pct(100.0)
+                        .border(1.0, border)
+                        .radius(8.0)
+                        .padding(10.0),
                     KeyboardAvoidingView {
                         test_id: Some("ks-keyboard-avoiding".to_owned()),
                         extra_bottom_padding: effective_kb,
                         view {
-                            style: "width: 100%; padding: 10px; border-radius: 6px; background-color: {surface_subtle};",
+                            nve_style: TypedStyle::new()
+                                .width_pct(100.0)
+                                .padding(10.0)
+                                .radius(6.0)
+                                .bg(surface_subtle),
                             text {
-                                style: "font-size: 12px; color: {text_primary};",
+                                nve_style: TypedStyle::new().font_size(12.0).color(text_primary),
                                 "Effective bottom keyboard inset: {effective_kb:.0}px (input stays visible above virtual keyboard)"
                             }
                         }

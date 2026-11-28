@@ -4,14 +4,21 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use nve_abi::{ColorRgba, FlexAlign, FlexDirection, FlexJustify};
+use nve_store::{Length, RowPatch};
 use nve_tables::interaction::{CursorKind, InteractionState};
 use nve_tables::layout_ext::GridTrack;
 use nve_tables::media::MediaQuery;
 use nve_tables::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
-use nve_tables::tables::{BoxShadow, PointerCaptureMode};
+use nve_tables::tables::{
+    BoxShadow, FontStyle, ImageFit, Overflow, OverflowWrap, PointerCaptureMode, TextAlign,
+    TextDecoration, WhiteSpace,
+};
 use nve_tables::StylePatchExt;
-use nve_store::RowPatch;
 
+use super::merge::{
+    OV_BOTH, OV_X, OV_Y, S_BG, S_BORDER_COLOR, S_BORDER_RADIUS, S_BORDER_WIDTH, S_FONT_SIZE,
+    S_OPACITY, S_TEXT_COLOR, S_Z_INDEX,
+};
 use super::TypedStyle;
 
 /// Staged style patch for [`TypedStyle`] responsive and interaction-state rules.
@@ -139,7 +146,7 @@ impl TypedStyle {
     #[inline]
     pub fn bg(mut self, color: ColorRgba) -> Self {
         self.style.background = color;
-        self.has_style = true;
+        self.style_mask |= S_BG;
         self
     }
 
@@ -151,7 +158,7 @@ impl TypedStyle {
     #[inline]
     pub fn color(mut self, color: ColorRgba) -> Self {
         self.style.text_color = color;
-        self.has_style = true;
+        self.style_mask |= S_TEXT_COLOR;
         self
     }
 
@@ -164,28 +171,28 @@ impl TypedStyle {
     pub fn border(mut self, width: f32, color: ColorRgba) -> Self {
         self.style.border_width = Self::sanitize(width).max(0.0);
         self.style.border_color = color;
-        self.has_style = true;
+        self.style_mask |= S_BORDER_WIDTH | S_BORDER_COLOR;
         self
     }
 
     #[inline]
     pub fn border_width(mut self, width: f32) -> Self {
         self.style.border_width = Self::sanitize(width).max(0.0);
-        self.has_style = true;
+        self.style_mask |= S_BORDER_WIDTH;
         self
     }
 
     #[inline]
     pub fn border_color(mut self, color: ColorRgba) -> Self {
         self.style.border_color = color;
-        self.has_style = true;
+        self.style_mask |= S_BORDER_COLOR;
         self
     }
 
     #[inline]
     pub fn radius(mut self, radius: f32) -> Self {
         self.style.border_radius = Self::sanitize(radius).max(0.0);
-        self.has_style = true;
+        self.style_mask |= S_BORDER_RADIUS;
         self
     }
 
@@ -197,35 +204,81 @@ impl TypedStyle {
     #[inline]
     pub fn opacity(mut self, opacity: f32) -> Self {
         self.style.opacity = Self::sanitize(opacity).clamp(0.0, 1.0);
-        self.has_style = true;
+        self.style_mask |= S_OPACITY;
         self
     }
 
     #[inline]
     pub fn font_size(mut self, px: f32) -> Self {
         self.style.font_size = Self::sanitize(px).max(1.0);
-        self.has_style = true;
+        self.style_mask |= S_FONT_SIZE;
         self
     }
 
     #[inline]
     pub fn z_index(mut self, z: i32) -> Self {
         self.style.z_index = z;
-        self.has_style = true;
+        self.style_mask |= S_Z_INDEX;
         self
     }
 
     // --- Typography / Shadow / Overflow / Image fit ---
 
     #[inline]
-    pub fn font_weight(mut self, weight: impl Into<Cow<'static, str>>) -> Self {
-        self.font_weight = Some(weight.into());
+    pub fn font_family(mut self, family: impl Into<Cow<'static, str>>) -> Self {
+        self.font_family = Some(family.into());
         self
     }
 
     #[inline]
-    pub fn text_align(mut self, align: impl Into<Cow<'static, str>>) -> Self {
-        self.text_align = Some(align.into());
+    pub fn line_height(mut self, lh: Length) -> Self {
+        self.line_height = Some(lh);
+        self
+    }
+
+    #[inline]
+    pub fn line_height_px(self, px: f32) -> Self {
+        self.line_height(Length::points(Self::sanitize(px).max(0.0)))
+    }
+
+    #[inline]
+    pub fn line_height_ratio(self, ratio: f32) -> Self {
+        self.line_height(Length::percent(Self::sanitize(ratio * 100.0).max(0.0)))
+    }
+
+    #[inline]
+    pub fn font_weight(mut self, weight: u16) -> Self {
+        self.font_weight = Some(weight.clamp(1, 1000));
+        self
+    }
+
+    #[inline]
+    pub fn font_style(mut self, style: FontStyle) -> Self {
+        self.font_style = Some(style);
+        self
+    }
+
+    #[inline]
+    pub fn text_align(mut self, align: TextAlign) -> Self {
+        self.text_align = Some(align);
+        self
+    }
+
+    #[inline]
+    pub fn white_space(mut self, mode: WhiteSpace) -> Self {
+        self.white_space = Some(mode);
+        self
+    }
+
+    #[inline]
+    pub fn overflow_wrap(mut self, wrap: OverflowWrap) -> Self {
+        self.overflow_wrap = Some(wrap);
+        self
+    }
+
+    #[inline]
+    pub fn text_decoration(mut self, decoration: TextDecoration) -> Self {
+        self.text_decoration = Some(decoration);
         self
     }
 
@@ -237,14 +290,36 @@ impl TypedStyle {
     }
 
     #[inline]
-    pub fn overflow(mut self, mode: impl Into<Cow<'static, str>>) -> Self {
-        self.overflow = Some(mode.into());
+    pub fn overflow(mut self, mode: Overflow) -> Self {
+        self.overflow = Some((mode, mode));
+        self.overflow_axes = OV_BOTH;
         self
     }
 
     #[inline]
-    pub fn object_fit(mut self, mode: impl Into<Cow<'static, str>>) -> Self {
-        self.object_fit = Some(mode.into());
+    pub fn overflow_mode(self, mode: Overflow) -> Self {
+        self.overflow(mode)
+    }
+
+    #[inline]
+    pub fn overflow_x(mut self, mode: Overflow) -> Self {
+        let (_, y) = self.overflow.unwrap_or((Overflow::Visible, Overflow::Visible));
+        self.overflow = Some((mode, y));
+        self.overflow_axes |= OV_X;
+        self
+    }
+
+    #[inline]
+    pub fn overflow_y(mut self, mode: Overflow) -> Self {
+        let (x, _) = self.overflow.unwrap_or((Overflow::Visible, Overflow::Visible));
+        self.overflow = Some((x, mode));
+        self.overflow_axes |= OV_Y;
+        self
+    }
+
+    #[inline]
+    pub fn object_fit(mut self, mode: ImageFit) -> Self {
+        self.object_fit = Some(mode);
         self
     }
 

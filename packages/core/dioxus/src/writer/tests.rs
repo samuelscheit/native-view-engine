@@ -63,7 +63,7 @@ fn remove_node_cleans_up_subtree_and_id_maps() {
 }
 
 #[test]
-fn table_attr_rerender_updates_in_place_and_clear_style_preserves_standalone_attrs() {
+fn table_attr_rerender_updates_in_place_and_typed_style_preserves_standalone_attrs() {
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -108,7 +108,7 @@ fn table_attr_rerender_updates_in_place_and_clear_style_preserves_standalone_att
     });
     assert_eq!(clears.get(), 0);
 
-    // Re-rendering with the same TableWriter type must NOT invoke clear_from (no detach+reattach).
+    // Re-rendering with the same TableWriter type must NOT invoke clear_from.
     writer.with_transaction(|mtx| {
         mtx.set_attribute(
             "nve_table",
@@ -135,40 +135,9 @@ fn table_attr_rerender_updates_in_place_and_clear_style_preserves_standalone_att
     });
     assert_eq!(clears.get(), 1);
 
-    // Clearing inline `style` must preserve standalone `width` attribute while dropping inline bg.
-    writer.with_transaction(|mtx| {
-        mtx.set_attribute("width", None, &AttributeValue::Float(240.0), ElementId(1));
-        mtx.set_attribute(
-            "style",
-            None,
-            &AttributeValue::Text("background-color: #ff0000;".into()),
-            ElementId(1),
-        );
-    });
-    assert_eq!(
-        writer.store().try_row::<Layout>(node).unwrap().width(),
-        Length::points(240.0)
-    );
-    assert_ne!(
-        writer.store().try_row::<Visual>(node).unwrap().background(),
-        nve_store::Rgba::TRANSPARENT
-    );
-    writer.with_transaction(|mtx| {
-        mtx.set_attribute("style", None, &AttributeValue::None, ElementId(1));
-    });
-    assert_eq!(
-        writer.store().try_row::<Layout>(node).unwrap().width(),
-        Length::points(240.0),
-        "clearing `style` must preserve standalone `width`"
-    );
-    assert!(
-        !writer.store().has::<Visual>(node),
-        "clearing `style` must drop inline-only Visual table"
-    );
-
-    // TypedStyle with `has_layout == false` and `layout_ext.is_some()` detaches Layout when cleared.
+    // TypedStyle with `layout_mask == 0` and `layout_ext.is_some()` detaches Layout when cleared.
     let ext_only = TypedStyle::new().position_absolute();
-    assert!(!ext_only.has_layout && ext_only.layout_ext.is_some());
+    assert!(ext_only.layout_mask.is_empty() && ext_only.layout_ext.is_some());
     writer.with_transaction(|mtx| {
         mtx.create_placeholder(ElementId(2));
         mtx.set_attribute(
@@ -189,8 +158,8 @@ fn table_attr_rerender_updates_in_place_and_clear_style_preserves_standalone_att
         "clearing layout_ext-only TypedStyle must detach Layout"
     );
 
-    // Standalone `width: 240.0` must survive `nve_style` update/clear AND inline `style` updates,
-    // while non-style numeric attributes (`unknown_num`, `ariaValueNow`) are NOT recorded.
+    // Standalone `width: 240.0` must survive `nve_style` update/clear, while non-style numeric
+    // attributes (`unknown_num`, `ariaValueNow`) are NOT recorded.
     writer.with_transaction(|mtx| {
         mtx.create_placeholder(ElementId(3));
         mtx.set_attribute("width", None, &AttributeValue::Float(240.0), ElementId(3));
@@ -210,7 +179,7 @@ fn table_attr_rerender_updates_in_place_and_clear_style_preserves_standalone_att
         .get(node3)
         .expect("standalone width recorded")
         .iter()
-        .map(|(k, _)| k.as_str())
+        .map(|&(k, _)| k)
         .collect();
     assert_eq!(
         recorded_keys,
@@ -221,20 +190,6 @@ fn table_attr_rerender_updates_in_place_and_clear_style_preserves_standalone_att
         writer.store().try_row::<Layout>(node3).unwrap().width(),
         Length::points(240.0),
         "standalone width must be replayed on nve_style apply/update"
-    );
-    // Inline `style` update must also replay standalone width over TypedStyle's 100px width.
-    writer.with_transaction(|mtx| {
-        mtx.set_attribute(
-            "style",
-            None,
-            &AttributeValue::Text("background-color: #00ff00;".into()),
-            ElementId(3),
-        );
-    });
-    assert_eq!(
-        writer.store().try_row::<Layout>(node3).unwrap().width(),
-        Length::points(240.0),
-        "inline `style` update must preserve standalone width over TypedStyle"
     );
     writer.with_transaction(|mtx| {
         mtx.set_attribute(
@@ -260,20 +215,23 @@ fn table_attr_rerender_updates_in_place_and_clear_style_preserves_standalone_att
 }
 
 #[test]
-fn inline_style_update_clears_dropped_declarations_and_skips_redundant_dirtying() {
+fn typed_style_update_clears_dropped_fields_and_skips_identical_dirtying() {
     use std::rc::Rc;
 
     use crate::typed_style::{TypedStyle, NVE_TYPED_STYLE_ATTR};
+    use nve_abi::ColorRgba;
 
     let mut writer = NveMutationWriter::new(SurfaceId::ROOT);
+    let initial = TypedStyle::new()
+        .width_px(300.0)
+        .bg(ColorRgba::rgb(0, 255, 0));
 
-    // Node A (no TypedStyle, no standalone): updating style clears dropped Layout/Visual props.
     writer.with_transaction(|mtx| {
         mtx.create_placeholder(ElementId(1));
         mtx.set_attribute(
-            "style",
+            NVE_TYPED_STYLE_ATTR,
             None,
-            &AttributeValue::Text("width: 300px; background-color: #00ff00;".into()),
+            &AttributeValue::Any(Rc::new(initial.clone())),
             ElementId(1),
         );
         mtx.append_children(ElementId(0), 1);
@@ -285,132 +243,47 @@ fn inline_style_update_clears_dropped_declarations_and_skips_redundant_dirtying(
     );
     assert_eq!(
         writer.store().try_row::<Visual>(node_a).unwrap().background().0,
-        nve_abi::ColorRgba::rgb(0, 255, 0).to_u32()
+        ColorRgba::rgb(0, 255, 0).to_u32()
     );
 
-    // Re-applying the exact same inline style string is a no-op (zero dirtying).
+    // Re-applying the exact same TypedStyle is a no-op (zero dirtying).
     writer.with_transaction(|mtx| {
         mtx.set_attribute(
-            "style",
+            NVE_TYPED_STYLE_ATTR,
             None,
-            &AttributeValue::Text("width: 300px; background-color: #00ff00;".into()),
+            &AttributeValue::Any(Rc::new(initial)),
             ElementId(1),
         );
     });
     assert!(
         writer.last_changes().table(Layout::slot()).is_none(),
-        "identical inline style must not dirty Layout"
+        "identical TypedStyle must not dirty Layout"
     );
     assert!(
         writer.last_changes().table(Visual::slot()).is_none(),
-        "identical inline style must not dirty Visual"
+        "identical TypedStyle must not dirty Visual"
     );
 
     // Updating to opacity-only must clear dropped width and background-color.
     writer.with_transaction(|mtx| {
         mtx.set_attribute(
-            "style",
+            NVE_TYPED_STYLE_ATTR,
             None,
-            &AttributeValue::Text("opacity: 0.5;".into()),
+            &AttributeValue::Any(Rc::new(TypedStyle::new().opacity(0.5))),
             ElementId(1),
         );
     });
     assert!(
         !writer.store().has::<Layout>(node_a),
-        "dropped width must detach Layout when no TypedStyle or standalone layout exists"
+        "dropped width must detach Layout when no standalone layout exists"
     );
     let vis_a = writer.store().try_row::<Visual>(node_a).unwrap();
-    assert_eq!(
-        vis_a.background(),
-        nve_store::Rgba::TRANSPARENT,
-        "dropped background-color must clear to default"
-    );
+    assert_eq!(vis_a.background(), nve_store::Rgba::TRANSPARENT);
     assert!((vis_a.opacity() - 0.5).abs() < 1e-6);
-
-    // Node B (with TypedStyle + standalone width):
-    // 1) Initial pure-Visual inline style must preserve standalone width WITHOUT dirtying Layout.
-    writer.with_transaction(|mtx| {
-        mtx.create_placeholder(ElementId(2));
-        mtx.set_attribute(
-            NVE_TYPED_STYLE_ATTR,
-            None,
-            &AttributeValue::Any(Rc::new(
-                TypedStyle::new()
-                    .width_px(100.0)
-                    .height_px(50.0)
-                    .bg(nve_abi::ColorRgba::rgb(10, 20, 30)),
-            )),
-            ElementId(2),
-        );
-        mtx.set_attribute("width", None, &AttributeValue::Float(240.0), ElementId(2));
-        mtx.append_children(ElementId(0), 1);
-    });
-    let node_b = writer.resolve_el(ElementId(2)).unwrap();
-    writer.with_transaction(|mtx| {
-        mtx.set_attribute(
-            "style",
-            None,
-            &AttributeValue::Text("opacity: 0.5;".into()),
-            ElementId(2),
-        );
-    });
-    assert!(
-        writer.last_changes().table(Layout::slot()).is_none(),
-        "initial pure-Visual inline style on node with standalone width must not dirty Layout"
-    );
-    assert_eq!(
-        writer.store().try_row::<Layout>(node_b).unwrap().width(),
-        Length::points(240.0)
-    );
-    assert!((writer.store().try_row::<Visual>(node_b).unwrap().opacity() - 0.5).abs() < 1e-6);
-
-    // 2) Updating inline style to override width & bg, then dropping them restores TypedStyle + standalone.
-    writer.with_transaction(|mtx| {
-        mtx.set_attribute(
-            "style",
-            None,
-            &AttributeValue::Text("width: 300px; background-color: #00ff00;".into()),
-            ElementId(2),
-        );
-    });
-    assert_eq!(
-        writer.store().try_row::<Layout>(node_b).unwrap().width(),
-        Length::points(300.0)
-    );
-    assert_eq!(
-        writer.store().try_row::<Visual>(node_b).unwrap().background().0,
-        nve_abi::ColorRgba::rgb(0, 255, 0).to_u32()
-    );
-    writer.with_transaction(|mtx| {
-        mtx.set_attribute(
-            "style",
-            None,
-            &AttributeValue::Text("opacity: 0.25;".into()),
-            ElementId(2),
-        );
-    });
-    let lay_b = writer.store().try_row::<Layout>(node_b).unwrap();
-    assert_eq!(
-        lay_b.width(),
-        Length::points(240.0),
-        "dropped inline width must restore standalone width over TypedStyle"
-    );
-    assert_eq!(
-        lay_b.height(),
-        Length::points(50.0),
-        "TypedStyle height must be preserved across inline style update"
-    );
-    let vis_b = writer.store().try_row::<Visual>(node_b).unwrap();
-    assert_eq!(
-        vis_b.background().0,
-        nve_abi::ColorRgba::rgb(10, 20, 30).to_u32(),
-        "dropped inline bg must restore TypedStyle bg"
-    );
-    assert!((vis_b.opacity() - 0.25).abs() < 1e-6);
 }
 
 #[test]
-fn recycled_node_and_element_slots_isolate_all_four_side_tables() {
+fn recycled_node_and_element_slots_isolate_all_three_side_tables() {
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -426,17 +299,10 @@ fn recycled_node_and_element_slots_isolate_all_four_side_tables() {
         mtx.set_attribute(
             NVE_TYPED_STYLE_ATTR,
             None,
-            &AttributeValue::Any(Rc::new(TypedStyle::new().width_px(120.0))),
+            &AttributeValue::Any(Rc::new(TypedStyle::new().width_px(120.0).opacity(0.4))),
             ElementId(1),
         );
         mtx.set_attribute("padding", None, &AttributeValue::Float(10.0), ElementId(1));
-        mtx.set_attribute("border", None, &AttributeValue::Text("1px solid".into()), ElementId(1));
-        mtx.set_attribute(
-            "style",
-            None,
-            &AttributeValue::Text("opacity: 0.4;".into()),
-            ElementId(1),
-        );
         mtx.set_attribute(
             NVE_TABLE_ATTR,
             None,
@@ -456,9 +322,7 @@ fn recycled_node_and_element_slots_isolate_all_four_side_tables() {
     let gen0 = writer.resolve_el(ElementId(1)).unwrap();
     assert!(writer.attached_tables.contains_key(gen0));
     assert!(writer.typed_styles.contains_key(gen0));
-    assert!(writer.inline_styles.contains_key(gen0));
     assert!(writer.standalone_style_attrs.contains_key(gen0));
-    assert!(!writer.current_color_borders.is_empty());
 
     // Remove the node and re-allocate in the next transaction: NodeStore recycles the exact same
     // slot index with a bumped generation.
@@ -467,9 +331,7 @@ fn recycled_node_and_element_slots_isolate_all_four_side_tables() {
     });
     assert!(writer.attached_tables.is_empty());
     assert!(writer.typed_styles.is_empty());
-    assert!(writer.inline_styles.is_empty());
     assert!(writer.standalone_style_attrs.is_empty());
-    assert!(writer.current_color_borders.is_empty());
 
     writer.with_transaction(|mtx| {
         mtx.create_placeholder(ElementId(1));
@@ -480,13 +342,12 @@ fn recycled_node_and_element_slots_isolate_all_four_side_tables() {
     assert_ne!(gen1.generation(), gen0.generation(), "generation bumped");
 
     // Even if stale gen0 entries existed in every side table, gen1 must never observe or clear them.
-    writer.typed_styles.insert(gen0, TypedStyle::new().width_px(999.0));
     writer
-        .inline_styles
-        .insert(gen0, ("opacity: 0.1;".into(), u64::MAX));
+        .typed_styles
+        .insert(gen0, super::StoredTypedStyle::from_style(TypedStyle::new().width_px(999.0)));
     writer.standalone_style_attrs.insert(
         gen0,
-        vec![("padding".into(), super::StandaloneStyleVal::Float(77.0))],
+        vec![("padding", super::StandaloneStyleVal::Float(77.0))],
     );
     writer.attached_tables.insert(
         gen0,
@@ -501,11 +362,9 @@ fn recycled_node_and_element_slots_isolate_all_four_side_tables() {
             ),
         )],
     );
-    writer.current_color_borders.insert(gen0);
 
     writer.with_transaction(|mtx| {
         mtx.set_attribute(NVE_TABLE_ATTR, None, &AttributeValue::None, ElementId(1));
-        mtx.set_attribute("style", None, &AttributeValue::None, ElementId(1));
         mtx.set_attribute(NVE_TYPED_STYLE_ATTR, None, &AttributeValue::None, ElementId(1));
         mtx.set_attribute("padding", None, &AttributeValue::None, ElementId(1));
     });
@@ -514,17 +373,15 @@ fn recycled_node_and_element_slots_isolate_all_four_side_tables() {
     assert_eq!(writer.store().try_row::<Layout>(gen1).unwrap().padding_left(), Length::points(0.0));
     assert!(!writer.store().has::<Visual>(gen1));
 
-    // Writing fresh side-table entries onto gen1 cleanly overwrites stale gen0 slots in place
-    // without invoking stale gen0 clear callbacks.
+    // Writing fresh side-table entries onto gen1 cleanly overwrites stale gen0 slots in place.
     writer.with_transaction(|mtx| {
         mtx.set_attribute(
             NVE_TYPED_STYLE_ATTR,
             None,
-            &AttributeValue::Any(Rc::new(TypedStyle::new().width_px(42.0))),
+            &AttributeValue::Any(Rc::new(TypedStyle::new().width_px(42.0).opacity(0.8))),
             ElementId(1),
         );
         mtx.set_attribute("padding", None, &AttributeValue::Float(6.0), ElementId(1));
-        mtx.set_attribute("style", None, &AttributeValue::Text("opacity: 0.8;".into()), ElementId(1));
         mtx.set_attribute(
             NVE_TABLE_ATTR,
             None,
@@ -537,7 +394,6 @@ fn recycled_node_and_element_slots_isolate_all_four_side_tables() {
     assert_eq!(clears.get(), 0, "overwriting stale gen0 slot must not invoke gen0 clear_from");
     assert_eq!(writer.attached_tables.len(), 1);
     assert_eq!(writer.typed_styles.len(), 1);
-    assert_eq!(writer.inline_styles.len(), 1);
     assert_eq!(writer.standalone_style_attrs.len(), 1);
     assert_eq!(writer.store().try_row::<Layout>(gen1).unwrap().width(), Length::points(42.0));
     assert_eq!(writer.store().try_row::<Layout>(gen1).unwrap().padding_left(), Length::points(6.0));
@@ -561,19 +417,17 @@ fn writer_reset_clears_side_tables_and_same_frame_multi_mutations_converge() {
         mtx.set_attribute(
             NVE_TYPED_STYLE_ATTR,
             None,
-            &AttributeValue::Any(Rc::new(TypedStyle::new().width_px(50.0).height_px(60.0))),
+            &AttributeValue::Any(Rc::new(TypedStyle::new().width_px(50.0).height_px(60.0).opacity(0.2))),
             ElementId(1),
         );
         mtx.set_attribute(
             NVE_TYPED_STYLE_ATTR,
             None,
-            &AttributeValue::Any(Rc::new(TypedStyle::new().width_px(70.0).height_px(80.0))),
+            &AttributeValue::Any(Rc::new(TypedStyle::new().width_px(70.0).height_px(80.0).opacity(0.9))),
             ElementId(1),
         );
         mtx.set_attribute("width", None, &AttributeValue::Float(100.0), ElementId(1));
         mtx.set_attribute("width", None, &AttributeValue::Float(150.0), ElementId(1));
-        mtx.set_attribute("style", None, &AttributeValue::Text("opacity: 0.2;".into()), ElementId(1));
-        mtx.set_attribute("style", None, &AttributeValue::Text("opacity: 0.9;".into()), ElementId(1));
         mtx.set_attribute(
             NVE_TABLE_ATTR,
             None,
@@ -592,7 +446,6 @@ fn writer_reset_clears_side_tables_and_same_frame_multi_mutations_converge() {
         );
         mtx.set_attribute("width", None, &AttributeValue::None, ElementId(1));
         mtx.set_attribute("padding", None, &AttributeValue::Float(12.0), ElementId(1));
-        mtx.set_attribute("border", None, &AttributeValue::Text("1px solid".into()), ElementId(1));
         mtx.create_event_listener("tableevent", ElementId(1));
         mtx.append_children(ElementId(0), 1);
     });
@@ -604,28 +457,21 @@ fn writer_reset_clears_side_tables_and_same_frame_multi_mutations_converge() {
     assert!((vis.opacity() - 0.9).abs() < 1e-6);
     assert_eq!(vis.z_index(), 9);
 
-    // Prove every side table and aux flag table is non-empty before reset() so assertions below are non-vacuous.
     assert!(!writer.attached_tables.is_empty());
     assert!(!writer.typed_styles.is_empty());
-    assert!(!writer.inline_styles.is_empty());
     assert!(!writer.standalone_style_attrs.is_empty());
-    assert!(!writer.current_color_borders.is_empty());
     assert!(!writer.aux_event_flags.is_empty());
 
-    // Full writer reset drops and deallocates all side tables and element bindings back to root-only state.
     writer.reset();
     assert_eq!(writer.resolve_el(ElementId(0)), Some(NodeId::ROOT));
     assert_eq!(writer.element_id_of(NodeId::ROOT), Some(ElementId(0)));
     assert_eq!(writer.resolve_el(ElementId(1)), None);
     assert!(writer.attached_tables.is_empty() && writer.attached_tables.is_deallocated());
     assert!(writer.typed_styles.is_empty() && writer.typed_styles.is_deallocated());
-    assert!(writer.inline_styles.is_empty() && writer.inline_styles.is_deallocated());
     assert!(writer.standalone_style_attrs.is_empty() && writer.standalone_style_attrs.is_deallocated());
-    assert!(writer.current_color_borders.is_empty() && writer.current_color_borders.is_deallocated());
     assert!(writer.aux_event_flags.is_empty() && writer.aux_event_flags.capacity() == 0);
     assert!(writer.store().children(NodeId::ROOT).is_empty());
 
-    // Subsequent transactions work cleanly on the reset writer.
     writer.with_transaction(|mtx| {
         mtx.create_placeholder(ElementId(1));
         mtx.set_attribute("width", None, &AttributeValue::Float(33.0), ElementId(1));

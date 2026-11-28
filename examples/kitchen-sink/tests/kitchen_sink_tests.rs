@@ -156,13 +156,17 @@ fn single_command_buffer_drives_headless_skia_and_web_with_events() {
     assert!(headless.render_ascii_tree(app.store()).contains("Count: 2"));
     assert!(web.render_html(app.store()).contains("Count: 2"));
 
-    // Tier-1 hot patch changes live style without recompile.
+    // Tier-1 hot patch changes live style via binary RowPatch without recompile.
+    let mut rp = nve_store::RowPatch::new();
+    rp.set(nve_tables::tables::Visual::OPACITY, 0.9);
+    let mut words = Vec::new();
+    assert!(nve_store::FlatResource::write_words(&rp, &mut words));
     let patched = app.apply_hot_patch(&HotPatchMsg::TemplatePatch {
         generation: 1,
-        template_id: "kitchen-sink".into(),
+        template_key: 0,
+        node_path: vec![0],
         target_test_id: None,
-        node_path: vec![],
-        attr_updates: vec![("opacity".into(), "0.9".into())],
+        row_patch_words: words,
         text_updates: vec![],
         text_replacements: vec![],
     });

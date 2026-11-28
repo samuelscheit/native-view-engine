@@ -388,7 +388,7 @@ mod tests {
     fn sample_app() -> Element {
         rsx! {
             view {
-                style: "width: 240px; height: 96px; flex-direction: column;",
+                nve_style: TypedStyle::new().width_px(240.0).height_px(96.0).flex_col(),
                 text { "Zero-copy DioxusRuntimeApp" }
             }
         }
@@ -439,7 +439,7 @@ mod tests {
         });
         rsx! {
             view {
-                style: "width: 240px; height: 96px;",
+                nve_style: TypedStyle::new().width_px(240.0).height_px(96.0),
                 text { "{label}" }
             }
         }

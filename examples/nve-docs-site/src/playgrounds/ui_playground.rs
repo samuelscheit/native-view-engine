@@ -2,7 +2,7 @@
 //! Badge, Tabs, and Toast notifications inside `nve-docs`.
 
 use nve_dioxus::prelude::*;
-use nve_ui::{ColorHex, 
+use nve_ui::{
     Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Checkbox, Input, Switch, TabList,
     TabPanel, TabTrigger, TabsRoot, ToastOptions, ToastProvider, ToastVariant, use_theme,
     use_toast,
@@ -69,13 +69,21 @@ fn UiPlaygroundInner() -> Element {
     rsx! {
         view {
             test_id: "pg-ui-root",
-            style: "width: 100%; flex-direction: column; gap: 14px;",
+            nve_style: TypedStyle::col().width_pct(100.0).gap(14.0),
 
             // Header telemetry row
             view {
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;",
+                nve_style: TypedStyle::row()
+                    .width_pct(100.0)
+                    .justify(FlexJustify::SpaceBetween)
+                    .align(FlexAlign::Center)
+                    .flex_wrap(FlexWrap::Wrap)
+                    .gap(8.0),
                 view {
-                    style: "flex-direction: row; align-items: center; gap: 8px; flex-wrap: wrap;",
+                    nve_style: TypedStyle::row()
+                        .align(FlexAlign::Center)
+                        .gap(8.0)
+                        .flex_wrap(FlexWrap::Wrap),
                     Badge {
                         test_id: Some("pg-ui-status-badge".to_string()),
                         label: status_badge.0.to_string(),
@@ -89,14 +97,18 @@ fn UiPlaygroundInner() -> Element {
                 }
                 text {
                     test_id: "pg-ui-surface-echo",
-                    style: "font-size: 12px; color: {theme.text.secondary.hex()};",
+                    nve_style: TypedStyle::new().font_size(12.0).color(theme.text.secondary),
                     "Target: {surface_name}"
                 }
             }
 
             // Button variants row
             view {
-                style: "width: 100%; flex-direction: row; flex-wrap: wrap; gap: 8px; align-items: center;",
+                nve_style: TypedStyle::row()
+                    .width_pct(100.0)
+                    .flex_wrap(FlexWrap::Wrap)
+                    .gap(8.0)
+                    .align(FlexAlign::Center),
                 Button {
                     test_id: Some("pg-ui-btn-primary".to_string()),
                     variant: ButtonVariant::Primary,
@@ -179,9 +191,12 @@ fn UiPlaygroundInner() -> Element {
                     value: "controls".to_string(),
                     test_id: Some("pg-ui-panel-controls".to_string()),
                     view {
-                        style: "width: 100%; flex-direction: column; gap: 10px;",
+                        nve_style: TypedStyle::col().width_pct(100.0).gap(10.0),
                         view {
-                            style: "flex-direction: row; flex-wrap: wrap; gap: 16px; align-items: center;",
+                            nve_style: TypedStyle::row()
+                                .flex_wrap(FlexWrap::Wrap)
+                                .gap(16.0)
+                                .align(FlexAlign::Center),
                             Switch {
                                 test_id: Some("pg-ui-switch".to_string()),
                                 checked: zero_copy(),
@@ -210,7 +225,10 @@ fn UiPlaygroundInner() -> Element {
                     value: "badges".to_string(),
                     test_id: Some("pg-ui-panel-badges".to_string()),
                     view {
-                        style: "flex-direction: row; flex-wrap: wrap; gap: 8px; align-items: center;",
+                        nve_style: TypedStyle::row()
+                            .flex_wrap(FlexWrap::Wrap)
+                            .gap(8.0)
+                            .align(FlexAlign::Center),
                         Badge { label: "Neutral".to_string(), variant: BadgeVariant::Neutral }
                         Badge { label: "Accent".to_string(), variant: BadgeVariant::Accent }
                         Badge { label: "Success".to_string(), variant: BadgeVariant::Success }
@@ -223,7 +241,10 @@ fn UiPlaygroundInner() -> Element {
                     value: "toasts".to_string(),
                     test_id: Some("pg-ui-panel-toasts".to_string()),
                     view {
-                        style: "flex-direction: row; flex-wrap: wrap; gap: 8px; align-items: center;",
+                        nve_style: TypedStyle::row()
+                            .flex_wrap(FlexWrap::Wrap)
+                            .gap(8.0)
+                            .align(FlexAlign::Center),
                         Button {
                             test_id: Some("pg-ui-toast-success".to_string()),
                             variant: ButtonVariant::Primary,

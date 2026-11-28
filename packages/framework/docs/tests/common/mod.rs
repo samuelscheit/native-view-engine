@@ -30,7 +30,7 @@ fn LiveCounterDemo() -> Element {
     rsx! {
         view {
             test_id: "demo-counter-root",
-            style: "flex-direction: row; align-items: center; gap: 12px;",
+            nve_style: TypedStyle::new().flex_row().align_items(FlexAlign::Center).gap(12.0),
             text {
                 test_id: "demo-counter-value",
                 "Count: {count}"

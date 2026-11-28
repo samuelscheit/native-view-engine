@@ -11,8 +11,8 @@ use crate::components::overlay_close::{use_close_latch, CloseLatch};
 use crate::components::overlays::resolve_anchored_position;
 use crate::focus::{FocusableEntry, Orientation, RovingFocus};
 use crate::positioning::{Placement, PositionOptions, Rect, Size, Viewport};
-use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
 use crate::components::roles::error_text;
+use crate::surface::{SurfaceStyleExt, TypedSurfaceStyle, TypedTextStyle};
 use crate::theme::{use_theme, Layer};
 
 /// Item entry rendered inside [`DropdownMenu`].
@@ -89,7 +89,7 @@ pub fn DropdownMenu(
     #[props(default)] viewport: Option<Viewport>,
     #[props(default)] position_options: Option<PositionOptions>,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
 ) -> Element {
     let theme = use_theme();
     let mut trigger_focused = use_signal(|| false);
@@ -131,12 +131,12 @@ pub fn DropdownMenu(
         Size::new(200.0, est_height),
     );
 
-    let wrap_style = TypedStyleBuilder::new()
+    let wrap_style = TypedStyle::new()
         .flex_col()
         .gap(theme.spacing.xs)
-        .finish();
+        .merge_opt(nve_style.as_ref());
 
-    let trigger_style = TypedStyleBuilder::new()
+    let trigger_style = TypedStyle::new()
         .padding_xy(theme.spacing.md, theme.spacing.sm)
         .justify_content(FlexJustify::Center)
         .align_items(FlexAlign::Center)
@@ -151,20 +151,17 @@ pub fn DropdownMenu(
             border_radius: theme.radius.md,
             opacity: 1.0,
             box_shadow: None,
-        })
-        .finish();
+        });
 
-    let trigger_text_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.text.primary,
-            font_size: theme.typography.body.size,
-            font_weight: "500",
-            text_align: "center",
-            opacity: 1.0,
-        })
-        .finish();
+    let trigger_text_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.text.primary,
+        font_size: theme.typography.body.size,
+        font_weight: 500,
+        text_align: TextAlign::Center,
+        opacity: 1.0,
+    });
 
-    let mut menu_builder = TypedStyleBuilder::new()
+    let mut menu_style = TypedStyle::new()
         .flex_col()
         .min_width_px(180.0)
         .padding(theme.spacing.xs)
@@ -180,13 +177,12 @@ pub fn DropdownMenu(
         });
     if let Some(pos) = computed {
         if let Some(mw) = pos.max_width {
-            menu_builder = menu_builder.max_width_px(mw);
+            menu_style = menu_style.max_width_px(mw);
         }
         if let Some(mh) = pos.max_height {
-            menu_builder = menu_builder.max_height_px(mh);
+            menu_style = menu_style.max_height_px(mh);
         }
     }
-    let menu_style = menu_builder.finish();
 
     let pos_placement = computed.map(|p| p.placement.to_string());
     let pos_x = computed.map(|p| format!("{:.2}", p.x));
@@ -221,7 +217,7 @@ pub fn DropdownMenu(
             theme.text.primary
         };
 
-        let item_style = TypedStyleBuilder::new()
+        let item_style = TypedStyle::new()
             .padding_xy(theme.spacing.md, theme.spacing.sm)
             .justify_content(FlexJustify::FlexStart)
             .align_items(FlexAlign::Center)
@@ -233,18 +229,15 @@ pub fn DropdownMenu(
                 border_radius: theme.radius.sm,
                 opacity: if item.disabled { 0.45 } else { 1.0 },
                 box_shadow: None,
-            })
-            .finish();
+            });
 
-        let item_text_style = TypedStyleBuilder::new()
-            .text_style(TypedTextStyle {
-                color: fg,
-                font_size: theme.typography.ui.size,
-                font_weight: if is_active { "600" } else { "400" },
-                text_align: "left",
-                opacity: 1.0,
-            })
-            .finish();
+        let item_text_style = TypedStyle::new().text_style(TypedTextStyle {
+            color: fg,
+            font_size: theme.typography.ui.size,
+            font_weight: if is_active { 600 } else { 400 },
+            text_align: TextAlign::Left,
+            opacity: 1.0,
+        });
 
         let item_id = item.id.clone();
         let item_label = item.label.clone();
@@ -316,7 +309,6 @@ pub fn DropdownMenu(
         view {
             test_id: "{base_id}",
             nve_style: wrap_style,
-            style: style,
             pressable {
                 test_id: "{trigger_id}",
                 nve_table: menu_trigger_invoker,

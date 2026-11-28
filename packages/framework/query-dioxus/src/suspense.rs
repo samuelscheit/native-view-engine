@@ -8,7 +8,8 @@ use dioxus_core::{
     provide_context, try_consume_context, use_hook, Element, EventHandler, SuspenseBoundary,
     SuspenseContext,
 };
-use dioxus_core_macro::{component, rsx, Props};
+use dioxus_core_macro::{component, Props};
+use nve_dioxus::rsx;
 use nve_dioxus::prelude::dioxus_elements;
 pub use nve_dioxus::NVE_SUSPENSE_ATTR;
 use nve_dioxus::{ErrorBoundary, ErrorFallback, NveStreamSlot, UiErrorReport};

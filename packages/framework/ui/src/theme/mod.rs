@@ -14,7 +14,8 @@ mod tokens;
 use core::fmt;
 
 use dioxus_core::{provide_context, try_consume_context, use_hook, Element};
-use dioxus_core_macro::{component, rsx, Props};
+use dioxus_core_macro::{component, Props};
+use nve_dioxus::rsx;
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
 use nve_abi::ColorRgba;
 

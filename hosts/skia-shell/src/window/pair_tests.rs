@@ -221,11 +221,11 @@ fn hot_reload_client_decodes_nvp1_and_ignores_text_frames() {
         let mut ws = tungstenite::accept(stream).expect("ws handshake");
         let binary_msg = HotPatchMsg::TemplatePatch {
             generation: 7,
-            template_id: "counter-header".into(),
-            text_updates: vec![(0, "Live NVP1".into())],
-            attr_updates: vec![],
-            target_test_id: Some("counter-title".into()),
+            template_key: nve_engine::hot_patch_template_key("counter.rs", 0),
             node_path: vec![0, 1],
+            target_test_id: Some("counter-title".into()),
+            row_patch_words: vec![],
+            text_updates: vec![(0, "Live NVP1".into())],
             text_replacements: vec![("Count: 0".into(), "Live NVP1".into())],
         };
         let status_msg = HotPatchMsg::DevStatus {
@@ -264,11 +264,11 @@ fn hot_reload_client_decodes_nvp1_and_ignores_text_frames() {
         first,
         HotPatchMsg::TemplatePatch {
             generation: 7,
-            template_id: "counter-header".into(),
-            text_updates: vec![(0, "Live NVP1".into())],
-            attr_updates: vec![],
-            target_test_id: Some("counter-title".into()),
+            template_key: nve_engine::hot_patch_template_key("counter.rs", 0),
             node_path: vec![0, 1],
+            target_test_id: Some("counter-title".into()),
+            row_patch_words: vec![],
+            text_updates: vec![(0, "Live NVP1".into())],
             text_replacements: vec![("Count: 0".into(), "Live NVP1".into())],
         }
     );

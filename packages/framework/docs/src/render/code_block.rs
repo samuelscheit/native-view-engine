@@ -2,7 +2,7 @@
 
 use dioxus_core_macro::Props;
 use crate::theme::syntax_color;
-use nve_ui::{accent_indicator, ColorHex, Hex, Separator};
+use nve_ui::{accent_indicator, Separator};
 use nve_dioxus::prelude::*;
 use nve_mdx::{CodeBlock, HighlightLine, highlight_code};
 
@@ -47,14 +47,14 @@ pub fn HighlightedCodeView(
 
     let copy_label = if is_copied { "Copied" } else { "Copy" };
     let copy_fg = if is_copied {
-        theme.status.success.text.hex()
+        theme.status.success.text
     } else {
-        theme.text.secondary.hex()
+        theme.text.secondary
     };
     let copy_border = if is_copied {
-        theme.status.success.text.hex()
+        theme.status.success.text
     } else {
-        theme.border.default.hex()
+        theme.border.default
     };
     let copy_tid = format!("docs-code-copy-{block_key}");
     let frame_tid = format!("docs-code-block-{block_key}");
@@ -72,26 +72,43 @@ pub fn HighlightedCodeView(
             test_id: "{frame_tid}",
             accessibility_role: "codeblock",
             accessibility_label: title.clone().or_else(|| lang_badge.clone()).unwrap_or_else(|| "Code block".to_string()),
-            style: "width: 100%; min-width: 0px; overflow: hidden; flex-direction: column; border-radius: 10px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: {theme.surface.sunken.hex()};",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .min_width_px(0.0)
+                .overflow_mode(Overflow::Hidden)
+                .flex_col()
+                .radius(10.0)
+                .border(1.0, theme.border.default)
+                .bg(theme.surface.sunken),
 
             // Top bar: optional filename title, language pill, Copy button; one hairline below
             // (the frame already draws the outer border).
             view {
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 12px; padding-vertical: 8px; background-color: {theme.surface.base.hex()};",
+                nve_style: TypedStyle::new()
+                    .width_pct(100.0)
+                    .flex_row()
+                    .justify_content(FlexJustify::SpaceBetween)
+                    .align_items(FlexAlign::Center)
+                    .padding_xy(12.0, 8.0)
+                    .bg(theme.surface.base),
 
                 view {
-                    style: "flex-direction: row; align-items: center; gap: 8px;",
+                    nve_style: TypedStyle::new().flex_row().align_items(FlexAlign::Center).gap(8.0),
                     if let Some(ref fname) = title {
                         text {
-                            style: "font-size: 12px; font-weight: 600; color: {theme.text.primary.hex()};",
+                            nve_style: TypedStyle::new().font_size(12.0).font_weight(600).color(theme.text.primary),
                             "{fname}"
                         }
                     }
                     if let Some(ref lang_label) = lang_badge {
                         view {
-                            style: "padding-horizontal: 6px; padding-vertical: 2px; border-radius: 4px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                            nve_style: TypedStyle::new()
+                                .padding_xy(6.0, 2.0)
+                                .radius(4.0)
+                                .bg(theme.surface.subtle)
+                                .border(1.0, theme.border.default),
                             text {
-                                style: "font-size: 11px; font-weight: 600; color: {theme.status.info.text.hex()};",
+                                nve_style: TypedStyle::new().font_size(11.0).font_weight(600).color(theme.status.info.text),
                                 "{lang_label}"
                             }
                         }
@@ -110,12 +127,16 @@ pub fn HighlightedCodeView(
                             )]),
                         ));
                     }),
-                    style: "padding-horizontal: 9px; padding-vertical: 4px; border-radius: 6px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {copy_border};",
+                    nve_style: TypedStyle::new()
+                        .padding_xy(9.0, 4.0)
+                        .radius(6.0)
+                        .bg(theme.surface.subtle)
+                        .border(1.0, copy_border),
                     onpress: move |_| {
                         let _ = state.write().copy_code(&key_for_copy, &code_for_copy);
                     },
                     text {
-                        style: "font-size: 11px; font-weight: 600; color: {copy_fg};",
+                        nve_style: TypedStyle::new().font_size(11.0).font_weight(600).color(copy_fg),
                         "{copy_label}"
                     }
                 }
@@ -126,12 +147,16 @@ pub fn HighlightedCodeView(
             // Highlighted code lines
             scrollview {
                 accessibility_role: "code",
-                style: "width: 100%; min-width: 0px; flex-direction: column; padding-vertical: 10px;",
+                nve_style: TypedStyle::new().width_pct(100.0).min_width_px(0.0).flex_col().padding_y(10.0),
                 if lines.is_empty() {
                     view {
-                        style: "padding-horizontal: 14px;",
+                        nve_style: TypedStyle::new().padding_x(14.0),
                         text {
-                            style: "font-size: 13px; font-family: monospace; white-space: pre; color: {theme.syntax.plain.hex()};",
+                            nve_style: TypedStyle::new()
+                                .font_size(13.0)
+                                .font_family("monospace")
+                                .white_space(WhiteSpace::Pre)
+                                .color(theme.syntax.plain),
                             "{code}"
                         }
                     }
@@ -139,14 +164,14 @@ pub fn HighlightedCodeView(
                     for line in lines {
                         {
                             let line_bg = if line.highlighted {
-                                theme.status.accent.subtle.hex()
+                                theme.status.accent.subtle
                             } else {
-                                Hex::TRANSPARENT
+                                ColorRgba::TRANSPARENT
                             };
                             let marker_color = if line.highlighted {
-                                accent_indicator(&theme).hex()
+                                accent_indicator(&theme)
                             } else {
-                                Hex::TRANSPARENT
+                                ColorRgba::TRANSPARENT
                             };
                             let line_no_str = line.line_no.to_string();
                             let is_highlighted = line.highlighted;
@@ -177,31 +202,58 @@ pub fn HighlightedCodeView(
                                             tx.detach::<nve_web_html::HtmlDataAttrs>(node);
                                         },
                                     ),
-                                    style: "width: 100%; flex-direction: row; align-items: center; padding-horizontal: 10px; padding-vertical: 2px; gap: 8px; background-color: {line_bg};",
+                                    nve_style: TypedStyle::new()
+                                        .width_pct(100.0)
+                                        .flex_row()
+                                        .align_items(FlexAlign::Center)
+                                        .padding_xy(10.0, 2.0)
+                                        .gap(8.0)
+                                        .bg(line_bg),
 
                                     view {
-                                        style: "width: 2px; height: 16px; flex-shrink: 0; background-color: {marker_color}; border-radius: 1px;",
+                                        nve_style: TypedStyle::new()
+                                            .width_px(2.0)
+                                            .height_px(16.0)
+                                            .flex_shrink(0.0)
+                                            .bg(marker_color)
+                                            .radius(1.0),
                                     }
 
                                     if display_line_numbers {
                                         text {
-                                            style: "min-width: 26px; flex-shrink: 0; font-size: 12px; font-family: monospace; color: {theme.text.secondary.hex()}; text-align: right;",
+                                            nve_style: TypedStyle::new()
+                                                .min_width_px(26.0)
+                                                .flex_shrink(0.0)
+                                                .font_size(12.0)
+                                                .font_family("monospace")
+                                                .color(theme.text.secondary)
+                                                .text_align(TextAlign::Right),
                                             "{line_no_str}"
                                         }
                                     }
 
                                     view {
                                         test_id: "docs-code-tokens",
-                                        style: "display: block; flex-direction: row; flex-grow: 1; white-space: pre; line-height: 1.55;",
+                                        nve_style: TypedStyle::new()
+                                            .display(Display::Block)
+                                            .flex_row()
+                                            .flex_grow(1.0)
+                                            .white_space(WhiteSpace::Pre)
+                                            .line_height_ratio(1.55),
                                         if line.tokens.is_empty() {
                                             text {
-                                                style: "display: inline; font-size: 13px; font-family: monospace; white-space: pre; color: {theme.syntax.plain.hex()};",
+                                                nve_style: TypedStyle::new()
+                                                    .display(Display::Inline)
+                                                    .font_size(13.0)
+                                                    .font_family("monospace")
+                                                    .white_space(WhiteSpace::Pre)
+                                                    .color(theme.syntax.plain),
                                                 " "
                                             }
                                         } else {
                                             for (tok_idx, span) in line.tokens.into_iter().enumerate() {
                                                 {
-                                                    let tok_color = syntax_color(&theme.syntax, span.kind).hex();
+                                                    let tok_color = syntax_color(&theme.syntax, span.kind);
                                                     let tok_kind: &'static str = span.kind.as_str();
                                                     rsx! {
                                                         text {
@@ -222,7 +274,12 @@ pub fn HighlightedCodeView(
                                                                     tx.detach::<nve_web_html::HtmlDataAttrs>(node);
                                                                 },
                                                             ),
-                                                            style: "display: inline; font-size: 13px; font-family: monospace; white-space: pre; color: {tok_color};",
+                                                            nve_style: TypedStyle::new()
+                                                                .display(Display::Inline)
+                                                                .font_size(13.0)
+                                                                .font_family("monospace")
+                                                                .white_space(WhiteSpace::Pre)
+                                                                .color(tok_color),
                                                             "{span.text}"
                                                         }
                                                     }

@@ -14,9 +14,8 @@ pub const THEMED_SOURCE_DIRS: &[&str] = &[
     "examples/fullstack-issues/client/src",
 ];
 
-/// Files that legitimately hold color literals: the token generator itself and the CSS color
-/// parser (named-color table).
-const LITERAL_EXEMPT: &[&str] = &["packages/framework/ui/src/theme/", "packages/framework/ui/src/style_buf/typed.rs"];
+/// Files that legitimately hold color literals: the theme token generator itself.
+const LITERAL_EXEMPT: &[&str] = &["packages/framework/ui/src/theme/"];
 
 /// Files allowed to pair `solid` freely: the theme generator and the role table that defines
 /// the pairings every component paints through.

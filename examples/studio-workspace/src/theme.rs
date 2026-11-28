@@ -132,11 +132,6 @@ impl LayoutMetrics {
     }
 }
 
-/// Flex override applied to `nve-ui` `Button`, `TabTrigger`, and `Badge` containers so their
-/// centered label spans the control without wrapping (until Track 2 ships intrinsic text sizing).
-pub const STRETCH_COL: &str =
-    "flex-direction: column; justify-content: center; align-items: stretch;";
-
 /// Conservative SemiBold-safe `min-width` for a compact badge label (Phase-0 estimate until
 /// Track 2 adds intrinsic text measurement).
 pub fn badge_min_w(label: &str) -> u32 {

@@ -2,31 +2,100 @@
 //! and the X-Ray inspector overlay. X-Ray is isolated here so views never branch on it for
 //! colors; they ask for a tier's [`Outline`].
 
-use std::fmt;
-
 use dioxus_signals::ReadableExt;
-use nve_abi::ColorRgba;
-use nve_ui::{ColorHex, Hex, Theme, use_theme};
+use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
+use nve_dioxus::TypedStyle;
+use nve_ui::{Theme, use_theme};
 
-use crate::theme::{LayoutMetrics, STRETCH_COL, XRayPalette};
+use crate::theme::{LayoutMetrics, XRayPalette};
 use crate::ui::store::use_studio;
 
-/// Border paint of one structural tier, rendered as `border-width: ..; border-color: ..;`.
+/// Border paint of one structural tier.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Outline {
     pub width: u32,
     pub color: ColorRgba,
 }
 
-impl fmt::Display for Outline {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "border-width: {}px; border-color: {};",
-            self.width,
-            self.color.hex()
-        )
+/// Studio-specific fluent builders layered onto [`TypedStyle`].
+pub(crate) trait StudioStyleExt: Sized {
+    fn outline(self, outline: Outline) -> Self;
+    fn stretch_col(self) -> Self;
+}
+
+impl StudioStyleExt for TypedStyle {
+    #[inline]
+    fn outline(self, outline: Outline) -> Self {
+        self.border(outline.width as f32, outline.color)
     }
+
+    #[inline]
+    fn stretch_col(self) -> Self {
+        self.flex_col()
+            .justify_content(FlexJustify::Center)
+            .align_items(FlexAlign::Stretch)
+    }
+}
+
+/// Fixed width + fixed height (non-shrinking) dimensions for compact controls.
+#[inline]
+pub(crate) fn fixed_dims(w: f32, h: f32) -> TypedStyle {
+    TypedStyle::new()
+        .width_px(w)
+        .height_px(h)
+        .min_height_px(h)
+        .flex_shrink(0.0)
+}
+
+/// Minimum width + fixed height (non-shrinking) dimensions for compact pill buttons.
+#[inline]
+pub(crate) fn min_w_dims(min_w: f32, h: f32) -> TypedStyle {
+    TypedStyle::new()
+        .min_width_px(min_w)
+        .height_px(h)
+        .min_height_px(h)
+        .flex_shrink(0.0)
+}
+
+/// Minimum width + fixed height (non-shrinking) dimensions for compact badges.
+#[inline]
+pub(crate) fn badge_dims(min_w: f32, h: f32) -> TypedStyle {
+    TypedStyle::new()
+        .min_width_px(min_w)
+        .height_px(h)
+        .flex_shrink(0.0)
+}
+
+/// Flex-1 + fixed height dimensions for segmented/equal-width controls.
+#[inline]
+pub(crate) fn flex_dims(h: f32) -> TypedStyle {
+    TypedStyle::new().flex_1().height_px(h).min_height_px(h)
+}
+
+/// Text color + font-size shorthand.
+#[inline]
+pub(crate) fn text_style(color: ColorRgba, px: f32) -> TypedStyle {
+    TypedStyle::new().color(color).font_size(px)
+}
+
+/// Full-width non-shrinking horizontal space-between row.
+#[inline]
+pub(crate) fn row_between() -> TypedStyle {
+    TypedStyle::new()
+        .width_pct(100.0)
+        .flex_shrink(0.0)
+        .flex_row()
+        .justify_content(FlexJustify::SpaceBetween)
+        .align_items(FlexAlign::Center)
+}
+
+/// Horizontal centered row with uniform gap.
+#[inline]
+pub(crate) fn row_center(gap: f32) -> TypedStyle {
+    TypedStyle::new()
+        .flex_row()
+        .align_items(FlexAlign::Center)
+        .gap(gap)
 }
 
 /// Everything a Studio view needs to paint itself.
@@ -111,39 +180,46 @@ impl StudioStyle {
     }
 
     /// Fill of a selectable control (nav tab, toggle).
-    pub fn control_bg(&self, active: bool) -> Hex {
+    pub const fn control_bg(&self, active: bool) -> ColorRgba {
         if active {
-            self.t.status.accent.subtle.hex()
+            self.t.status.accent.subtle
         } else {
-            self.t.surface.subtle.hex()
+            self.t.surface.subtle
         }
     }
 
-    /// Inline style of a compact `nve-ui` control: `dims` (size declarations), horizontal
-    /// padding, corner radius, and an optional selectable paint (`Some(active)`). Fixed-size
-    /// controls (`dims` not starting with `flex:`) never shrink.
+    /// Typed style of a compact `nve-ui` control: base sizing, horizontal padding, corner radius,
+    /// and an optional selectable paint (`Some(active)`).
     pub fn compact_control(
         &self,
-        dims: &str,
+        base: TypedStyle,
         pad_x: u32,
         radius: u32,
         paint: Option<bool>,
-    ) -> String {
-        let paint = paint.map_or_else(String::new, |active| {
-            format!(
-                "background-color: {}; {}",
-                self.control_bg(active),
-                self.control(active)
-            )
-        });
-        let shrink = if dims.starts_with("flex:") {
-            ""
-        } else {
-            "flex-shrink: 0; "
-        };
-        format!(
-            "{dims} {shrink}{STRETCH_COL} padding-horizontal: {pad_x}px; padding-vertical: 0px; border-radius: {radius}px; {paint}"
-        )
+    ) -> TypedStyle {
+        let mut style = base
+            .stretch_col()
+            .padding_xy(pad_x as f32, 0.0)
+            .radius(radius as f32);
+        if let Some(active) = paint {
+            style = style
+                .bg(self.control_bg(active))
+                .outline(self.control(active));
+        }
+        style
+    }
+
+    /// Full-width non-shrinking card surface with uniform padding, gap, background, radius, and
+    /// card outline.
+    pub fn card_surface(&self, pad: u32, gap: u32, bg: ColorRgba, radius: u32) -> TypedStyle {
+        TypedStyle::new()
+            .width_pct(100.0)
+            .flex_shrink(0.0)
+            .padding(pad as f32)
+            .gap(gap as f32)
+            .bg(bg)
+            .radius(radius as f32)
+            .outline(self.card())
     }
 
     /// Zebra fill of list row `idx`.
@@ -161,11 +237,11 @@ impl StudioStyle {
     }
 
     /// Label of a selectable control.
-    pub fn control_fg(&self, active: bool) -> Hex {
+    pub const fn control_fg(&self, active: bool) -> ColorRgba {
         if active {
-            self.t.text.primary.hex()
+            self.t.text.primary
         } else {
-            self.t.text.secondary.hex()
+            self.t.text.secondary
         }
     }
 }

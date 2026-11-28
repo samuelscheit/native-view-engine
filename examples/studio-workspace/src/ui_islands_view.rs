@@ -3,12 +3,15 @@
 
 use nve_dioxus::prelude::*;
 use nve_ui::{
-    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, ColorHex, Separator,
+    Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, Separator,
 };
 
 use crate::theme::badge_min_w;
 use crate::ui::store::use_studio;
-use crate::ui::style::use_studio_style;
+use crate::ui::style::{
+    StudioStyleExt, badge_dims, fixed_dims, flex_dims, row_between, row_center, text_style,
+    use_studio_style,
+};
 use crate::ui_islands::GestureSimMode;
 
 #[component]
@@ -35,14 +38,8 @@ pub(crate) fn IslandsView() -> Element {
         islands.last_gesture_cancelled_count,
         islands.last_gesture_reason
     );
-    let bus_btn = s.compact_control(
-        "flex: 1; height: 26px; min-height: 26px;",
-        4,
-        s.m.button_radius,
-        Some(true),
-    );
+    let bus_btn = s.compact_control(flex_dims(26.0), 4, s.m.button_radius, Some(true));
     let row = s.row();
-    let card = s.card();
 
     rsx! {
         Card {
@@ -50,28 +47,29 @@ pub(crate) fn IslandsView() -> Element {
             test_id: Some("islands-summary".into()),
             padding: Some(8.0),
             gap: Some(3.0),
-            style: Some(format!(
-                "width: 100%; flex-shrink: 0; padding: 8px; gap: 3px; background-color: {}; border-radius: {}px; {card}",
-                t.surface.base.hex(),
-                s.m.button_radius
-            )),
-            text { style: "color: {t.text.link.hex()}; font-size: 10px;", "{summary_line}" }
-            text { style: "color: {t.text.secondary.hex()}; font-size: 10px;", "{islands.last_bus_summary}" }
+            nve_style: Some(s.card_surface(8, 3, t.surface.base, s.m.button_radius)),
+            text { nve_style: text_style(t.text.link, 10.0), "{summary_line}" }
+            text { nve_style: text_style(t.text.secondary, 10.0), "{islands.last_bus_summary}" }
             Separator {}
             text {
                 test_id: "islands-gesture-readout",
-                style: "color: {t.text.tertiary.hex()}; font-size: 10px;",
+                nve_style: text_style(t.text.tertiary, 10.0),
                 "{gesture_detail}"
             }
         }
 
         view {
-            style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 6px; {row}",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .flex_shrink(0.0)
+                .flex_row()
+                .gap(6.0)
+                .outline(row),
             Button {
                 variant: ButtonVariant::Secondary,
                 size: ButtonSize::Sm,
                 test_id: Some("island-bus-theme".into()),
-                style: Some(bus_btn.clone()),
+                nve_style: Some(bus_btn.clone()),
                 on_press: move |_| store.update(|st| st.broadcast_island_theme()),
                 "Bus: Theme"
             }
@@ -79,14 +77,19 @@ pub(crate) fn IslandsView() -> Element {
                 variant: ButtonVariant::Secondary,
                 size: ButtonSize::Sm,
                 test_id: Some("island-bus-sync".into()),
-                style: Some(bus_btn),
+                nve_style: Some(bus_btn),
                 on_press: move |_| store.update(|st| st.broadcast_island_sync()),
                 "Bus: Sync Bin"
             }
         }
 
         view {
-            style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 5px; {row}",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .flex_shrink(0.0)
+                .flex_row()
+                .gap(5.0)
+                .outline(row),
             for (mode, tid, lbl) in [
                 (GestureSimMode::Claim, "island-gesture-claim", "Claim"),
                 (GestureSimMode::PassThrough, "island-gesture-passthrough", "PassThrough"),
@@ -97,8 +100,8 @@ pub(crate) fn IslandsView() -> Element {
                     variant: ButtonVariant::Secondary,
                     size: ButtonSize::Sm,
                     test_id: Some(tid.into()),
-                    style: Some(s.compact_control(
-                        "flex: 1; height: 24px; min-height: 24px;",
+                    nve_style: Some(s.compact_control(
+                        flex_dims(24.0),
                         2,
                         s.m.pill_radius,
                         Some(islands.last_gesture_disposition == mode.label()),
@@ -111,7 +114,12 @@ pub(crate) fn IslandsView() -> Element {
 
         scrollview {
             test_id: "islands-list",
-            style: "width: 100%; flex: 1; flex-direction: column; gap: {s.m.list_gap}px; {row}",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .flex_1()
+                .flex_col()
+                .gap(s.m.list_gap as f32)
+                .outline(row),
             for island in islands.cards {
                 {
                     let is_resumed = island.lifecycle == "Resumed";
@@ -120,14 +128,11 @@ pub(crate) fn IslandsView() -> Element {
                         island.surface_id, island.mount_policy, island.lifecycle, island.received_messages
                     );
                     let toggle_style = if is_resumed {
-                        format!(
-                            "{} background-color: {}; border-width: 1px; border-color: {};",
-                            s.compact_control("width: 64px; height: 22px; min-height: 22px;", 2, s.m.pill_radius, None),
-                            t.status.success.subtle.hex(),
-                            t.status.success.border.hex()
-                        )
+                        s.compact_control(fixed_dims(64.0, 22.0), 2, s.m.pill_radius, None)
+                            .bg(t.status.success.subtle)
+                            .border(1.0, t.status.success.border)
                     } else {
-                        s.compact_control("width: 64px; height: 22px; min-height: 22px;", 2, s.m.pill_radius, Some(false))
+                        s.compact_control(fixed_dims(64.0, 22.0), 2, s.m.pill_radius, Some(false))
                     };
                     let slug = island.slug.clone();
                     rsx! {
@@ -137,39 +142,38 @@ pub(crate) fn IslandsView() -> Element {
                             test_id: Some(format!("island-card-{}", island.slug)),
                             padding: Some(s.m.card_pad as f32),
                             gap: Some(s.m.card_gap as f32),
-                            style: Some(format!(
-                                "width: 100%; flex-shrink: 0; padding: {}px; gap: {}px; background-color: {}; border-radius: {}px; {card}",
+                            nve_style: Some(s.card_surface(
                                 s.m.card_pad,
                                 s.m.card_gap,
-                                t.surface.raised.hex(),
-                                s.m.card_radius
+                                t.surface.raised,
+                                s.m.card_radius,
                             )),
                             view {
-                                style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center;",
+                                nve_style: row_between(),
                                 view {
-                                    style: "flex-direction: row; align-items: center; gap: 6px;",
+                                    nve_style: row_center(6.0),
                                     Badge {
                                         label: island.host.label().to_string(),
                                         variant: BadgeVariant::Neutral,
-                                        style: Some(s.compact_control(
-                                            &format!("min-width: {}px; height: 20px;", badge_min_w(island.host.label())),
+                                        nve_style: Some(s.compact_control(
+                                            badge_dims(badge_min_w(island.host.label()) as f32, 20.0),
                                             4,
                                             s.m.pill_radius,
                                             None,
                                         )),
                                     }
-                                    text { style: "color: {t.text.primary.hex()}; font-size: 11px;", "{island.component_name}" }
+                                    text { nve_style: text_style(t.text.primary, 11.0), "{island.component_name}" }
                                 }
                                 Button {
                                     variant: ButtonVariant::Secondary,
                                     size: ButtonSize::Sm,
                                     test_id: Some(format!("island-toggle-{}", island.slug)),
-                                    style: Some(toggle_style),
+                                    nve_style: Some(toggle_style),
                                     on_press: move |_| store.update(|st| st.toggle_island_lifecycle(&slug)),
                                     if is_resumed { "Pause" } else { "Resume" }
                                 }
                             }
-                            text { style: "color: {t.text.tertiary.hex()}; font-size: 10px;", "{meta_lbl}" }
+                            text { nve_style: text_style(t.text.tertiary, 10.0), "{meta_lbl}" }
                         }
                     }
                 }

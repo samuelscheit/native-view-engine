@@ -6,9 +6,10 @@ use core::marker::PhantomData;
 use std::rc::Rc;
 
 use dioxus_core::{use_drop, use_hook, Element, EventHandler};
-use dioxus_core_macro::{component, rsx, Props};
+use dioxus_core_macro::{component, Props};
+use nve_dioxus::rsx;
 use dioxus_signals::{Signal, WritableExt};
-use nve_dioxus::use_signal;
+use nve_dioxus::{use_signal, TypedStyle};
 use nve_query::Shared;
 use nve_rpc::{
     Action, CborCodec, DomainStatus, FieldErrors, FormDecode, FormPairs, Procedure, RpcCodec,
@@ -43,7 +44,7 @@ pub fn ActionForm<P>(
     #[props(default)] on_error: Option<EventHandler<Shared<RpcError<P::Error>>>>,
     #[props(default)] id: Option<String>,
     #[props(default)] test_id: Option<String>,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     children: Element,
     #[props(default)] _marker: PhantomData<fn() -> P>,
 ) -> Element
@@ -85,7 +86,7 @@ where
             persist_key: persist_key,
             controller: Some(active_ctrl),
             clear_draft_on_submit: false,
-            style: style,
+            nve_style: nve_style,
             on_submit: move |payload: FormSubmitPayload| {
                 if action_hook.is_pending() {
                     return;

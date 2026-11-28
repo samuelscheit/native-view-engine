@@ -7,15 +7,12 @@
 //!   attribute values ([`attrs`]), with template coordinates.
 //! - Requires every token outside those spans to match token for token; inside them only literal
 //!   leaves may change, evaluated by the const evaluator ([`eval`]) into typed values.
-//! - Emits [`DiffOutcome::Tier1Patch`] with the [`TypedRsxPatch`] and its faithful lowering to
-//!   `HotPatchMsg::TemplatePatch` messages (one per text node, one per changed element).
+//! - Emits [`DiffOutcome::Tier1Patch`] with the [`TypedRsxPatch`] and its direct binary
+//!   `RowPatch` `HotPatchMsg::TemplatePatch` lowering (one per text node, one per changed element).
 //! - Falls back to [`DiffOutcome::RequireTier2Rebuild`] for any Rust logic, control flow, event
 //!   handler, component prop, interpolated, non-constant or shape-changing value, identity
-//!   (`key`/`test_id`), structural or syntax change, and for edits the string patch path cannot
-//!   carry faithfully.
+//!   (`key`/`test_id`), structural or syntax change, and for theme tokens or non-scalar columns.
 
-// Part 2 (`RowPatch` lowering) consumes `patch::TypedRsxPatch`, `patch::TemplateTarget`,
-// `eval::TypedAttrValue` and `attrs::AttrSpec` through these crate-visible modules.
 pub(crate) mod attrs;
 pub(crate) mod cache;
 pub(crate) mod eval;
@@ -24,6 +21,8 @@ mod matcher;
 mod parser;
 pub(crate) mod patch;
 mod strings;
+mod typed_style_chain;
+mod value_lower;
 
 #[cfg(test)]
 pub(crate) mod fixture;

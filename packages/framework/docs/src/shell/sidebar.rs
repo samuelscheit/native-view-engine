@@ -1,7 +1,7 @@
 //! Left navigation sidebar (`accessibility_role: "navigation"`, `260px` desktop / mobile slide-over drawer).
 
 use dioxus_core_macro::Props;
-use nve_ui::{accent_indicator, ColorHex, Hex};
+use nve_ui::accent_indicator;
 use nve_dioxus::prelude::*;
 use nve_mdx::NavNode;
 
@@ -46,25 +46,41 @@ pub fn DocsSidebar(mobile_overlay: bool) -> Element {
             nve_show_on: desktop_show_on,
             accessibility_role: "navigation",
             accessibility_label: "Documentation sidebar",
-            style: "width: 260px; height: 100%; flex-shrink: 0; flex-direction: column; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+            nve_style: TypedStyle::new()
+                .width_px(260.0)
+                .height_pct(100.0)
+                .flex_shrink(0.0)
+                .flex_col()
+                .bg(theme.surface.base)
+                .border(1.0, theme.border.default),
 
             if mobile_overlay {
                 view {
-                    style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 14px; padding-vertical: 12px; border-width: 1px; border-color: {theme.border.default.hex()};",
+                    nve_style: TypedStyle::new()
+                        .width_pct(100.0)
+                        .flex_row()
+                        .justify_content(FlexJustify::SpaceBetween)
+                        .align_items(FlexAlign::Center)
+                        .padding_xy(14.0, 12.0)
+                        .border(1.0, theme.border.default),
                     text {
-                        style: "font-size: 13px; font-weight: 700; color: {theme.text.primary.hex()};",
+                        nve_style: TypedStyle::new().font_size(13.0).font_weight(700).color(theme.text.primary),
                         "Navigation"
                     }
                     pressable {
                         test_id: "docs-sidebar-close",
                         accessibility_role: "button",
                         accessibility_label: "Close navigation drawer",
-                        style: "padding-horizontal: 8px; padding-vertical: 4px; border-radius: 6px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                        nve_style: TypedStyle::new()
+                            .padding_xy(8.0, 4.0)
+                            .radius(6.0)
+                            .bg(theme.surface.subtle)
+                            .border(1.0, theme.border.default),
                         onpress: move |_| {
                             state.write().set_mobile_drawer(false);
                         },
                         text {
-                            style: "font-size: 12px; color: {theme.text.secondary.hex()};",
+                            nve_style: TypedStyle::new().font_size(12.0).color(theme.text.secondary),
                             "Close"
                         }
                     }
@@ -73,30 +89,41 @@ pub fn DocsSidebar(mobile_overlay: bool) -> Element {
 
             scrollview {
                 test_id: "docs-sidebar-scroll",
-                style: "flex-grow: 1; width: 100%; flex-direction: column; padding: 14px; gap: 6px;",
+                nve_style: TypedStyle::new().flex_grow(1.0).width_pct(100.0).flex_col().padding(14.0).gap(6.0),
 
                 // Show section tabs inside mobile drawer
                 if mobile_overlay && !sections.is_empty() {
                     view {
-                        style: "flex-direction: column; gap: 4px; padding-vertical: 6px; border-width: 1px; border-color: {theme.border.default.hex()}; border-radius: 8px; padding-horizontal: 8px; background-color: {theme.surface.subtle.hex()};",
+                        nve_style: TypedStyle::new()
+                            .flex_col()
+                            .gap(4.0)
+                            .padding_xy(8.0, 6.0)
+                            .border(1.0, theme.border.default)
+                            .radius(8.0)
+                            .bg(theme.surface.subtle),
                         for sec in sections {
                             {
                                 let sec_route = DocsRoute::new(&sec.default_route);
                                 let sec_href = sec_route.href(&base_path);
                                 let is_active = sec.matches_route(&active_route);
-                                let fg = if is_active { theme.text.link.hex() } else { theme.text.primary.hex() };
+                                let fg = if is_active { theme.text.link } else { theme.text.primary };
                                 rsx! {
                                     pressable {
                                         key: "mobile-sec-{sec.id}",
                                         test_id: "docs-mobile-section-{sec.id}",
                                         accessibility_role: "link",
                                         "href": "{sec_href}",
-                                        style: "flex-direction: row; justify-content: space-between; align-items: center; padding-vertical: 5px; padding-horizontal: 6px; border-radius: 6px;",
+                                        nve_style: TypedStyle::new()
+                                            .flex_row()
+                                            .justify_content(FlexJustify::SpaceBetween)
+                                            .align_items(FlexAlign::Center)
+                                            .padding_xy(6.0, 5.0)
+                                            .radius(6.0),
                                         onpress: move |_| {
                                             navigate_to(state, sec_route.clone());
                                         },
                                         text {
-                                            style: "font-size: 13px; font-weight: 600; color: {fg};",
+                                            nve_style: TypedStyle::new().font_size(13.0).font_weight(600).color(fg),
                                             "{sec.label}"
                                         }
                                     }
@@ -122,13 +149,21 @@ pub fn DocsSidebar(mobile_overlay: bool) -> Element {
             view {
                 test_id: "docs-sidebar-overlay",
                 nve_show_on: ShowOn(MediaQuery::max_width(959)),
-                style: "width: 100%; height: 100%; flex-direction: row; z-index: 400; background-color: {theme.scrim.hex()};",
+                nve_style: TypedStyle::new()
+                    .width_pct(100.0)
+                    .height_pct(100.0)
+                    .flex_row()
+                    .z_index(400)
+                    .bg(theme.scrim),
                 {panel}
                 pressable {
                     test_id: "docs-sidebar-backdrop",
                     accessibility_role: "presentation",
                     accessibility_label: "Dismiss navigation drawer",
-                    style: "flex-grow: 1; height: 100%; background-color: transparent;",
+                    nve_style: TypedStyle::new()
+                        .flex_grow(1.0)
+                        .height_pct(100.0)
+                        .bg(ColorRgba::TRANSPARENT),
                     onpress: move |_| {
                         state.write().set_mobile_drawer(false);
                     },
@@ -148,20 +183,24 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
     let active_route = snap.active_route.as_str().to_string();
     let config = snap.config.clone();
 
-    let indent_px = (depth as u32).saturating_mul(12);
+    let indent_px = (depth as u32).saturating_mul(12) as f32;
 
     match node {
         NavNode::Separator { title } => {
             drop(snap);
             rsx! {
                 view {
-                    style: "width: 100%; padding-vertical: 6px; gap: 4px;",
+                    nve_style: TypedStyle::new().width_pct(100.0).padding_y(6.0).gap(4.0),
                     view {
-                        style: "width: 100%; height: 1px; background-color: {theme.border.default.hex()};",
+                        nve_style: TypedStyle::new().width_pct(100.0).height_px(1.0).bg(theme.border.default),
                     }
                     if let Some(lbl) = title {
                         text {
-                            style: "font-size: 11px; font-weight: 700; color: {theme.text.secondary.hex()}; padding-horizontal: 6px;",
+                            nve_style: TypedStyle::new()
+                                .font_size(11.0)
+                                .font_weight(700)
+                                .color(theme.text.secondary)
+                                .padding_x(6.0),
                             "{lbl}"
                         }
                     }
@@ -181,16 +220,16 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
             drop(snap);
 
             let bg = if is_active {
-                theme.status.accent.subtle.hex()
+                theme.status.accent.subtle
             } else {
-                Hex::TRANSPARENT
+                ColorRgba::TRANSPARENT
             };
-            let fg = if is_active { theme.text.link.hex() } else { theme.text.secondary.hex() };
-            let weight = if is_active { "600" } else { "400" };
+            let fg = if is_active { theme.text.link } else { theme.text.secondary };
+            let weight = if is_active { 600 } else { 400 };
             let rail_color = if is_active {
-                accent_indicator(&theme).hex()
+                accent_indicator(&theme)
             } else {
-                Hex::TRANSPARENT
+                ColorRgba::TRANSPARENT
             };
 
             rsx! {
@@ -199,25 +238,44 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
                     accessibility_role: "link",
                     aria_selected: if is_active { Some("true".to_string()) } else { None },
                     "href": "{href}",
-                    style: "width: 100%; flex-direction: row; align-items: center; justify-content: space-between; padding-vertical: 6px; padding-horizontal: 8px; gap: 8px; border-radius: 6px; background-color: {bg}; margin: 0px;",
+                    nve_style: TypedStyle::new()
+                        .width_pct(100.0)
+                        .flex_row()
+                        .align_items(FlexAlign::Center)
+                        .justify_content(FlexJustify::SpaceBetween)
+                        .padding_xy(8.0, 6.0)
+                        .gap(8.0)
+                        .radius(6.0)
+                        .bg(bg)
+                        .margin(0.0),
                     onpress: move |_| {
                         navigate_to(state, target.clone());
                     },
                     view {
-                        style: "flex-direction: row; align-items: center; gap: 8px; flex-grow: 1; min-width: 0px; padding-horizontal: {indent_px}px;",
+                        nve_style: TypedStyle::new()
+                            .flex_row()
+                            .align_items(FlexAlign::Center)
+                            .gap(8.0)
+                            .flex_grow(1.0)
+                            .min_width_px(0.0)
+                            .padding_x(indent_px),
                         view {
-                            style: "width: 2px; height: 16px; border-radius: 2px; background-color: {rail_color};",
+                            nve_style: TypedStyle::new().width_px(2.0).height_px(16.0).radius(2.0).bg(rail_color),
                         }
                         text {
-                            style: "font-size: 13px; font-weight: {weight}; color: {fg};",
+                            nve_style: TypedStyle::new().font_size(13.0).font_weight(weight).color(fg),
                             "{title}"
                         }
                     }
                     if let Some(badge_text) = badge {
                         view {
-                            style: "padding-horizontal: 6px; padding-vertical: 1px; border-radius: 999px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                            nve_style: TypedStyle::new()
+                                .padding_xy(6.0, 1.0)
+                                .radius(999.0)
+                                .bg(theme.surface.subtle)
+                                .border(1.0, theme.border.default),
                             text {
-                                style: "font-size: 10px; font-weight: 600; color: {theme.status.info.text.hex()};",
+                                nve_style: TypedStyle::new().font_size(10.0).font_weight(600).color(theme.status.info.text),
                                 "{badge_text}"
                             }
                         }
@@ -233,16 +291,26 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
                 pressable {
                     accessibility_role: "link",
                     "href": "{href}",
-                    style: "width: 100%; flex-direction: row; align-items: center; justify-content: space-between; padding-vertical: 6px; padding-horizontal: 10px; border-radius: 6px;",
+                    nve_style: TypedStyle::new()
+                        .width_pct(100.0)
+                        .flex_row()
+                        .align_items(FlexAlign::Center)
+                        .justify_content(FlexJustify::SpaceBetween)
+                        .padding_xy(10.0, 6.0)
+                        .radius(6.0),
                     text {
-                        style: "font-size: 13px; color: {theme.text.secondary.hex()};",
+                        nve_style: TypedStyle::new().font_size(13.0).color(theme.text.secondary),
                         "{title} ↗"
                     }
                     if let Some(badge_text) = badge {
                         view {
-                            style: "padding-horizontal: 6px; padding-vertical: 1px; border-radius: 999px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                            nve_style: TypedStyle::new()
+                                .padding_xy(6.0, 1.0)
+                                .radius(999.0)
+                                .bg(theme.surface.subtle)
+                                .border(1.0, theme.border.default),
                             text {
-                                style: "font-size: 10px; font-weight: 600; color: {theme.status.info.text.hex()};",
+                                nve_style: TypedStyle::new().font_size(10.0).font_weight(600).color(theme.status.info.text),
                                 "{badge_text}"
                             }
                         }
@@ -273,22 +341,28 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
             let chevron = if is_collapsed { "▸" } else { "▾" };
             let expanded_str = if is_collapsed { "false" } else { "true" };
             let header_fg = if is_index_active {
-                theme.text.link.hex()
+                theme.text.link
             } else {
-                theme.text.primary.hex()
+                theme.text.primary
             };
             let folder_tid = format!("docs-sidebar-folder-{slug}");
             let slug_for_toggle = slug.clone();
 
             rsx! {
                 view {
-                    style: "width: 100%; flex-direction: column; gap: 2px; padding-vertical: 4px;",
+                    nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(2.0).padding_y(4.0),
                     pressable {
                         test_id: "{folder_tid}",
                         accessibility_role: "button",
                         aria_expanded: "{expanded_str}",
                         "href": index_href.unwrap_or_default(),
-                        style: "width: 100%; flex-direction: row; align-items: center; justify-content: space-between; padding-vertical: 6px; padding-horizontal: 8px; border-radius: 6px;",
+                        nve_style: TypedStyle::new()
+                            .width_pct(100.0)
+                            .flex_row()
+                            .align_items(FlexAlign::Center)
+                            .justify_content(FlexJustify::SpaceBetween)
+                            .padding_xy(8.0, 6.0)
+                            .radius(6.0),
                         onpress: move |_| {
                             if let Some(ref route) = mapped_index_route {
                                 navigate_to(state, route.clone());
@@ -297,21 +371,25 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
                             }
                         },
                         view {
-                            style: "flex-direction: row; align-items: center; gap: 6px;",
+                            nve_style: TypedStyle::new().flex_row().align_items(FlexAlign::Center).gap(6.0),
                             text {
-                                style: "font-size: 11px; color: {theme.text.secondary.hex()};",
+                                nve_style: TypedStyle::new().font_size(11.0).color(theme.text.secondary),
                                 "{chevron}"
                             }
                             text {
-                                style: "font-size: 12px; font-weight: 700; color: {header_fg};",
+                                nve_style: TypedStyle::new().font_size(12.0).font_weight(700).color(header_fg),
                                 "{title}"
                             }
                         }
                         if let Some(badge_text) = badge {
                             view {
-                                style: "padding-horizontal: 6px; padding-vertical: 1px; border-radius: 999px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                                nve_style: TypedStyle::new()
+                                    .padding_xy(6.0, 1.0)
+                                    .radius(999.0)
+                                    .bg(theme.surface.subtle)
+                                    .border(1.0, theme.border.default),
                                 text {
-                                    style: "font-size: 10px; font-weight: 600; color: {theme.status.info.text.hex()};",
+                                    nve_style: TypedStyle::new().font_size(10.0).font_weight(600).color(theme.status.info.text),
                                     "{badge_text}"
                                 }
                             }
@@ -320,7 +398,7 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
 
                     if !is_collapsed {
                         view {
-                            style: "width: 100%; flex-direction: column; gap: 2px; padding-horizontal: 4px;",
+                            nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(2.0).padding_x(4.0),
                             for (cidx, child) in children.into_iter().enumerate() {
                                 SidebarNodeView {
                                     key: "{slug}-child-{cidx}",

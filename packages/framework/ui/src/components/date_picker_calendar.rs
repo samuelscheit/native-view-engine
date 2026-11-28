@@ -8,8 +8,8 @@ use nve_i18n::{CalendarDate, NameWidth};
 
 use crate::components::date_picker_grid::CalendarMonthGrid;
 use crate::positioning::ComputedPosition;
-use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
 use crate::components::roles::{calendar_day_colors, ControlColors};
+use crate::surface::{SurfaceStyleExt, TypedSurfaceStyle, TypedTextStyle};
 use crate::theme::{Layer, Theme};
 
 pub(crate) const DEFAULT_FALLBACK_DATE: CalendarDate = CalendarDate {
@@ -50,7 +50,7 @@ pub(crate) fn render_calendar_dialog(
     let month_title = grid.month_title(NameWidth::Wide);
     let weekday_labels = grid.weekday_labels(weekday_width);
 
-    let mut dialog_builder = TypedStyleBuilder::new()
+    let mut dialog_style = TypedStyle::new()
         .flex_col()
         .padding(theme.spacing.md)
         .gap(theme.spacing.sm)
@@ -66,21 +66,19 @@ pub(crate) fn render_calendar_dialog(
         });
     if let Some(pos) = computed {
         if let Some(mw) = pos.max_width {
-            dialog_builder = dialog_builder.max_width_px(mw);
+            dialog_style = dialog_style.max_width_px(mw);
         }
         if let Some(mh) = pos.max_height {
-            dialog_builder = dialog_builder.max_height_px(mh);
+            dialog_style = dialog_style.max_height_px(mh);
         }
     }
-    let dialog_style = dialog_builder.finish();
 
-    let header_style = TypedStyleBuilder::new()
+    let header_style = TypedStyle::new()
         .flex_row()
         .justify_content(FlexJustify::SpaceBetween)
         .align_items(FlexAlign::Center)
-        .gap(theme.spacing.sm)
-        .finish();
-    let nav_btn_style = TypedStyleBuilder::new()
+        .gap(theme.spacing.sm);
+    let nav_btn_style = TypedStyle::new()
         .width_px(30.0)
         .height_px(30.0)
         .justify_content(FlexJustify::Center)
@@ -92,47 +90,38 @@ pub(crate) fn render_calendar_dialog(
             border_radius: theme.radius.sm,
             opacity: if disabled { 0.45 } else { 1.0 },
             box_shadow: None,
-        })
-        .finish();
-    let nav_text_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.text.primary,
-            font_size: theme.typography.ui.size,
-            font_weight: "600",
-            text_align: "center",
-            opacity: 1.0,
-        })
-        .finish();
-    let title_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.text.primary,
-            font_size: theme.typography.body.size,
-            font_weight: "600",
-            text_align: "center",
-            opacity: 1.0,
-        })
-        .finish();
-    let grid_style = TypedStyleBuilder::new().flex_col().gap(theme.spacing.xs).finish();
-    let row_style = TypedStyleBuilder::new()
+        });
+    let nav_text_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.text.primary,
+        font_size: theme.typography.ui.size,
+        font_weight: 600,
+        text_align: TextAlign::Center,
+        opacity: 1.0,
+    });
+    let title_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.text.primary,
+        font_size: theme.typography.body.size,
+        font_weight: 600,
+        text_align: TextAlign::Center,
+        opacity: 1.0,
+    });
+    let grid_style = TypedStyle::new().flex_col().gap(theme.spacing.xs);
+    let row_style = TypedStyle::new()
         .flex_row()
         .justify_content(FlexJustify::SpaceBetween)
-        .gap(2.0)
-        .finish();
-    let weekday_cell_style = TypedStyleBuilder::new()
+        .gap(2.0);
+    let weekday_cell_style = TypedStyle::new()
         .width_px(34.0)
         .height_px(24.0)
         .justify_content(FlexJustify::Center)
-        .align_items(FlexAlign::Center)
-        .finish();
-    let weekday_text_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.text.tertiary,
-            font_size: theme.typography.caption.size,
-            font_weight: "600",
-            text_align: "center",
-            opacity: 1.0,
-        })
-        .finish();
+        .align_items(FlexAlign::Center);
+    let weekday_text_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.text.tertiary,
+        font_size: theme.typography.caption.size,
+        font_weight: 600,
+        text_align: TextAlign::Center,
+        opacity: 1.0,
+    });
 
     let rendered_weekdays: Vec<Element> = weekday_labels
         .iter()
@@ -173,7 +162,7 @@ pub(crate) fn render_calendar_dialog(
                         cell.is_focused,
                         cell_disabled || !cell.in_current_month,
                     );
-                    let cell_style = TypedStyleBuilder::new()
+                    let cell_style = TypedStyle::new()
                         .width_px(34.0)
                         .height_px(34.0)
                         .justify_content(FlexJustify::Center)
@@ -191,17 +180,14 @@ pub(crate) fn render_calendar_dialog(
                                 1.0
                             },
                             box_shadow: None,
-                        })
-                        .finish();
-                    let cell_text_style = TypedStyleBuilder::new()
-                        .text_style(TypedTextStyle {
-                            color: fg,
-                            font_size: theme.typography.ui.size,
-                            font_weight: if is_endpoint || cell.is_today { "600" } else { "400" },
-                            text_align: "center",
-                            opacity: 1.0,
-                        })
-                        .finish();
+                        });
+                    let cell_text_style = TypedStyle::new().text_style(TypedTextStyle {
+                        color: fg,
+                        font_size: theme.typography.ui.size,
+                        font_weight: if is_endpoint || cell.is_today { 600 } else { 400 },
+                        text_align: TextAlign::Center,
+                        opacity: 1.0,
+                    });
 
                     let aria_sel = if is_endpoint { "true" } else { "false" };
                     let aria_dis = if cell_disabled { "true" } else { "false" };
@@ -352,17 +338,15 @@ pub(crate) fn build_trigger_styles(
     disabled: bool,
     has_value: bool,
 ) -> (TypedStyle, TypedStyle, TypedStyle, TypedStyle) {
-    let wrap_style = TypedStyleBuilder::new().flex_col().gap(theme.spacing.xs).finish();
-    let label_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: theme.text.primary,
-            font_size: theme.typography.ui.size,
-            font_weight: "600",
-            text_align: "left",
-            opacity: 1.0,
-        })
-        .finish();
-    let trigger_style = TypedStyleBuilder::new()
+    let wrap_style = TypedStyle::new().flex_col().gap(theme.spacing.xs);
+    let label_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: theme.text.primary,
+        font_size: theme.typography.ui.size,
+        font_weight: 600,
+        text_align: TextAlign::Left,
+        opacity: 1.0,
+    });
+    let trigger_style = TypedStyle::new()
         .flex_row()
         .justify_content(FlexJustify::SpaceBetween)
         .align_items(FlexAlign::Center)
@@ -375,16 +359,13 @@ pub(crate) fn build_trigger_styles(
             border_radius: theme.radius.md,
             opacity: if disabled { 0.55 } else { 1.0 },
             box_shadow: None,
-        })
-        .finish();
-    let trigger_text_style = TypedStyleBuilder::new()
-        .text_style(TypedTextStyle {
-            color: if has_value { theme.text.primary } else { theme.text.tertiary },
-            font_size: theme.typography.body.size,
-            font_weight: "400",
-            text_align: "left",
-            opacity: if disabled { 0.55 } else { 1.0 },
-        })
-        .finish();
+        });
+    let trigger_text_style = TypedStyle::new().text_style(TypedTextStyle {
+        color: if has_value { theme.text.primary } else { theme.text.tertiary },
+        font_size: theme.typography.body.size,
+        font_weight: 400,
+        text_align: TextAlign::Left,
+        opacity: if disabled { 0.55 } else { 1.0 },
+    });
     (wrap_style, label_style, trigger_style, trigger_text_style)
 }

@@ -18,10 +18,10 @@ pub(crate) fn IssueDetailPanel(
     on_renamed: EventHandler<Issue>,
 ) -> Element {
     let theme = use_theme();
-    let fg_hex = theme.text.primary.hex();
-    let muted_hex = theme.text.secondary.hex();
-    let border_hex = theme.border.default.hex();
-    let subtle_bg = theme.surface.subtle.hex();
+    let fg = theme.text.primary;
+    let muted = theme.text.secondary;
+    let border = theme.border.default;
+    let subtle_bg = theme.surface.subtle;
     let id_num = issue.id.0;
     let (badge_label, badge_variant) = state_badge(issue.state);
 
@@ -46,7 +46,7 @@ pub(crate) fn IssueDetailPanel(
                 Row {
                     gap: Some(8.0),
                     text {
-                        style: "font-size: 16px; font-weight: 700; color: {fg_hex};",
+                        nve_style: TypedStyle::new().font_size(16.0).font_weight(700).color(fg),
                         "Issue #{id_num}"
                     }
                     Badge {
@@ -97,18 +97,18 @@ pub(crate) fn IssueDetailPanel(
             Col {
                 gap: Some(8.0),
                 text {
-                    style: "font-size: 13px; font-weight: 600; color: {muted_hex};",
+                    nve_style: TypedStyle::new().font_size(13.0).font_weight(600).color(muted),
                     "Comments ({comments.len()})"
                 }
                 if comments_query.is_loading() {
                     text {
-                        style: "font-size: 13px; color: {muted_hex};",
+                        nve_style: TypedStyle::new().font_size(13.0).color(muted),
                         "Loading comments..."
                     }
                 } else if comments.is_empty() {
                     text {
                         test_id: "comments-empty",
-                        style: "font-size: 13px; color: {muted_hex};",
+                        nve_style: TypedStyle::new().font_size(13.0).color(muted),
                         "No comments yet."
                     }
                 } else {
@@ -116,13 +116,20 @@ pub(crate) fn IssueDetailPanel(
                         view {
                             key: "{comment.id.0}",
                             test_id: "comment-row-{comment.id.0}",
-                            style: "width: 100%; padding: 10px; border-radius: 8px; border-width: 1px; border-color: {border_hex}; background: {subtle_bg}; display: flex; flex-direction: column; gap: 4px;",
+                            nve_style: TypedStyle::new()
+                                .width_pct(100.0)
+                                .padding(10.0)
+                                .radius(8.0)
+                                .border(1.0, border)
+                                .bg(subtle_bg)
+                                .flex_col()
+                                .gap(4.0),
                             text {
-                                style: "font-size: 12px; font-weight: 600; color: {muted_hex};",
+                                nve_style: TypedStyle::new().font_size(12.0).font_weight(600).color(muted),
                                 "{comment.author}"
                             }
                             text {
-                                style: "font-size: 14px; color: {fg_hex};",
+                                nve_style: TypedStyle::new().font_size(14.0).color(fg),
                                 "{comment.body}"
                             }
                         }

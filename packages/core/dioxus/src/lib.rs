@@ -7,6 +7,12 @@
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
+extern crate self as nve_dioxus;
+
+#[doc(hidden)]
+pub use dioxus_core_macro::rsx as __dioxus_rsx;
+pub use nve_dioxus_macros::rsx;
+
 pub mod dioxus_elements;
 pub use dioxus_elements as elements;
 pub mod error_boundary;
@@ -48,11 +54,12 @@ pub use nve_tables::media::{
     MEDIA_FLAG_HAS_MIN_WIDTH, MEDIA_FLAG_HAS_REDUCED_MOTION, MEDIA_FLAG_REDUCED_MOTION_VAL,
 };
 pub use nve_tables::tables::{
-    Alignment, Display, FlexWrap, Overflow, Overlay, OverlayFlags, OverlayLayer, OverlayPlacement,
-    PointerCaptureMode, Side, TextAlign,
+    Alignment, Display, FlexWrap, FontStyle, ImageFit, Overflow, OverflowWrap, Overlay,
+    OverlayFlags, OverlayLayer, OverlayPlacement, PointerCaptureMode, Side, TextAlign,
+    TextDecoration, WhiteSpace, WordBreak,
 };
 pub use nve_tables::{LayoutSnapshot, StylePatchExt, VisualSnapshot};
-pub use nve_store::RowPatch;
+pub use nve_store::{Length, RowPatch};
 pub use nve_engine::InteractionTracker;
 pub use nve_tables::paint::{
     lerp_color_premul, sample_gradient_stops, BackgroundFill, GradientStop, LinearGradient,
@@ -147,12 +154,12 @@ pub mod prelude {
         consume_context, current_scope_id, provide_context, spawn, try_consume_context, use_drop,
         use_hook, Element, IntoDynNode, VNode, VirtualDom,
     };
-    pub use dioxus_core_macro::{component, rsx, Props};
+    pub use crate::rsx;
+    pub use dioxus_core_macro::{component, Props};
     pub use crate::use_signal;
     pub use dioxus_signals;
     pub use dioxus_signals::{ReadableExt, Signal, WritableExt};
     pub use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
-    pub use nve_tables::tables::AlignSelf;
     pub use nve_tables::interaction::{CursorKind, InteractionState, StateStyleRule};
     pub use nve_tables::layout_ext::{
         GridLine, GridSingleTrack, GridTrack, GridTrackPlacement, GridTrackUnit, LayoutDirection,
@@ -160,11 +167,12 @@ pub mod prelude {
     };
     pub use nve_tables::media::{MediaQuery, ResponsiveRule};
     pub use nve_tables::tables::{
-        Alignment, Display, Overlay, OverlayFlags, OverlayLayer, OverlayPlacement,
-        PointerCaptureMode, Side,
+        AlignSelf, Alignment, Display, FlexWrap, FontStyle, ImageFit, Overflow, OverflowWrap,
+        Overlay, OverlayFlags, OverlayLayer, OverlayPlacement, PointerCaptureMode, Side, TextAlign,
+        TextDecoration, WhiteSpace, WordBreak,
     };
     pub use nve_tables::StylePatchExt;
-    pub use nve_store::RowPatch;
+    pub use nve_store::{Length, RowPatch};
     pub use nve_tables::input_hints::{AutofillHint, InputMode};
     pub use nve_tables::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
     pub use nve_tables::transform::Transform2D;

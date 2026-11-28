@@ -3,7 +3,9 @@
 
 mod apply;
 mod builders;
+mod clear;
 mod layout_ext;
+mod merge;
 mod paint;
 
 pub use builders::{
@@ -16,13 +18,24 @@ use std::rc::Rc;
 
 use dioxus_core::{AttributeValue, IntoAttributeValue};
 use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
+use nve_store::Length;
 use nve_tables::interaction::CursorKind;
 use nve_tables::layout_ext::LayoutExt;
 use nve_tables::media::MediaQuery;
 use nve_tables::paint::BackgroundFill;
-use nve_tables::tables::{BoxShadow, PointerCaptureMode};
+use nve_tables::tables::{
+    BoxShadow, FlexWrap, FontStyle, ImageFit, Overflow, OverflowWrap, PointerCaptureMode,
+    TextAlign, TextDecoration, WhiteSpace,
+};
 use nve_tables::transform::Transform2D;
 use nve_tables::{LayoutSnapshot, VisualSnapshot};
+
+use merge::{
+    LayoutExtMask, LayoutMask, StyleMask, L_ALIGN_ITEMS, L_ALIGN_SELF, L_FLEX_DIR, L_FLEX_GROW,
+    L_FLEX_SHRINK, L_GAP, L_HEIGHT, L_JUSTIFY, L_MAR_ALL, L_MAR_BOTTOM, L_MAR_LEFT, L_MAR_RIGHT,
+    L_MAR_TOP, L_MAR_X, L_MAR_Y, L_MAX_HEIGHT, L_MAX_WIDTH, L_MIN_HEIGHT, L_MIN_WIDTH, L_PAD_ALL,
+    L_PAD_BOTTOM, L_PAD_LEFT, L_PAD_RIGHT, L_PAD_TOP, L_PAD_X, L_PAD_Y, L_WIDTH,
+};
 
 /// Attribute wire name recognized by [`crate::NveMutationWriter`] for direct [`TypedStyle`] props.
 pub const NVE_TYPED_STYLE_ATTR: &str = "nve_style";
@@ -52,21 +65,30 @@ impl IntoAttributeValue for ShowOn {
 /// Direct binary layout + visual style payload forwarded via Dioxus `AttributeValue::Any`.
 ///
 /// Writes directly into `NodeStore` word tables (`Layout`, `Visual`, `Typography`, `Transform`,
-/// `Interaction`, `Responsive`, `GridLayout`, `GridItem`) without formatting or parsing any CSS
-/// strings. Capability-module tables (e.g. `nve_motion::Motion`) attach via `nve_table`.
+/// `Interaction`, `Responsive`, `GridLayout`, `GridItem`, `Image`) without formatting or parsing
+/// any CSS strings. Capability-module tables (e.g. `nve_motion::Motion`) attach via `nve_table`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedStyle {
     pub(crate) layout: LayoutSnapshot,
     pub(crate) style: VisualSnapshot,
-    pub(crate) has_layout: bool,
-    pub(crate) has_style: bool,
-    pub font_weight: Option<Cow<'static, str>>,
-    pub text_align: Option<Cow<'static, str>>,
+    pub(crate) layout_mask: LayoutMask,
+    pub(crate) style_mask: StyleMask,
+    pub(crate) layout_ext_mask: LayoutExtMask,
+    pub(crate) overflow_axes: u8,
+    pub flex_wrap: Option<FlexWrap>,
+    pub font_family: Option<Cow<'static, str>>,
+    pub line_height: Option<Length>,
+    pub font_weight: Option<u16>,
+    pub font_style: Option<FontStyle>,
+    pub text_align: Option<TextAlign>,
+    pub white_space: Option<WhiteSpace>,
+    pub overflow_wrap: Option<OverflowWrap>,
+    pub text_decoration: Option<TextDecoration>,
     /// `Some(empty)` explicitly clears shadows; `None` leaves them untouched.
     pub box_shadows: Option<std::sync::Arc<[BoxShadow]>>,
-    pub overflow: Option<Cow<'static, str>>,
-    pub object_fit: Option<Cow<'static, str>>,
-    pub layout_ext: Option<Box<LayoutExt>>,
+    pub(crate) overflow: Option<(Overflow, Overflow)>,
+    pub object_fit: Option<ImageFit>,
+    pub(crate) layout_ext: Option<Box<LayoutExt>>,
     pub transform: Option<Transform2D>,
     pub background_fill: Option<BackgroundFill>,
     pub show_on: Option<MediaQuery>,
@@ -88,14 +110,24 @@ impl TypedStyle {
     pub fn new() -> Self {
         Self {
             layout: LayoutSnapshot::default(),
-            // Text color and size start unset (alpha 0 / size 0, skipped by `apply`), so a
-            // surface-only style never writes an explicit black 16px `Typography` row that
-            // would block inherited text color.
-            style: VisualSnapshot { text_color: ColorRgba::TRANSPARENT, font_size: 0.0, ..VisualSnapshot::default() },
-            has_layout: false,
-            has_style: false,
+            style: VisualSnapshot {
+                text_color: ColorRgba::TRANSPARENT,
+                font_size: 0.0,
+                ..VisualSnapshot::default()
+            },
+            layout_mask: LayoutMask::EMPTY,
+            style_mask: StyleMask::EMPTY,
+            layout_ext_mask: LayoutExtMask::EMPTY,
+            overflow_axes: 0,
+            flex_wrap: None,
+            font_family: None,
+            line_height: None,
             font_weight: None,
+            font_style: None,
             text_align: None,
+            white_space: None,
+            overflow_wrap: None,
+            text_decoration: None,
             box_shadows: None,
             overflow: None,
             object_fit: None,
@@ -110,18 +142,43 @@ impl TypedStyle {
         }
     }
 
-    /// Read-only view of the typed layout properties (mutate via builder methods so the
-    /// `has_layout` presence flag stays in sync).
+    /// Shorthand for [`Self::new()`] with `flex-direction: row`.
+    #[inline]
+    pub fn row() -> Self {
+        Self::new().flex_row()
+    }
+
+    /// Shorthand for [`Self::new()`] with `flex-direction: column`.
+    #[inline]
+    pub fn col() -> Self {
+        Self::new().flex_col()
+    }
+
+    /// Read-only view of the typed layout properties (mutate via builder methods so field masks
+    /// stay in sync).
     #[inline]
     pub const fn layout(&self) -> &LayoutSnapshot {
         &self.layout
     }
 
-    /// Read-only view of the typed visual style properties (mutate via builder methods so the
-    /// `has_style` presence flag and the unset text color / font size sentinels stay in sync).
+    /// Read-only view of the typed visual style properties (mutate via builder methods so field
+    /// masks stay in sync).
     #[inline]
     pub const fn style(&self) -> &VisualSnapshot {
         &self.style
+    }
+
+    /// Read-only view of the `(overflow_x, overflow_y)` pair when either axis was set.
+    #[inline]
+    pub const fn overflow_value(&self) -> Option<(Overflow, Overflow)> {
+        self.overflow
+    }
+
+    /// Read-only view of extended layout properties (mutate via builder methods so field masks
+    /// stay in sync).
+    #[inline]
+    pub fn layout_ext(&self) -> Option<&LayoutExt> {
+        self.layout_ext.as_deref()
     }
 
     #[inline]
@@ -150,7 +207,7 @@ impl TypedStyle {
     #[inline]
     pub fn width(mut self, dim: Dimension) -> Self {
         self.layout.width = Self::sanitize_dim(dim);
-        self.has_layout = true;
+        self.layout_mask |= L_WIDTH;
         self
     }
 
@@ -172,7 +229,7 @@ impl TypedStyle {
     #[inline]
     pub fn height(mut self, dim: Dimension) -> Self {
         self.layout.height = Self::sanitize_dim(dim);
-        self.has_layout = true;
+        self.layout_mask |= L_HEIGHT;
         self
     }
 
@@ -194,7 +251,7 @@ impl TypedStyle {
     #[inline]
     pub fn min_width(mut self, dim: Dimension) -> Self {
         self.layout.min_width = Self::sanitize_dim(dim);
-        self.has_layout = true;
+        self.layout_mask |= L_MIN_WIDTH;
         self
     }
 
@@ -204,9 +261,14 @@ impl TypedStyle {
     }
 
     #[inline]
+    pub fn min_width_pct(self, v: f32) -> Self {
+        self.min_width(Dimension::Percent(Self::sanitize(v).clamp(0.0, 100.0)))
+    }
+
+    #[inline]
     pub fn min_height(mut self, dim: Dimension) -> Self {
         self.layout.min_height = Self::sanitize_dim(dim);
-        self.has_layout = true;
+        self.layout_mask |= L_MIN_HEIGHT;
         self
     }
 
@@ -216,9 +278,14 @@ impl TypedStyle {
     }
 
     #[inline]
+    pub fn min_height_pct(self, v: f32) -> Self {
+        self.min_height(Dimension::Percent(Self::sanitize(v).clamp(0.0, 100.0)))
+    }
+
+    #[inline]
     pub fn max_width(mut self, dim: Dimension) -> Self {
         self.layout.max_width = Self::sanitize_dim(dim);
-        self.has_layout = true;
+        self.layout_mask |= L_MAX_WIDTH;
         self
     }
 
@@ -228,9 +295,14 @@ impl TypedStyle {
     }
 
     #[inline]
+    pub fn max_width_pct(self, v: f32) -> Self {
+        self.max_width(Dimension::Percent(Self::sanitize(v).clamp(0.0, 100.0)))
+    }
+
+    #[inline]
     pub fn max_height(mut self, dim: Dimension) -> Self {
         self.layout.max_height = Self::sanitize_dim(dim);
-        self.has_layout = true;
+        self.layout_mask |= L_MAX_HEIGHT;
         self
     }
 
@@ -239,12 +311,17 @@ impl TypedStyle {
         self.max_height(Dimension::Points(Self::sanitize(v).max(0.0)))
     }
 
+    #[inline]
+    pub fn max_height_pct(self, v: f32) -> Self {
+        self.max_height(Dimension::Percent(Self::sanitize(v).clamp(0.0, 100.0)))
+    }
+
     // --- Flexbox layout ---
 
     #[inline]
     pub fn flex_direction(mut self, dir: FlexDirection) -> Self {
         self.layout.flex_direction = dir;
-        self.has_layout = true;
+        self.layout_mask |= L_FLEX_DIR;
         self
     }
 
@@ -274,10 +351,22 @@ impl TypedStyle {
     }
 
     #[inline]
+    pub fn flex_wrap(mut self, wrap: FlexWrap) -> Self {
+        self.flex_wrap = Some(wrap);
+        self
+    }
+
+    #[inline]
     pub fn justify_content(mut self, justify: FlexJustify) -> Self {
         self.layout.justify_content = justify;
-        self.has_layout = true;
+        self.layout_mask |= L_JUSTIFY;
         self
+    }
+
+    /// Shorthand for [`Self::justify_content`].
+    #[inline]
+    pub fn justify(self, justify: FlexJustify) -> Self {
+        self.justify_content(justify)
     }
 
     #[inline]
@@ -288,15 +377,21 @@ impl TypedStyle {
     #[inline]
     pub fn align_self(mut self, align: nve_tables::tables::AlignSelf) -> Self {
         self.layout.align_self = align;
-        self.has_layout = true;
+        self.layout_mask |= L_ALIGN_SELF;
         self
     }
 
     #[inline]
     pub fn align_items(mut self, align: FlexAlign) -> Self {
         self.layout.align_items = align;
-        self.has_layout = true;
+        self.layout_mask |= L_ALIGN_ITEMS;
         self
+    }
+
+    /// Shorthand for [`Self::align_items`].
+    #[inline]
+    pub fn align(self, align: FlexAlign) -> Self {
+        self.align_items(align)
     }
 
     #[inline]
@@ -304,24 +399,36 @@ impl TypedStyle {
         self.align_items(parse_flex_align(align))
     }
 
+    /// CSS `flex: <grow>` shorthand (`flex-grow: grow; flex-shrink: 1; flex-basis: 0%`).
+    #[inline]
+    pub fn flex(self, grow: f32) -> Self {
+        self.flex_grow(grow).flex_shrink(1.0).flex_basis_pct(0.0)
+    }
+
+    /// Shorthand for `flex(1.0)` (`flex-grow: 1; flex-shrink: 1; flex-basis: 0%`).
+    #[inline]
+    pub fn flex_1(self) -> Self {
+        self.flex(1.0)
+    }
+
     #[inline]
     pub fn flex_grow(mut self, v: f32) -> Self {
         self.layout.flex_grow = Self::sanitize(v).max(0.0);
-        self.has_layout = true;
+        self.layout_mask |= L_FLEX_GROW;
         self
     }
 
     #[inline]
     pub fn flex_shrink(mut self, v: f32) -> Self {
         self.layout.flex_shrink = Self::sanitize(v).max(0.0);
-        self.has_layout = true;
+        self.layout_mask |= L_FLEX_SHRINK;
         self
     }
 
     #[inline]
     pub fn gap(mut self, v: f32) -> Self {
         self.layout.gap = Self::sanitize(v).max(0.0);
-        self.has_layout = true;
+        self.layout_mask |= L_GAP;
         self
     }
 
@@ -330,7 +437,7 @@ impl TypedStyle {
     #[inline]
     pub fn padding(mut self, v: f32) -> Self {
         self.layout.padding = EdgeInsets::all(Self::sanitize(v).max(0.0));
-        self.has_layout = true;
+        self.layout_mask |= L_PAD_ALL;
         self
     }
 
@@ -340,7 +447,53 @@ impl TypedStyle {
             Self::sanitize(vertical).max(0.0),
             Self::sanitize(horizontal).max(0.0),
         );
-        self.has_layout = true;
+        self.layout_mask |= L_PAD_ALL;
+        self
+    }
+
+    #[inline]
+    pub fn padding_x(mut self, v: f32) -> Self {
+        let p = Self::sanitize(v).max(0.0);
+        self.layout.padding.left = p;
+        self.layout.padding.right = p;
+        self.layout_mask |= L_PAD_X;
+        self
+    }
+
+    #[inline]
+    pub fn padding_y(mut self, v: f32) -> Self {
+        let p = Self::sanitize(v).max(0.0);
+        self.layout.padding.top = p;
+        self.layout.padding.bottom = p;
+        self.layout_mask |= L_PAD_Y;
+        self
+    }
+
+    #[inline]
+    pub fn padding_top(mut self, v: f32) -> Self {
+        self.layout.padding.top = Self::sanitize(v).max(0.0);
+        self.layout_mask |= L_PAD_TOP;
+        self
+    }
+
+    #[inline]
+    pub fn padding_right(mut self, v: f32) -> Self {
+        self.layout.padding.right = Self::sanitize(v).max(0.0);
+        self.layout_mask |= L_PAD_RIGHT;
+        self
+    }
+
+    #[inline]
+    pub fn padding_bottom(mut self, v: f32) -> Self {
+        self.layout.padding.bottom = Self::sanitize(v).max(0.0);
+        self.layout_mask |= L_PAD_BOTTOM;
+        self
+    }
+
+    #[inline]
+    pub fn padding_left(mut self, v: f32) -> Self {
+        self.layout.padding.left = Self::sanitize(v).max(0.0);
+        self.layout_mask |= L_PAD_LEFT;
         self
     }
 
@@ -352,14 +505,14 @@ impl TypedStyle {
             bottom: Self::sanitize(insets.bottom).max(0.0),
             left: Self::sanitize(insets.left).max(0.0),
         };
-        self.has_layout = true;
+        self.layout_mask |= L_PAD_ALL;
         self
     }
 
     #[inline]
     pub fn margin(mut self, v: f32) -> Self {
         self.layout.margin = EdgeInsets::all(Self::sanitize(v));
-        self.has_layout = true;
+        self.layout_mask |= L_MAR_ALL;
         self
     }
 
@@ -367,7 +520,53 @@ impl TypedStyle {
     pub fn margin_xy(mut self, horizontal: f32, vertical: f32) -> Self {
         self.layout.margin =
             EdgeInsets::symmetric(Self::sanitize(vertical), Self::sanitize(horizontal));
-        self.has_layout = true;
+        self.layout_mask |= L_MAR_ALL;
+        self
+    }
+
+    #[inline]
+    pub fn margin_x(mut self, v: f32) -> Self {
+        let m = Self::sanitize(v);
+        self.layout.margin.left = m;
+        self.layout.margin.right = m;
+        self.layout_mask |= L_MAR_X;
+        self
+    }
+
+    #[inline]
+    pub fn margin_y(mut self, v: f32) -> Self {
+        let m = Self::sanitize(v);
+        self.layout.margin.top = m;
+        self.layout.margin.bottom = m;
+        self.layout_mask |= L_MAR_Y;
+        self
+    }
+
+    #[inline]
+    pub fn margin_top(mut self, v: f32) -> Self {
+        self.layout.margin.top = Self::sanitize(v);
+        self.layout_mask |= L_MAR_TOP;
+        self
+    }
+
+    #[inline]
+    pub fn margin_right(mut self, v: f32) -> Self {
+        self.layout.margin.right = Self::sanitize(v);
+        self.layout_mask |= L_MAR_RIGHT;
+        self
+    }
+
+    #[inline]
+    pub fn margin_bottom(mut self, v: f32) -> Self {
+        self.layout.margin.bottom = Self::sanitize(v);
+        self.layout_mask |= L_MAR_BOTTOM;
+        self
+    }
+
+    #[inline]
+    pub fn margin_left(mut self, v: f32) -> Self {
+        self.layout.margin.left = Self::sanitize(v);
+        self.layout_mask |= L_MAR_LEFT;
         self
     }
 
@@ -379,7 +578,7 @@ impl TypedStyle {
             bottom: Self::sanitize(insets.bottom),
             left: Self::sanitize(insets.left),
         };
-        self.has_layout = true;
+        self.layout_mask |= L_MAR_ALL;
         self
     }
 }

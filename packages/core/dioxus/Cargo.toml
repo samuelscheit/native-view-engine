@@ -12,6 +12,7 @@ nve-engine = { workspace = true }
 nve-host-services = { workspace = true }
 nve-interop = { workspace = true }
 nve-store = { workspace = true }
+nve-dioxus-macros = { workspace = true }
 dioxus-core = { workspace = true }
 dioxus-signals = { workspace = true }
 dioxus-core-macro = { workspace = true }

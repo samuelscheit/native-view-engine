@@ -220,11 +220,11 @@ fn hot_patch_empty_and_out_of_bounds_edge_cases() {
     // Empty TemplatePatch succeeds with 0 mutations.
     let empty_patch = HotPatchMsg::TemplatePatch {
         generation: 1,
-        template_id: "KitchenSinkApp".into(),
-        attr_updates: vec![],
-        text_updates: vec![],
-        target_test_id: None,
+        template_key: 0,
         node_path: vec![],
+        target_test_id: None,
+        row_patch_words: vec![],
+        text_updates: vec![],
         text_replacements: vec![],
     };
     let action = session
@@ -234,19 +234,26 @@ fn hot_patch_empty_and_out_of_bounds_edge_cases() {
         action,
         HotReloadAction::TemplatePatched {
             generation: 1,
-            template_id: "KitchenSinkApp".into(),
+            template_key: 0,
             mutations: 0,
         }
     );
 
-    // Out-of-bounds text index does not panic and leaves DOM valid.
+    // Out-of-bounds text index does not panic and leaves DOM valid while binary RowPatch applies.
+    let mut rp = nve_store::RowPatch::new();
+    rp.set(
+        nve_tables::tables::Visual::BORDER_COLOR,
+        nve_store::Rgba::rgb(56, 189, 248),
+    );
+    let mut words = Vec::new();
+    assert!(nve_store::FlatResource::write_words(&rp, &mut words));
     let oob_patch = HotPatchMsg::TemplatePatch {
         generation: 2,
-        template_id: "KitchenSinkApp".into(),
-        attr_updates: vec![("outline".into(), "1px solid #38bdf8".into())],
-        text_updates: vec![(9999, "ignored-oob".into())],
+        template_key: 0,
+        node_path: vec![0],
         target_test_id: None,
-        node_path: vec![],
+        row_patch_words: words,
+        text_updates: vec![(9999, "ignored-oob".into())],
         text_replacements: vec![],
     };
     let oob_action = session

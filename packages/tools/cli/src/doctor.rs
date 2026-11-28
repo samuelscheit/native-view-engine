@@ -90,16 +90,29 @@ pub(crate) fn InspectDemo() -> Element {
     let mut count = use_signal(|| 0i32);
     rsx! {
         view {
-            style: "width: 100%; height: 100%; padding: 20px; gap: 12px; background-color: #0f172a;",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .height_pct(100.0)
+                .padding(20.0)
+                .gap(12.0)
+                .bg(ColorRgba::rgb(15, 23, 42)),
             text {
-                style: "color: #ffffff; font-size: 24px;",
+                nve_style: TypedStyle::new()
+                    .color(ColorRgba::WHITE)
+                    .font_size(24.0),
                 "Counter: {count}"
             }
             pressable {
-                style: "width: 140px; height: 44px; background-color: #2563eb; border-radius: 10px;",
+                nve_style: TypedStyle::new()
+                    .width_px(140.0)
+                    .height_px(44.0)
+                    .bg(ColorRgba::rgb(37, 99, 235))
+                    .radius(10.0),
                 onpress: move |_| count += 1,
                 text {
-                    style: "color: #ffffff; font-size: 16px;",
+                    nve_style: TypedStyle::new()
+                        .color(ColorRgba::WHITE)
+                        .font_size(16.0),
                     "Tap +1"
                 }
             }

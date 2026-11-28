@@ -1,17 +1,18 @@
 //! Steady-state `WriteMutations` fixture shared by the `NveMutationWriter` zero-allocation guard
-//! and Criterion bench: a keyed list of 32 template items, each `view(padding) > [text, inner
-//! view > [placeholder]]`, under a column container bound to `ElementId(1)`. Every inner view is
-//! bound through `assign_node_id` and carries an inline `style` plus a `TableAttr`, so removal
-//! and re-instantiation recycle every kind of per-node writer buffer.
+//! and Criterion bench: a keyed list of 32 template items, each `view > [text, inner view >
+//! [placeholder]]`, under a column container bound to `ElementId(1)`. Every inner view is bound
+//! through `assign_node_id` and carries a `TypedStyle` plus a `TableAttr`, so removal and
+//! re-instantiation recycle every kind of per-node writer buffer.
 
 use dioxus_core::{
-    AttributeValue, ElementId, IntoAttributeValue, Template, TemplateAttribute, TemplateNode,
-    WriteMutations,
+    AttributeValue, ElementId, IntoAttributeValue, Template, TemplateNode, WriteMutations,
 };
 use nve_abi::ColorRgba;
-use nve_dioxus::{NveMutationWriter, TypedStyle, table_attr_fn};
+use nve_dioxus::{NveMutationWriter, TypedStyle, table_attr_fn, NVE_TYPED_STYLE_ATTR};
 use nve_store::Rgba;
+use nve_tables::media::MediaQuery;
 use nve_tables::tables::Visual;
+use nve_tables::StylePatchExt;
 
 pub const ITEMS: usize = 32;
 const CONTAINER: ElementId = ElementId(1);
@@ -21,11 +22,7 @@ static CONTAINER_TEMPLATE: Template = Template {
     roots: &[TemplateNode::Element {
         tag: "view",
         namespace: None,
-        attrs: &[TemplateAttribute::Static {
-            name: "flex-direction",
-            value: "column",
-            namespace: None,
-        }],
+        attrs: &[],
         children: &[],
     }],
     node_paths: &[],
@@ -36,11 +33,7 @@ static ITEM_TEMPLATE: Template = Template {
     roots: &[TemplateNode::Element {
         tag: "view",
         namespace: None,
-        attrs: &[TemplateAttribute::Static {
-            name: "padding",
-            value: "4px",
-            namespace: None,
-        }],
+        attrs: &[],
         children: &[
             TemplateNode::Text { text: "label" },
             TemplateNode::Element {
@@ -72,55 +65,58 @@ const INNER_PATH: &[u8] = &[1];
 /// Table-attr border colours, indexed like [`Values::table`].
 pub const TABLE_BORDER: [Rgba; 2] = [Rgba::rgb(1, 2, 3), Rgba::rgb(4, 5, 6)];
 
-/// Pre-built attribute values: building an `AttributeValue::Text` allocates, Dioxus owns them.
+/// Pre-built typed attribute values (owned by Dioxus in real use).
 pub struct Values {
     pub padding: [AttributeValue; 2],
     pub opacity: [AttributeValue; 2],
-    /// Different property sets, so switching drops `border-radius` (restores the base value)
-    /// and adds `border-width`.
-    pub style: [AttributeValue; 2],
-    pub inner_style: [AttributeValue; 2],
+    /// Different property sets, so switching drops `border-radius` (restores default) and adds
+    /// `border-width`.
     pub typed_style: [AttributeValue; 2],
+    pub inner_style: [AttributeValue; 2],
+    pub z_index: [AttributeValue; 2],
     pub table: [AttributeValue; 2],
-    /// Alternates `currentColor` vs explicit border color to exercise `NodeSlotSet` insert + remove.
-    pub border: [AttributeValue; 2],
 }
 
 pub fn values() -> Values {
     Values {
-        padding: [
-            AttributeValue::Text("8px".into()),
-            AttributeValue::Text("12px".into()),
-        ],
+        padding: [AttributeValue::Float(8.0), AttributeValue::Float(12.0)],
         opacity: [AttributeValue::Float(0.5), AttributeValue::Float(0.75)],
-        style: [
-            AttributeValue::Text("background-color: #1e293b; border-radius: 4px".into()),
-            AttributeValue::Text("background-color: #334155; border-width: 2px".into()),
-        ],
-        inner_style: [
-            AttributeValue::Text("width: 10px; opacity: 0.25".into()),
-            AttributeValue::Text("width: 20px; opacity: 0.75; border-radius: 3px".into()),
-        ],
         typed_style: [
             TypedStyle::new()
+                .flex_1()
                 .width_px(120.0)
-                .bg(ColorRgba::rgb(0x0f, 0x17, 0x2a))
+                .bg(ColorRgba::rgb(0x1e, 0x29, 0x3b))
+                .radius(4.0)
+                .on_hover_with(|p| p.opacity(0.9))
+                .at_with(MediaQuery::compact(), |p| p.padding(6.0))
                 .into_value(),
             TypedStyle::new()
+                .flex_1()
                 .width_px(160.0)
-                .bg(ColorRgba::rgb(0x1e, 0x29, 0x3b))
+                .bg(ColorRgba::rgb(0x33, 0x41, 0x55))
+                .border_width(2.0)
+                .on_hover_with(|p| p.opacity(0.9))
+                .at_with(MediaQuery::compact(), |p| p.padding(6.0))
                 .into_value(),
         ],
+        inner_style: [
+            TypedStyle::new()
+                .width_px(10.0)
+                .opacity(0.25)
+                .into_value(),
+            TypedStyle::new()
+                .width_px(20.0)
+                .opacity(0.75)
+                .radius(3.0)
+                .into_value(),
+        ],
+        z_index: [AttributeValue::Int(1), AttributeValue::Int(2)],
         table: TABLE_BORDER.map(|c| {
             table_attr_fn(move |tx, node| {
                 tx.edit::<Visual>(node).border_color(c);
             })
             .into_value()
         }),
-        border: [
-            AttributeValue::Text("1px solid".into()),
-            AttributeValue::Text("1px solid #38bdf8".into()),
-        ],
     }
 }
 
@@ -128,7 +124,7 @@ pub fn values() -> Values {
 fn instantiate_item(tx: &mut impl WriteMutations, v: &Values, k: usize, pick: usize) {
     tx.load_template(ITEM_TEMPLATE, 0, item(k));
     tx.assign_node_id(INNER_PATH, inner(k));
-    tx.set_attribute("style", None, &v.inner_style[pick], inner(k));
+    tx.set_attribute(NVE_TYPED_STYLE_ATTR, None, &v.inner_style[pick], inner(k));
     tx.set_attribute("accent", None, &v.table[pick], inner(k));
 }
 
@@ -149,7 +145,7 @@ pub fn same_value_attributes(writer: &mut NveMutationWriter, v: &Values, frame: 
         for k in 0..ITEMS {
             tx.set_attribute("padding", None, &v.padding[0], item(k));
             tx.set_attribute("opacity", None, &v.opacity[0], item(k));
-            tx.set_attribute("style", None, &v.style[0], item(k));
+            tx.set_attribute(NVE_TYPED_STYLE_ATTR, None, &v.typed_style[0], item(k));
         }
         let _ = frame;
     });
@@ -162,22 +158,20 @@ pub fn changed_attributes(writer: &mut NveMutationWriter, v: &Values, frame: usi
         for k in 0..ITEMS {
             tx.set_attribute("padding", None, &v.padding[pick], item(k));
             tx.set_attribute("opacity", None, &v.opacity[pick], item(k));
-            tx.set_attribute("style", None, &v.style[pick], item(k));
+            tx.set_attribute(NVE_TYPED_STYLE_ATTR, None, &v.typed_style[pick], item(k));
         }
     });
 }
 
-/// Alternates `nve_style` (`TypedStyle`), standalone `padding` + `border` (`currentColor` toggle),
-/// inline `style`, and `accent` (`TableAttr`) on all 32 items — exercising all five dense side
-/// tables (including `NodeSlotSet` insert + swap-remove churn) every frame.
+/// Alternates `nve_style` (`TypedStyle`), standalone numeric `padding` + `z-index`, and `accent`
+/// (`TableAttr`) on all 32 items — exercising all three dense side tables every frame.
 pub fn all_side_tables_attributes(writer: &mut NveMutationWriter, v: &Values, frame: usize) {
     let pick = frame % 2;
     writer.with_transaction(|tx| {
         for k in 0..ITEMS {
-            tx.set_attribute("nve_style", None, &v.typed_style[pick], item(k));
+            tx.set_attribute(NVE_TYPED_STYLE_ATTR, None, &v.typed_style[pick], item(k));
             tx.set_attribute("padding", None, &v.padding[pick], item(k));
-            tx.set_attribute("border", None, &v.border[pick], item(k));
-            tx.set_attribute("style", None, &v.style[pick], item(k));
+            tx.set_attribute("z-index", None, &v.z_index[pick], item(k));
             tx.set_attribute("accent", None, &v.table[pick], item(k));
         }
     });
@@ -197,7 +191,7 @@ pub fn keyed_reorder(writer: &mut NveMutationWriter, frame: usize) {
 }
 
 /// Removes one item subtree, then re-instantiates it from the template into the freed slots
-/// (Dioxus recycles the `ElementId`s), alternating the inner view's style and table attr.
+/// (Dioxus recycles the `ElementId`s), alternating the inner view's `TypedStyle` and table attr.
 pub fn remove_and_reinstantiate(writer: &mut NveMutationWriter, v: &Values, frame: usize) {
     let k = frame % ITEMS;
     writer.with_transaction(|tx| {

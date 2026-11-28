@@ -2,7 +2,7 @@
 
 use dioxus_core_macro::Props;
 use crate::theme::callout_tone;
-use nve_ui::{accent_indicator, ColorHex, Hex};
+use nve_ui::accent_indicator;
 use nve_dioxus::prelude::*;
 use nve_mdx::{Block, CalloutKind, CardItem, DirectiveBlock, StepItem, TabItem};
 
@@ -71,9 +71,16 @@ pub fn DirectiveBlockView(directive: DirectiveBlock, scope_key: String) -> Eleme
             let theme = state.read().theme();
             rsx! {
                 view {
-                    style: "width: 100%; flex-direction: column; gap: 8px; padding: 14px; border-radius: 8px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: {theme.surface.base.hex()};",
+                    nve_style: TypedStyle::new()
+                        .width_pct(100.0)
+                        .flex_col()
+                        .gap(8.0)
+                        .padding(14.0)
+                        .radius(8.0)
+                        .border(1.0, theme.border.default)
+                        .bg(theme.surface.base),
                     text {
-                        style: "font-size: 12px; font-weight: 700; color: {theme.text.secondary.hex()};",
+                        nve_style: TypedStyle::new().font_size(12.0).font_weight(700).color(theme.text.secondary),
                         "{name}"
                     }
                     BlocksView {
@@ -114,23 +121,37 @@ pub fn CalloutView(
                     ));
                 })
             },
-            style: "width: 100%; flex-direction: row; gap: 12px; padding: 14px; border-radius: 10px; background-color: {tone.colors.subtle.hex()}; border-width: 1px; border-color: {tone.colors.border.hex()};",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .flex_row()
+                .gap(12.0)
+                .padding(14.0)
+                .radius(10.0)
+                .bg(tone.colors.subtle)
+                .border(1.0, tone.colors.border),
             view {
-                style: "width: 3px; flex-shrink: 0; border-radius: 2px; background-color: {tone.colors.border.hex()};",
+                nve_style: TypedStyle::new()
+                    .width_px(3.0)
+                    .flex_shrink(0.0)
+                    .radius(2.0)
+                    .bg(tone.colors.border),
             }
             view {
-                style: "flex-grow: 1; min-width: 0px; flex-direction: column; gap: 8px;",
+                nve_style: TypedStyle::new().flex_grow(1.0).min_width_px(0.0).flex_col().gap(8.0),
                 view {
-                    style: "flex-direction: row; align-items: center; gap: 8px;",
+                    nve_style: TypedStyle::new().flex_row().align_items(FlexAlign::Center).gap(8.0),
                     view {
-                        style: "padding-horizontal: 6px; padding-vertical: 1px; border-radius: 4px; border-width: 1px; border-color: {tone.colors.border.hex()};",
+                        nve_style: TypedStyle::new()
+                            .padding_xy(6.0, 1.0)
+                            .radius(4.0)
+                            .border(1.0, tone.colors.border),
                         text {
-                            style: "font-size: 11px; font-weight: 700; color: {tone.colors.text.hex()};",
+                            nve_style: TypedStyle::new().font_size(11.0).font_weight(700).color(tone.colors.text),
                             "{tone.icon}"
                         }
                     }
                     text {
-                        style: "font-size: 13px; font-weight: 700; color: {tone.colors.text.hex()};",
+                        nve_style: TypedStyle::new().font_size(13.0).font_weight(700).color(tone.colors.text),
                         "{heading}"
                     }
                 }
@@ -175,17 +196,31 @@ pub fn TabsDirectiveView(
     rsx! {
         view {
             test_id: "docs-tabs-{clean_key}",
-            style: "width: 100%; min-width: 0px; flex-direction: column; border-radius: 10px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: {theme.surface.base.hex()};",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .min_width_px(0.0)
+                .flex_col()
+                .radius(10.0)
+                .border(1.0, theme.border.default)
+                .bg(theme.surface.base),
 
             view {
                 accessibility_role: "tablist",
-                style: "width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px; padding: 6px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                nve_style: TypedStyle::new()
+                    .width_pct(100.0)
+                    .flex_row()
+                    .flex_wrap(FlexWrap::Wrap)
+                    .align_items(FlexAlign::Center)
+                    .gap(4.0)
+                    .padding(6.0)
+                    .bg(theme.surface.subtle)
+                    .border(1.0, theme.border.default),
                 for (idx, item) in items.iter().enumerate() {
                     {
                         let is_selected = item.label == active_label;
-                        let bg = if is_selected { theme.status.accent.subtle.hex() } else { Hex::TRANSPARENT };
-                        let fg = if is_selected { theme.text.link.hex() } else { theme.text.secondary.hex() };
-                        let border_c = if is_selected { accent_indicator(&theme).hex() } else { Hex::TRANSPARENT };
+                        let bg = if is_selected { theme.status.accent.subtle } else { ColorRgba::TRANSPARENT };
+                        let fg = if is_selected { theme.text.link } else { theme.text.secondary };
+                        let border_c = if is_selected { accent_indicator(&theme) } else { ColorRgba::TRANSPARENT };
                         let sel_attr = if is_selected { "true" } else { "false" };
                         let label = item.label.clone();
                         let label_for_press = label.clone();
@@ -210,12 +245,16 @@ pub fn TabsDirectiveView(
                                         ));
                                     })
                                 },
-                                style: "padding-horizontal: 10px; padding-vertical: 6px; border-radius: 6px; background-color: {bg}; border-width: 1px; border-color: {border_c};",
+                                nve_style: TypedStyle::new()
+                                    .padding_xy(10.0, 6.0)
+                                    .radius(6.0)
+                                    .bg(bg)
+                                    .border(1.0, border_c),
                                 onpress: move |_| {
                                     state.write().set_active_tab(group_for_press.clone(), label_for_press.clone());
                                 },
                                 text {
-                                    style: "font-size: 13px; font-weight: 600; color: {fg};",
+                                    nve_style: TypedStyle::new().font_size(13.0).font_weight(600).color(fg),
                                     "{label}"
                                 }
                             }
@@ -227,7 +266,12 @@ pub fn TabsDirectiveView(
             view {
                 test_id: "docs-tab-panel-{clean_key}",
                 accessibility_role: "tabpanel",
-                style: "width: 100%; min-width: 0px; flex-direction: column; padding: 14px; gap: 10px;",
+                nve_style: TypedStyle::new()
+                    .width_pct(100.0)
+                    .min_width_px(0.0)
+                    .flex_col()
+                    .padding(14.0)
+                    .gap(10.0),
                 BlocksView {
                     blocks: active_blocks,
                     scope_prefix: format!("{clean_key}-panel-{active_label}"),
@@ -246,25 +290,43 @@ pub fn StepsView(items: Vec<StepItem>, start: usize, scope_key: String) -> Eleme
     rsx! {
         view {
             test_id: "docs-steps-{scope_key}",
-            style: "width: 100%; min-width: 0px; flex-direction: column; gap: 14px;",
+            nve_style: TypedStyle::new().width_pct(100.0).min_width_px(0.0).flex_col().gap(14.0),
             for (idx, step) in items.into_iter().enumerate() {
                 {
                     let step_no = start + idx;
                     rsx! {
                         view {
                             key: "{scope_key}-step-{idx}",
-                            style: "width: 100%; min-width: 0px; flex-direction: row; align-items: flex-start; gap: 12px;",
+                            nve_style: TypedStyle::new()
+                                .width_pct(100.0)
+                                .min_width_px(0.0)
+                                .flex_row()
+                                .align_items(FlexAlign::FlexStart)
+                                .gap(12.0),
                             view {
-                                style: "width: 26px; height: 26px; border-radius: 999px; justify-content: center; align-items: center; background-color: {theme.status.accent.subtle.hex()}; border-width: 1px; border-color: {theme.status.accent.border.hex()}; flex-shrink: 0;",
+                                nve_style: TypedStyle::new()
+                                    .width_px(26.0)
+                                    .height_px(26.0)
+                                    .radius(999.0)
+                                    .justify_content(FlexJustify::Center)
+                                    .align_items(FlexAlign::Center)
+                                    .bg(theme.status.accent.subtle)
+                                    .border(1.0, theme.status.accent.border)
+                                    .flex_shrink(0.0),
                                 text {
-                                    style: "font-size: 12px; font-weight: 700; color: {theme.text.link.hex()};",
+                                    nve_style: TypedStyle::new().font_size(12.0).font_weight(700).color(theme.text.link),
                                     "{step_no}"
                                 }
                             }
                             view {
-                                style: "flex-grow: 1; min-width: 0px; flex-direction: column; gap: 8px; padding-vertical: 2px;",
+                                nve_style: TypedStyle::new()
+                                    .flex_grow(1.0)
+                                    .min_width_px(0.0)
+                                    .flex_col()
+                                    .gap(8.0)
+                                    .padding_y(2.0),
                                 text {
-                                    style: "font-size: 15px; font-weight: 700; color: {theme.text.primary.hex()};",
+                                    nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(theme.text.primary),
                                     "{step.title}"
                                 }
                                 BlocksView {
@@ -290,12 +352,16 @@ pub fn CardsGridView(items: Vec<CardItem>, scope_key: String) -> Element {
     let config = snap.config.clone();
     drop(snap);
 
-    let dir = if is_mobile { "column" } else { "row" };
+    let dir = if is_mobile { FlexDirection::Column } else { FlexDirection::Row };
 
     rsx! {
         view {
             test_id: "docs-cards-{scope_key}",
-            style: "width: 100%; flex-direction: {dir}; gap: 12px; flex-wrap: wrap;",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .flex_direction(dir)
+                .gap(12.0)
+                .flex_wrap(FlexWrap::Wrap),
             for (idx, card) in items.into_iter().enumerate() {
                 {
                     let target = card.href.as_deref().and_then(|h| {
@@ -319,28 +385,36 @@ pub fn CardsGridView(items: Vec<CardItem>, scope_key: String) -> Element {
                             test_id: "docs-card-{scope_key}-{idx}",
                             accessibility_role: if has_href { "link" } else { "region" },
                             "href": resolved_href,
-                            style: "flex-grow: 1; min-width: 220px; flex-direction: column; gap: 6px; padding: 14px; border-radius: 10px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                            nve_style: TypedStyle::new()
+                                .flex_grow(1.0)
+                                .min_width_px(220.0)
+                                .flex_col()
+                                .gap(6.0)
+                                .padding(14.0)
+                                .radius(10.0)
+                                .bg(theme.surface.base)
+                                .border(1.0, theme.border.default),
                             onpress: move |_| {
                                 if let Some((route, anchor)) = target.clone() {
                                     navigate_to_target(state, route, anchor);
                                 }
                             },
                             view {
-                                style: "flex-direction: row; align-items: center; gap: 8px;",
+                                nve_style: TypedStyle::new().flex_row().align_items(FlexAlign::Center).gap(8.0),
                                 if let Some(ref icon_txt) = card.icon {
                                     text {
-                                        style: "font-size: 14px; color: {theme.text.link.hex()};",
+                                        nve_style: TypedStyle::new().font_size(14.0).color(theme.text.link),
                                         "{icon_txt}"
                                     }
                                 }
                                 text {
-                                    style: "font-size: 15px; font-weight: 700; color: {theme.text.primary.hex()};",
+                                    nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(theme.text.primary),
                                     "{card.title}"
                                 }
                             }
                             if let Some(ref desc) = card.description {
                                 text {
-                                    style: "font-size: 13px; color: {theme.text.secondary.hex()};",
+                                    nve_style: TypedStyle::new().font_size(13.0).color(theme.text.secondary),
                                     "{desc}"
                                 }
                             }

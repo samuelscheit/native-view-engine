@@ -16,7 +16,8 @@ use std::rc::Rc;
 use dioxus_core::{
     current_scope_id, provide_context, try_consume_context, use_hook, Element, ScopeId, VNode,
 };
-use dioxus_core_macro::{component, rsx, Props};
+use crate::rsx;
+use dioxus_core_macro::{component, Props};
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
 
 pub use nve_interop::traits::{

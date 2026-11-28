@@ -6,11 +6,11 @@
 
 use nve_abi::ColorRgba;
 use nve_dioxus::prelude::*;
-use nve_ui::{Button, ButtonSize, ButtonVariant, Card, CardVariant, ColorHex, Separator};
+use nve_ui::{Button, ButtonSize, ButtonVariant, Card, CardVariant, Separator};
 
 use crate::assets::build_metrics_sparkline;
 use crate::ui::store::use_studio;
-use crate::ui::style::use_studio_style;
+use crate::ui::style::{StudioStyleExt, flex_dims, row_between, text_style, use_studio_style};
 
 #[component]
 fn KpiCard(label: &'static str, value: String, color: ColorRgba) -> Element {
@@ -21,14 +21,17 @@ fn KpiCard(label: &'static str, value: String, color: ColorRgba) -> Element {
             variant: CardVariant::Elevated,
             padding: Some(10.0),
             gap: Some(4.0),
-            style: Some(format!(
-                "flex: 1; padding: 10px; gap: 4px; background-color: {}; border-radius: {}px; {}",
-                s.t.surface.raised.hex(),
-                s.m.card_radius,
-                s.card()
-            )),
-            text { style: "color: {s.t.text.tertiary.hex()}; font-size: 10px;", "{label}" }
-            text { style: "color: {color.hex()}; font-size: 18px;", "{value}" }
+            nve_style: Some(
+                TypedStyle::new()
+                    .flex_1()
+                    .padding(10.0)
+                    .gap(4.0)
+                    .bg(s.t.surface.raised)
+                    .radius(s.m.card_radius as f32)
+                    .outline(s.card()),
+            ),
+            text { nve_style: text_style(s.t.text.tertiary, 10.0), "{label}" }
+            text { nve_style: text_style(color, 18.0), "{value}" }
         }
     }
 }
@@ -49,26 +52,21 @@ pub(crate) fn MetricsView() -> Element {
         history_len,
         t.status.accent.text,
     );
-    let add_btn = s.compact_control(
-        "flex: 1; height: 28px; min-height: 28px;",
-        2,
-        s.m.button_radius,
-        Some(true),
-    );
+    let add_btn = s.compact_control(flex_dims(28.0), 2, s.m.button_radius, Some(true));
     let row = s.row();
     let row_border = s.list_row_border();
-    let ok_ink = t.status.success.text.hex();
+    let ok_ink = t.status.success.text;
 
     rsx! {
         view {
-            style: "width: 100%; flex-shrink: 0; flex-direction: column; gap: 8px;",
+            nve_style: TypedStyle::new().width_pct(100.0).flex_shrink(0.0).flex_col().gap(8.0),
             view {
-                style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 8px;",
+                nve_style: TypedStyle::new().width_pct(100.0).flex_shrink(0.0).flex_row().gap(8.0),
                 KpiCard { label: "FRAMES", value: frame_count.to_string(), color: t.status.accent.text }
                 KpiCard { label: "SNAPSHOTS", value: format!("{snapshot_index}/{history_len}"), color: t.status.info.text }
             }
             view {
-                style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 8px;",
+                nve_style: TypedStyle::new().width_pct(100.0).flex_shrink(0.0).flex_row().gap(8.0),
                 KpiCard { label: "ACTIVE TASKS", value: metrics.active_tasks.to_string(), color: t.status.success.text }
                 KpiCard { label: "MESSAGES", value: metrics.total_messages.to_string(), color: t.status.warning.text }
             }
@@ -78,16 +76,15 @@ pub(crate) fn MetricsView() -> Element {
             variant: CardVariant::Outlined,
             padding: Some(8.0),
             gap: Some(4.0),
-            style: Some(format!(
-                "width: 100%; flex-shrink: 0; padding: 8px; gap: 4px; background-color: {}; border-radius: {}px; {}",
-                t.surface.base.hex(),
-                s.m.card_radius,
-                s.card()
-            )),
+            nve_style: Some(s.card_surface(8, 4, t.surface.base, s.m.card_radius)),
             view {
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center;",
-                text { style: "color: {t.text.tertiary.hex()}; font-size: 10px;", "SKIA SPARKLINE (NVE_DRAW1)" }
-                text { style: "color: {t.text.link.hex()}; font-size: 10px;", "{metrics.telemetry_samples_us.len()} pts" }
+                nve_style: TypedStyle::new()
+                    .width_pct(100.0)
+                    .flex_row()
+                    .justify_content(FlexJustify::SpaceBetween)
+                    .align_items(FlexAlign::Center),
+                text { nve_style: text_style(t.text.tertiary, 10.0), "SKIA SPARKLINE (NVE_DRAW1)" }
+                text { nve_style: text_style(t.text.link, 10.0), "{metrics.telemetry_samples_us.len()} pts" }
             }
             view {
                 test_id: "metrics-sparkline-canvas",
@@ -96,19 +93,30 @@ pub(crate) fn MetricsView() -> Element {
                 }),
                 accessibility_label: "Live telemetry frame timing sparkline",
                 accessibility_role: "image",
-                style: "width: 100%; height: 72px; flex-shrink: 0; background-color: {t.surface.sunken.hex()}; border-radius: {s.m.button_radius}px; border-width: 1px; border-color: {t.border.default.hex()};",
+                nve_style: TypedStyle::new()
+                    .width_pct(100.0)
+                    .height_px(72.0)
+                    .flex_shrink(0.0)
+                    .bg(t.surface.sunken)
+                    .radius(s.m.button_radius as f32)
+                    .border(1.0, t.border.default),
             }
         }
 
         Separator {}
 
         view {
-            style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 6px; {row}",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .flex_shrink(0.0)
+                .flex_row()
+                .gap(6.0)
+                .outline(row),
             Button {
                 variant: ButtonVariant::Secondary,
                 size: ButtonSize::Sm,
                 test_id: Some("stress-add-8".into()),
-                style: Some(add_btn.clone()),
+                nve_style: Some(add_btn.clone()),
                 on_press: move |_| store.update(|st| st.add_stress_rows(8)),
                 "+8 Rows"
             }
@@ -116,7 +124,7 @@ pub(crate) fn MetricsView() -> Element {
                 variant: ButtonVariant::Secondary,
                 size: ButtonSize::Sm,
                 test_id: Some("stress-add-24".into()),
-                style: Some(add_btn),
+                nve_style: Some(add_btn),
                 on_press: move |_| store.update(|st| st.add_stress_rows(24)),
                 "+24 Rows"
             }
@@ -124,20 +132,30 @@ pub(crate) fn MetricsView() -> Element {
                 variant: ButtonVariant::Secondary,
                 size: ButtonSize::Sm,
                 test_id: Some("stress-reset".into()),
-                style: Some(s.compact_control("flex: 1; height: 28px; min-height: 28px;", 2, s.m.button_radius, Some(false))),
+                nve_style: Some(s.compact_control(flex_dims(28.0), 2, s.m.button_radius, Some(false))),
                 on_press: move |_| store.update(|st| st.reset_stress_rows()),
                 "Reset"
             }
         }
 
         scrollview {
-            style: "width: 100%; flex: 1; flex-direction: column; gap: 5px; {row}",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .flex_1()
+                .flex_col()
+                .gap(5.0)
+                .outline(row),
             for row_idx in 1..=metrics.stress_rows {
                 view {
                     key: "metric-row-{row_idx}",
-                    style: "width: 100%; height: 28px; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 10px; background-color: {s.stripe(row_idx).hex()}; border-radius: {s.m.pill_radius}px; border-width: 1px; border-color: {row_border.hex()};",
-                    text { style: "color: {t.text.secondary.hex()}; font-size: 11px;", "Node Batch #{row_idx:02}" }
-                    text { style: "color: {ok_ink}; font-size: 11px;", "{180 + ((row_idx * 17) % 140)}us | OK" }
+                    nve_style: row_between()
+                        .height_px(28.0)
+                        .padding_x(10.0)
+                        .bg(s.stripe(row_idx))
+                        .radius(s.m.pill_radius as f32)
+                        .border(1.0, row_border),
+                    text { nve_style: text_style(t.text.secondary, 11.0), "Node Batch #{row_idx:02}" }
+                    text { nve_style: text_style(ok_ink, 11.0), "{180 + ((row_idx * 17) % 140)}us | OK" }
                 }
             }
         }

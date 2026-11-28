@@ -10,21 +10,21 @@ mod native {
 
     use criterion::{criterion_group, Criterion};
     use dioxus_core::Element;
-    use dioxus_core_macro::rsx;
-    use nve_abi::{FrameId, SurfaceId};
+    use nve_dioxus::rsx;
+    use nve_abi::{ColorRgba, FrameId, SurfaceId};
     use nve_dioxus::prelude::*;
     use nve_dioxus::DioxusSurface;
 
     fn bench_list_app() -> Element {
         rsx! {
             view {
-                flex_direction: "column",
-                gap: "8px",
+                nve_style: TypedStyle::col().gap(8.0),
                 for i in 0..32u32 {
                     view {
                         key: "{i}",
-                        padding: "8px",
-                        background_color: "#1e293b",
+                        nve_style: TypedStyle::new()
+                            .padding(8.0)
+                            .bg(ColorRgba::rgb(0x1e, 0x29, 0x3b)),
                         text { "Row {i}" }
                     }
                 }

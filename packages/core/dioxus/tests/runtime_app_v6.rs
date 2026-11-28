@@ -87,7 +87,7 @@ fn full_v6_dioxus_app() -> Element {
 
     rsx! {
         view {
-            style: "width: 300px; height: 100px; flex-direction: column;",
+            nve_style: TypedStyle::col().width_px(300.0).height_px(100.0),
             text { "title={title} n={prop_num} count={count} reply={reply} push={pushes}" }
         }
     }
@@ -333,7 +333,7 @@ fn real_signals_v6_app() -> Element {
     let cancelled = *cancel_sig.read();
     rsx! {
         view {
-            style: "width: 320px; height: 100px; flex-direction: column;",
+            nve_style: TypedStyle::col().width_px(320.0).height_px(100.0),
             text { "count={count} reply={reply} push={push} cancelled={cancelled}" }
         }
     }
@@ -532,7 +532,7 @@ fn parent_ignoring_host_props() -> Element {
     // memoizes it unless `HostProps`'s internal reactive signal marks `PropsChild`'s scope dirty.
     rsx! {
         view {
-            style: "width: 240px; height: 60px;",
+            nve_style: TypedStyle::new().width_px(240.0).height_px(60.0),
             PropsChild {}
         }
     }

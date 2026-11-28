@@ -6,7 +6,7 @@ use nve_tables::tables::{
     ResponsiveRules, StateRules, TextContent, Transform, Typography, Visual,
 };
 use nve_tables::{RowPatch, StylePatchExt};
-use nve_engine::{HotPatchMsg, StoreBackend};
+use nve_engine::StoreBackend;
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 
 use crate::{SsrDocumentOptions, WebBackend};
@@ -107,23 +107,20 @@ fn web_backend_ssr_dedup_css_composite_fast_lane_hydrate_and_hot_patch() {
         );
     }
 
-    // Tier-1 hot-patch updates text directly in NodeStore!
-    let patched = web.apply_template_patch(
-        &mut store,
-        &HotPatchMsg::TemplatePatch {
-            generation: 1,
-            template_id: "hero-title".into(),
-            attr_updates: vec![("letter-spacing".into(), "1px".into())],
-            text_updates: vec![],
-            target_test_id: Some("hero-title".into()),
-            node_path: vec![],
-            text_replacements: vec![("Hello NVE2 Web".into(), "Patched NVE2 Web".into())],
-        },
-    );
-    assert!(patched >= 1);
-    let after = web.render_html(&store);
-    assert!(after.contains("Patched NVE2 Web"));
-    assert!(after.contains("letter-spacing:1px;"));
+    // Binary `RowPatch` updates NodeStore tables directly and re-renders through the single store path.
+    let mut rp = nve_store::RowPatch::new();
+    rp.set(Typography::LETTER_SPACING, 1.0);
+    let mut words = Vec::new();
+    assert!(nve_store::FlatResource::write_words(&rp, &mut words));
+    let view = nve_store::RowPatchView::from_words(&words).unwrap();
+    let mut tx = store.tx();
+    tx.apply_row_patch(heading, view);
+    tx.edit::<TextContent>(heading).text("Patched NVE2 Web");
+    tx.commit_into(&mut changes);
+    web.commit(&store, &changes).unwrap();
+    let after = web.render_ssr(&store);
+    assert!(after.html.contains("Patched NVE2 Web"));
+    assert!(after.style_css.contains("letter-spacing:1px;"));
 }
 
 #[cfg(feature = "hydrate")]
@@ -496,42 +493,6 @@ fn css_visibility_emits_visible_hidden_and_omits_inherit() {
         ssr_back.style_css
     );
 
-    // CSS visibility keywords: collapse -> Hidden, initial -> Visible, inherit/unset/revert/revert-layer -> Inherit, invalid ignored.
-    {
-        let mut tx = store.tx();
-        assert!(nve_tables::apply_css_attr_to_tx(&mut tx, n, "visibility", "collapse"));
-        tx.commit_into(&mut changes);
-    }
-    assert_eq!(store.row::<Visual>(n).visibility(), Visibility::Hidden);
-    {
-        let mut tx = store.tx();
-        assert!(nve_tables::apply_css_attr_to_tx(&mut tx, n, "visibility", "bogus"));
-        tx.commit_into(&mut changes);
-    }
-    assert_eq!(store.row::<Visual>(n).visibility(), Visibility::Hidden, "invalid visibility value must not overwrite");
-    {
-        let mut tx = store.tx();
-        assert!(nve_tables::apply_css_attr_to_tx(&mut tx, n, "visibility", "initial"));
-        tx.commit_into(&mut changes);
-    }
-    assert_eq!(store.row::<Visual>(n).visibility(), Visibility::Visible);
-    for kw in ["unset", "revert", "revert-layer", "inherit"] {
-        {
-            let mut tx = store.tx();
-            tx.edit::<Visual>(n).visibility(Visibility::Hidden);
-            tx.commit_into(&mut changes);
-        }
-        {
-            let mut tx = store.tx();
-            assert!(nve_tables::apply_css_attr_to_tx(&mut tx, n, "visibility", kw));
-            tx.commit_into(&mut changes);
-        }
-        assert_eq!(
-            store.row::<Visual>(n).visibility(),
-            Visibility::Inherit,
-            "CSS visibility keyword `{kw}` must resolve to Visibility::Inherit"
-        );
-    }
 }
 
 #[test]

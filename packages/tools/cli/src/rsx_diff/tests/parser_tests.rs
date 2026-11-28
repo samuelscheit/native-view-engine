@@ -157,3 +157,19 @@ fn attribute_reordering_or_renaming_is_structural() {
         "structural",
     );
 }
+
+#[test]
+fn attribute_spread_before_children_does_not_shift_child_indices() {
+    let base = component(
+        "view { ..extra_attrs, text { \"First\" } view { padding: 4.0, text { \"Second\" } } }",
+    );
+    let edited = base
+        .replace("\"First\"", "\"First!\"")
+        .replace("padding: 4.0", "padding: 12.0");
+    let p = patch(&base, &edited);
+    assert_eq!(p.text_changes.len(), 1);
+    assert_eq!(p.attr_changes.len(), 1);
+    // `..extra_attrs,` must NOT consume a child slot: `text` is child 0 and inner `view` is child 1.
+    assert_eq!(p.text_changes[0].target.node_path, vec![0, 0, 0, 0]);
+    assert_eq!(p.attr_changes[0].target.node_path, vec![0, 0, 1]);
+}

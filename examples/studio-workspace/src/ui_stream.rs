@@ -9,10 +9,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use nve_dioxus::prelude::*;
-use nve_ui::ColorHex;
 
 use crate::ui::store::use_studio;
-use crate::ui::style::{data_attrs, use_studio_style};
+use crate::ui::style::{StudioStyleExt, data_attrs, row_between, text_style, use_studio_style};
 use crate::virtual_list::{DEFAULT_STREAM_ROW_COUNT, StreamVirtualEngine};
 
 #[component]
@@ -85,76 +84,88 @@ pub(crate) fn Stream100kPanel(is_mobile: bool) -> Element {
     ]);
 
     let var_h = stream.variable_heights;
-    let vh_ol = s.control(var_h);
     let accent_ol = s.control(true);
     let neutral_ol = s.control(false);
     let row_ol = s.row();
-    let pill_r = format!("{}px", s.m.pill_radius);
-    let btn_r = format!("{}px", s.m.button_radius);
-    let card = s.card();
-    let (accent_bg, accent_ink) = (t.status.accent.subtle.hex(), t.text.link.hex());
-    let (subtle_bg, base_bg) = (t.surface.subtle.hex(), t.surface.base.hex());
-    let (primary, secondary, tertiary) = (
-        t.text.primary.hex(),
-        t.text.secondary.hex(),
-        t.text.tertiary.hex(),
-    );
+    let pill_r = s.m.pill_radius as f32;
+    let btn_r = s.m.button_radius as f32;
+    let accent_jump_btn = TypedStyle::new()
+        .flex_1()
+        .height_px(26.0)
+        .justify_content(FlexJustify::Center)
+        .align_items(FlexAlign::Center)
+        .bg(t.status.accent.subtle)
+        .radius(pill_r)
+        .border(1.0, accent_ol.color);
+    let page_btn = TypedStyle::new()
+        .width_px(34.0)
+        .height_px(26.0)
+        .flex_shrink(0.0)
+        .justify_content(FlexJustify::Center)
+        .align_items(FlexAlign::Center)
+        .bg(t.surface.subtle)
+        .radius(pill_r)
+        .outline(neutral_ol);
 
     rsx! {
         view {
-            style: "width: 100%; flex-shrink: 0; flex-direction: row; gap: 5px;",
-            border_width: "{row_ol.width}px",
-            border_color: "{row_ol.color.hex()}",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .flex_shrink(0.0)
+                .flex_row()
+                .gap(5.0)
+                .outline(row_ol),
             pressable {
                 test_id: "stream-jump-top",
-                style: "flex: 1; height: 26px; justify-content: center; align-items: center; background-color: {base_bg}; {neutral_ol}",
-                border_radius: "{pill_r}",
+                nve_style: TypedStyle::new()
+                    .flex_1()
+                    .height_px(26.0)
+                    .justify_content(FlexJustify::Center)
+                    .align_items(FlexAlign::Center)
+                    .bg(t.surface.base)
+                    .radius(pill_r)
+                    .outline(neutral_ol),
                 onpress: move |_| store.update(|st| st.set_stream_scroll_offset(0)),
-                text { style: "color: {primary}; font-size: 10px;", "#0" }
+                text { nve_style: text_style(t.text.primary, 10.0), "#0" }
             }
             pressable {
                 test_id: "stream-jump-50k",
-                style: "flex: 1; height: 26px; justify-content: center; align-items: center; border-width: 1px;",
-                background_color: "{accent_bg}",
-                border_color: "{accent_ol.color.hex()}",
-                border_radius: "{pill_r}",
+                nve_style: accent_jump_btn.clone(),
                 onpress: move |_| store.update(|st| st.set_stream_scroll_offset(offset_50k)),
-                text { style: "font-size: 10px;", color: "{accent_ink}", "#50k" }
+                text { nve_style: text_style(t.text.link, 10.0), "#50k" }
             }
             pressable {
                 test_id: "stream-jump-end",
-                style: "flex: 1; height: 26px; justify-content: center; align-items: center; border-width: 1px;",
-                background_color: "{accent_bg}",
-                border_color: "{accent_ol.color.hex()}",
-                border_radius: "{pill_r}",
+                nve_style: accent_jump_btn,
                 onpress: move |_| store.update(|st| st.set_stream_scroll_offset(offset_end)),
-                text { style: "font-size: 10px;", color: "{accent_ink}", "#99,999" }
+                text { nve_style: text_style(t.text.link, 10.0), "#99,999" }
             }
             pressable {
                 test_id: "stream-page-up",
-                style: "width: 34px; height: 26px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {subtle_bg}; {neutral_ol}",
-                border_radius: "{pill_r}",
+                nve_style: page_btn.clone(),
                 onpress: move |_| store.update(|st| st.set_stream_scroll_offset(page_up_y)),
-                text { style: "color: {secondary}; font-size: 10px;", "Up" }
+                text { nve_style: text_style(t.text.secondary, 10.0), "Up" }
             }
             pressable {
                 test_id: "stream-page-down",
-                style: "width: 34px; height: 26px; flex-shrink: 0; justify-content: center; align-items: center; background-color: {subtle_bg}; {neutral_ol}",
-                border_radius: "{pill_r}",
+                nve_style: page_btn,
                 onpress: move |_| store.update(|st| st.set_stream_scroll_offset(page_down_y)),
-                text { style: "color: {secondary}; font-size: 10px;", "Dn" }
+                text { nve_style: text_style(t.text.secondary, 10.0), "Dn" }
             }
             pressable {
                 test_id: "stream-toggle-heights",
-                style: "width: 48px; height: 26px; flex-shrink: 0; justify-content: center; align-items: center;",
-                background_color: "{s.control_bg(var_h)}",
-                border_radius: "{pill_r}",
-                border_width: "{vh_ol.width}px",
-                border_color: "{vh_ol.color.hex()}",
+                nve_style: TypedStyle::new()
+                    .width_px(48.0)
+                    .height_px(26.0)
+                    .flex_shrink(0.0)
+                    .justify_content(FlexJustify::Center)
+                    .align_items(FlexAlign::Center)
+                    .bg(s.control_bg(var_h))
+                    .radius(pill_r)
+                    .outline(s.control(var_h)),
                 onpress: move |_| store.update(|st| st.toggle_stream_variable_heights()),
                 text {
-                    style: "font-size: 10px;",
-                    color: if var_h { "{accent_ink}" } else { "{secondary}" },
+                    nve_style: text_style(if var_h { t.text.link } else { t.text.secondary }, 10.0),
                     if var_h { "Var H" } else { "Fix H" }
                 }
             }
@@ -162,11 +173,12 @@ pub(crate) fn Stream100kPanel(is_mobile: bool) -> Element {
 
         view {
             test_id: "stream-window-readout",
-            style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 9px; padding-vertical: 5px; background-color: {base_bg};",
-            border_radius: "{btn_r}",
-            border_width: "{card.width}px",
-            border_color: "{card.color.hex()}",
-            text { style: "color: {secondary}; font-size: 10px;", "{readout_text}" }
+            nve_style: row_between()
+                .padding_xy(9.0, 5.0)
+                .bg(t.surface.base)
+                .radius(btn_r)
+                .outline(s.card()),
+            text { nve_style: text_style(t.text.secondary, 10.0), "{readout_text}" }
         }
 
         // O(viewport) recycled-slot container: mounts ONLY `[start..end)` with exact 1:1 row
@@ -174,9 +186,12 @@ pub(crate) fn Stream100kPanel(is_mobile: bool) -> Element {
         scrollview {
             test_id: "stream-viewport",
             nve_table: viewport_attrs,
-            style: "width: 100%; flex: 1; flex-direction: column; gap: 0px;",
-            border_width: "{row_ol.width}px",
-            border_color: "{row_ol.color.hex()}",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .flex_1()
+                .flex_col()
+                .gap(0.0)
+                .outline(row_ol),
             for (slot_idx, row) in rows_meta.into_iter().enumerate() {
                 {
                     let row_idx = row.index;
@@ -192,19 +207,29 @@ pub(crate) fn Stream100kPanel(is_mobile: bool) -> Element {
                         pressable {
                             key: "vslot-{slot_idx}",
                             test_id: "stream-row-{row_idx}",
-                            style: "width: 100%; flex-shrink: 0; flex-direction: column; justify-content: center; padding-horizontal: 9px; gap: 2px; border-width: 1px;",
-                            height: "{row.height_px}px",
-                            background_color: "{row_bg.hex()}",
-                            border_radius: "{pill_r}",
-                            border_color: "{rbc.hex()}",
+                            nve_style: TypedStyle::new()
+                                .width_pct(100.0)
+                                .height_px(row.height_px as f32)
+                                .flex_shrink(0.0)
+                                .flex_col()
+                                .justify_content(FlexJustify::Center)
+                                .padding_x(9.0)
+                                .gap(2.0)
+                                .bg(row_bg)
+                                .radius(pill_r)
+                                .border(1.0, rbc),
                             onpress: move |_| store.update(|st| st.toggle_stream_row_expanded(row_idx)),
                             view {
-                                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center;",
-                                text { style: "color: {primary}; font-size: 10px;", "{summary_lbl}" }
-                                text { style: "color: {tertiary}; font-size: 9px;", "{meta_lbl}" }
+                                nve_style: TypedStyle::new()
+                                    .width_pct(100.0)
+                                    .flex_row()
+                                    .justify_content(FlexJustify::SpaceBetween)
+                                    .align_items(FlexAlign::Center),
+                                text { nve_style: text_style(t.text.primary, 10.0), "{summary_lbl}" }
+                                text { nve_style: text_style(t.text.tertiary, 9.0), "{meta_lbl}" }
                             }
                             if row.is_expanded {
-                                text { style: "color: {secondary}; font-size: 10px;", "{row.detail}" }
+                                text { nve_style: text_style(t.text.secondary, 10.0), "{row.detail}" }
                             }
                         }
                     }

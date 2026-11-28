@@ -89,14 +89,14 @@ impl SessionApp {
     }
 
     #[cfg(feature = "dev")]
-    pub(crate) fn store_mut(&mut self) -> &mut NodeStore {
+    pub(crate) fn apply_hot_patch(&mut self, patch: &nve_engine::HotPatchMsg) -> bool {
         match self {
             #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(surface, _) => surface.store_mut(),
+            Self::Dioxus(surface, _) => surface.apply_hot_patch(patch),
             #[cfg(feature = "app-studio")]
-            Self::Studio(module) => module.surface_mut().store_mut(),
+            Self::Studio(module) => module.apply_hot_patch(patch),
             #[cfg(feature = "app-kitchen-sink")]
-            Self::KitchenSink(module) => module.surface_mut().store_mut(),
+            Self::KitchenSink(module) => module.apply_hot_patch(patch),
         }
     }
 

@@ -1,4 +1,13 @@
-//! Span-based typed attribute diffs: literal-leaf edits, shape guards, grouping, coordinates.
+//! Span-based typed attribute & `nve_style: TypedStyle::...` builder chain diffs:
+//! literal-leaf edits, shape guards, grouping, overlap protection, coordinates, and binary
+//! `RowPatch` lowering (including untagged elements without `test_id`).
+
+use nve_engine::hot_patch_template_key;
+use nve_store::{Length, Rgba};
+use nve_tables::tables::{
+    AlignItems, CursorKind, Display, FlexDirection, Interaction, JustifyContent, Layout, Overflow,
+    Position, TextAlign, TextDecoration, Typography, Visual, WhiteSpace,
+};
 
 use super::super::DiffOutcome;
 use super::super::eval::TypedAttrValue as V;
@@ -14,270 +23,458 @@ fn enum_v(ty: &str, variant: &str) -> V {
 }
 
 #[test]
-fn literal_leaf_edits_patch_and_lower_like_the_typed_attribute_path() {
-    let cases: Vec<(&str, &str, &str, &str, V)> = vec![
-        // Float literals mirror `apply_numeric_attr` (f32, clamps).
-        (
-            "margin: 8.0,",
-            "margin: -8.0,",
-            "margin",
-            "-8px",
-            V::Float(-8.0),
-        ),
-        (
-            "padding: 8.0,",
-            "padding: -4.5,",
-            "padding",
-            "0px",
-            V::Float(-4.5),
-        ),
-        (
-            "width: 8.0,",
-            "width: 120.5,",
-            "width",
-            "120.5px",
-            V::Float(120.5),
-        ),
-        (
-            "\"min-height\": 4.0,",
-            "\"min-height\": 6.0,",
-            "min-height",
-            "6px",
-            V::Float(6.0),
-        ),
-        (
-            "font_size: 14.0,",
-            "font_size: 0.25,",
-            "font-size",
-            "1px",
-            V::Float(0.25),
-        ),
-        (
-            "opacity: 1.0,",
-            "opacity: 1.5,",
-            "opacity",
-            "1",
-            V::Float(1.5),
-        ),
-        ("flex: 1.0,", "flex: 2.5,", "flex", "2.5", V::Float(2.5)),
-        (
-            "flex_shrink: 1.0,",
-            "flex_shrink: -1.0,",
-            "flex-shrink",
-            "0",
-            V::Float(-1.0),
-        ),
-        ("z_index: 1,", "z_index: -3,", "z-index", "-3", V::Int(-3)),
-        (
-            "z_index: 1.0,",
-            "z_index: 2.9,",
-            "z-index",
-            "2",
-            V::Float(2.9),
-        ),
-        (
-            "border_radius: 4.0,",
-            "border_radius: 6.25,",
-            "border-radius",
-            "6.25px",
-            V::Float(6.25),
-        ),
-        ("gap: 4.0e0,", "gap: 1.5e1,", "gap", "15px", V::Float(15.0)),
-        // Strings pass through to the same CSS parser the compiled app uses.
-        (
-            "background_color: \"#fff\",",
-            "background_color: r#\"#000\"#,",
-            "background-color",
-            "#000",
-            V::String("#000".into()),
-        ),
-        (
-            "\"font-weight\": \"400\",",
-            "\"font-weight\": \"semibold\",",
-            "font-weight",
-            "semibold",
-            V::String("semibold".into()),
-        ),
-        (
-            "style: \"gap: {{1}}px;\",",
-            "style: \"gap: 2px;\",",
-            "style",
-            "gap: 2px;",
-            V::String("gap: 2px;".into()),
-        ),
-        // Typed constructors and keywords (the Track 2 attribute forms).
-        (
-            "width: Length::points(8.0),",
-            "width: Length::points(12.0),",
-            "width",
-            "12px",
-            V::LengthPx(12.0),
-        ),
-        (
-            "width: Length::percent(25.0),",
-            "width: Length::percent(50.0),",
-            "width",
-            "50%",
-            V::LengthPct(50.0),
-        ),
-        (
-            "height: nve_store::Length::points(1.0),",
-            "height: nve_store::Length::points(2.0),",
-            "height",
-            "2px",
-            V::LengthPx(2.0),
-        ),
-        (
-            "max_width: Dimension::Points(10.0),",
-            "max_width: Dimension::Points(11.0),",
-            "max-width",
-            "11px",
-            V::LengthPx(11.0),
-        ),
-        (
-            "padding: Length::points(1.0),",
-            "padding: Length::points(2.0),",
-            "padding",
-            "2px",
-            V::LengthPx(2.0),
-        ),
-        (
-            "background_color: Rgba::rgb(10, 20, 30),",
-            "background_color: Rgba::rgb(255, 0, 128),",
-            "background-color",
-            "#ff0080",
-            V::Rgba {
-                r: 255,
-                g: 0,
-                b: 128,
-                a: 255,
-            },
-        ),
-        (
-            "color: ColorRgba::rgba(0, 0, 0, 0),",
-            "color: ColorRgba::rgba(0, 0, 0, 128),",
-            "color",
-            "#00000080",
-            V::Rgba {
-                r: 0,
-                g: 0,
-                b: 0,
-                a: 128,
-            },
-        ),
-        (
-            "flex_direction: FlexDirection::Row,",
-            "flex_direction: FlexDirection::Column,",
-            "flex-direction",
-            "column",
-            enum_v("FlexDirection", "Column"),
-        ),
-        (
-            "justify_content: JustifyContent::FlexStart,",
-            "justify_content: JustifyContent::SpaceBetween,",
-            "justify-content",
-            "space-between",
-            enum_v("JustifyContent", "SpaceBetween"),
-        ),
-        (
-            "display: Display::Flex,",
-            "display: Display::None,",
-            "display",
-            "none",
-            enum_v("Display", "None"),
-        ),
-        (
-            "\"white-space\": WhiteSpace::Normal,",
-            "\"white-space\": WhiteSpace::NoWrap,",
-            "white-space",
-            "nowrap",
-            enum_v("WhiteSpace", "NoWrap"),
-        ),
-        (
-            "\"overflow-x\": Overflow::Visible,",
-            "\"overflow-x\": Overflow::Hidden,",
-            "overflow-x",
-            "hidden",
-            enum_v("Overflow", "Hidden"),
-        ),
-        (
-            "\"word-break\": WordBreak::Normal,",
-            "\"word-break\": WordBreak::BreakAll,",
-            "word-break",
-            "break-all",
-            enum_v("WordBreak", "BreakAll"),
-        ),
-        (
-            "align_items: Center,",
-            "align_items: FlexEnd,",
-            "align-items",
-            "flex-end",
-            V::Enum {
-                ty: None,
-                variant: "FlexEnd".into(),
-            },
-        ),
-    ];
-    for (old_attr, new_attr, name, css, typed) in cases {
+fn standalone_numeric_and_nve_style_chain_edits_lower_to_binary_row_patch() {
+    let check = |old_attr: &str, new_attr: &str, name: &str, typed: V| {
         let (old, new) = (element_with(old_attr), element_with(new_attr));
-        let (patch, messages) = expect_tier1(diff_rsx_source("demo.rs", &old, &new, 7));
+        let (patch, mut messages) = expect_tier1(diff_rsx_source("demo.rs", &old, &new, 7));
         assert_eq!(messages.len(), 1, "{old_attr} -> {new_attr}");
-        let msg = &messages[0];
-        assert_eq!(
-            msg.attr_updates,
-            vec![(name.to_owned(), css.to_owned())],
-            "{old_attr} -> {new_attr}"
-        );
+        let msg = messages.remove(0);
         assert_eq!(msg.target_test_id.as_deref(), Some("box"));
         assert_eq!(msg.node_path, vec![0]);
-        assert_eq!((msg.generation, msg.template_id.as_str()), (7, "demo.rs"));
+        assert_eq!(msg.generation, 7);
+        assert_eq!(msg.template_key, hot_patch_template_key("demo.rs", 0));
         assert!(msg.text_replacements.is_empty());
         let [change] = patch.attr_changes.as_slice() else {
             panic!("expected one typed change for {old_attr} -> {new_attr}: {patch:?}");
         };
         assert_eq!(change.attr.name, name);
         assert_eq!(change.new, typed, "{old_attr} -> {new_attr}");
+        msg
+    };
+
+    // Standalone numeric attrs handled directly by `NveMutationWriter`.
+    assert_eq!(
+        check("margin: 8.0,", "margin: -8.0,", "margin", V::Float(-8.0)).prop(Layout::MARGIN_TOP),
+        Some(Length::points(-8.0))
+    );
+    assert_eq!(
+        check("padding: 8.0,", "padding: -4.5,", "padding", V::Float(-4.5))
+            .prop(Layout::PADDING_TOP),
+        Some(Length::points(0.0))
+    );
+    assert_eq!(
+        check("width: 8.0,", "width: 120.5,", "width", V::Float(120.5)).prop(Layout::WIDTH),
+        Some(Length::points(120.5))
+    );
+    assert_eq!(
+        check(
+            "\"min-height\": 4.0,",
+            "\"min-height\": 6.0,",
+            "min-height",
+            V::Float(6.0)
+        )
+        .prop(Layout::MIN_HEIGHT),
+        Some(Length::points(6.0))
+    );
+    assert_eq!(
+        check("font_size: 14.0,", "font_size: 0.25,", "font-size", V::Float(0.25))
+            .prop(Typography::FONT_SIZE),
+        Some(1.0)
+    );
+    assert_eq!(
+        check("opacity: 1.0,", "opacity: 1.5,", "opacity", V::Float(1.5)).prop(Visual::OPACITY),
+        Some(1.0)
+    );
+    assert_eq!(
+        check("flex: 1.0,", "flex: 2.5,", "flex", V::Float(2.5)).prop(Layout::FLEX_GROW),
+        Some(2.5)
+    );
+    assert_eq!(
+        check("flex_shrink: 1.0,", "flex_shrink: -1.0,", "flex-shrink", V::Float(-1.0))
+            .prop(Layout::FLEX_SHRINK),
+        Some(0.0)
+    );
+    assert_eq!(
+        check("z_index: 1,", "z_index: -3,", "z-index", V::Int(-3)).prop(Visual::Z_INDEX),
+        Some(-3)
+    );
+    assert_eq!(
+        check("z_index: 1.0,", "z_index: 2.9,", "z-index", V::Float(2.9)).prop(Visual::Z_INDEX),
+        Some(2)
+    );
+    assert_eq!(
+        check(
+            "border_radius: 4.0,",
+            "border_radius: 6.25,",
+            "border-radius",
+            V::Float(6.25)
+        )
+        .prop(Visual::BORDER_RADIUS),
+        Some(6.25)
+    );
+    assert_eq!(
+        check("gap: 4.0e0,", "gap: 1.5e1,", "gap", V::Float(15.0)).prop(Layout::ROW_GAP),
+        Some(Length::points(15.0))
+    );
+
+    // `nve_style: TypedStyle::...` literal builder chains.
+    assert_eq!(
+        check(
+            "nve_style: TypedStyle::new().width(Dimension::Points(8.0)),",
+            "nve_style: TypedStyle::new().width(Dimension::Points(12.0)),",
+            "width",
+            V::LengthPx(12.0)
+        )
+        .prop(Layout::WIDTH),
+        Some(Length::points(12.0))
+    );
+    assert_eq!(
+        check(
+            "nve_style: TypedStyle::new().width_pct(25.0),",
+            "nve_style: TypedStyle::new().width_pct(50.0),",
+            "width",
+            V::Float(50.0)
+        )
+        .prop(Layout::WIDTH),
+        Some(Length::percent(50.0))
+    );
+    assert_eq!(
+        check(
+            "nve_style: TypedStyle::new().padding_xy(10.0, 6.0),",
+            "nve_style: TypedStyle::new().padding_xy(18.0, 6.0),",
+            "padding-horizontal",
+            V::Float(18.0)
+        )
+        .prop(Layout::PADDING_LEFT),
+        Some(Length::points(18.0))
+    );
+    assert_eq!(
+        check(
+            "nve_style: TypedStyle::new().margin_xy(4.0, 8.0),",
+            "nve_style: TypedStyle::new().margin_xy(4.0, -2.0),",
+            "margin-vertical",
+            V::Float(-2.0)
+        )
+        .prop(Layout::MARGIN_TOP),
+        Some(Length::points(-2.0))
+    );
+    assert_eq!(
+        check(
+            "nve_style: TypedStyle::new().bg(ColorRgba::rgb(10, 20, 30)),",
+            "nve_style: TypedStyle::new().bg(ColorRgba::rgb(255, 0, 128)),",
+            "background-color",
+            V::Rgba {
+                r: 255,
+                g: 0,
+                b: 128,
+                a: 255
+            }
+        )
+        .prop(Visual::BACKGROUND),
+        Some(Rgba::rgb(255, 0, 128))
+    );
+    assert_eq!(
+        check(
+            "nve_style: TypedStyle::new().border(1.0, ColorRgba::rgb(1, 2, 3)),",
+            "nve_style: TypedStyle::new().border(1.0, ColorRgba::rgb(4, 5, 6)),",
+            "border-color",
+            V::Rgba { r: 4, g: 5, b: 6, a: 255 }
+        )
+        .prop(Visual::BORDER_COLOR),
+        Some(Rgba::rgb(4, 5, 6))
+    );
+    assert_eq!(
+        check(
+            "nve_style: TypedStyle::new().color(ColorRgba::rgba(0, 0, 0, 0)),",
+            "nve_style: TypedStyle::new().color(ColorRgba::rgba(0, 0, 0, 128)),",
+            "color",
+            V::Rgba { r: 0, g: 0, b: 0, a: 128 }
+        )
+        .prop(Typography::COLOR),
+        Some(Rgba::new(0, 0, 0, 128))
+    );
+    assert_eq!(
+        check(
+            "nve_style: TypedStyle::new().font_weight(400),",
+            "nve_style: TypedStyle::new().font_weight(600),",
+            "font-weight",
+            V::Int(600)
+        )
+        .prop(Typography::FONT_WEIGHT),
+        Some(600)
+    );
+    assert_eq!(
+        check(
+            "nve_style: TypedStyle::new().flex_direction(FlexDirection::Row),",
+            "nve_style: TypedStyle::new().flex_direction(FlexDirection::Column),",
+            "flex-direction",
+            enum_v("FlexDirection", "Column")
+        )
+        .prop(Layout::FLEX_DIRECTION),
+        Some(FlexDirection::Column)
+    );
+    assert_eq!(
+        check(
+            "nve_style: TypedStyle::new().justify(FlexJustify::FlexStart),",
+            "nve_style: TypedStyle::new().justify(FlexJustify::SpaceBetween),",
+            "justify-content",
+            enum_v("FlexJustify", "SpaceBetween")
+        )
+        .prop(Layout::JUSTIFY_CONTENT),
+        Some(JustifyContent::SpaceBetween)
+    );
+    assert_eq!(
+        check(
+            "nve_style: TypedStyle::new().align(FlexAlign::Center),",
+            "nve_style: TypedStyle::new().align(FlexAlign::FlexEnd),",
+            "align-items",
+            enum_v("FlexAlign", "FlexEnd")
+        )
+        .prop(Layout::ALIGN_ITEMS),
+        Some(AlignItems::FlexEnd)
+    );
+    assert_eq!(
+        check(
+            "nve_style: TypedStyle::new().position(PositionMode::Relative),",
+            "nve_style: TypedStyle::new().position(PositionMode::Absolute),",
+            "position",
+            enum_v("PositionMode", "Absolute")
+        )
+        .prop(Layout::POSITION),
+        Some(Position::Absolute)
+    );
+    assert_eq!(
+        check(
+            "nve_style: TypedStyle::new().display(Display::Flex),",
+            "nve_style: TypedStyle::new().display(Display::None),",
+            "display",
+            enum_v("Display", "None")
+        )
+        .prop(Layout::DISPLAY),
+        Some(Display::None)
+    );
+    assert_eq!(
+        check(
+            "nve_style: TypedStyle::new().white_space(WhiteSpace::Normal),",
+            "nve_style: TypedStyle::new().white_space(WhiteSpace::NoWrap),",
+            "white-space",
+            enum_v("WhiteSpace", "NoWrap")
+        )
+        .prop(Typography::WHITE_SPACE),
+        Some(WhiteSpace::NoWrap)
+    );
+    assert_eq!(
+        check(
+            "nve_style: TypedStyle::new().overflow_x(Overflow::Visible),",
+            "nve_style: TypedStyle::new().overflow_x(Overflow::Hidden),",
+            "overflow-x",
+            enum_v("Overflow", "Hidden")
+        )
+        .prop(Visual::OVERFLOW_X),
+        Some(Overflow::Hidden)
+    );
+    assert_eq!(
+        check(
+            "nve_style: TypedStyle::new().text_decoration(TextDecoration::EMPTY),",
+            "nve_style: TypedStyle::new().text_decoration(TextDecoration::UNDERLINE),",
+            "text-decoration",
+            enum_v("TextDecoration", "UNDERLINE")
+        )
+        .prop(Typography::TEXT_DECORATION),
+        Some(TextDecoration::UNDERLINE)
+    );
+    assert_eq!(
+        check(
+            "nve_style: TypedStyle::new().inset_top_px(4.0),",
+            "nve_style: TypedStyle::new().inset_top_px(-6.5),",
+            "top",
+            V::Float(-6.5)
+        )
+        .prop(Layout::INSET_TOP),
+        Some(Length::points(-6.5))
+    );
+    assert_eq!(
+        check(
+            "nve_style: TypedStyle::new().inset_top(Dimension::Points(4.0)),",
+            "nve_style: TypedStyle::new().inset_top(Dimension::Points(-8.0)),",
+            "top",
+            V::LengthPx(-8.0)
+        )
+        .prop(Layout::INSET_TOP),
+        Some(Length::points(-8.0))
+    );
+    assert_eq!(
+        check(
+            "nve_style: TypedStyle::new().cursor(CursorKind::Pointer),",
+            "nve_style: TypedStyle::new().cursor(CursorKind::NotAllowed),",
+            "cursor",
+            enum_v("CursorKind", "NotAllowed")
+        )
+        .prop(Interaction::CURSOR),
+        Some(CursorKind::NotAllowed)
+    );
+    assert_eq!(
+        check(
+            "nve_style: TypedStyle::new().text_align(TextAlign::Left),",
+            "nve_style: TypedStyle::new().text_align(TextAlign::Start),",
+            "text-align",
+            enum_v("TextAlign", "Start")
+        )
+        .prop(Typography::TEXT_ALIGN),
+        Some(TextAlign::Start)
+    );
+}
+
+#[test]
+fn nve_style_chain_patches_literals_beside_theme_tokens_and_guards_merges_and_overrides() {
+    // 1. Editing `.padding(8.0)` -> `.padding(16.0)` in a chain that ALSO uses `theme.surface.base`
+    //    succeeds at Tier-1 because the `theme.*` argument is untouched!
+    let base = element_with(
+        "nve_style: TypedStyle::col().bg(theme.surface.base).padding(8.0).radius(6.0),",
+    );
+    let edited = base.replace(".padding(8.0)", ".padding(16.0)");
+    let msg = expect_patch(diff_rsx_source("demo.rs", &base, &edited, 2));
+    assert_eq!(msg.prop(Layout::PADDING_TOP), Some(Length::points(16.0)));
+
+    // 2. Editing the `theme.*` argument itself cleanly falls back to Tier-2!
+    let theme_edit = base.replace("theme.surface.base", "theme.surface.raised");
+    assert_tier2_reason(&base, &theme_edit, "theme token `theme.surface.raised`");
+
+    // 3. Editing a call BEFORE `.merge_opt(nve_style.as_ref())` must NOT falsely Tier-1 patch
+    //    (because caller's `nve_style` may override it -> falls back to Tier-2).
+    let merged = element_with(
+        "nve_style: TypedStyle::col().padding(8.0).merge_opt(nve_style.as_ref()),",
+    );
+    assert_tier2_reason(
+        &merged,
+        &merged.replace(".padding(8.0)", ".padding(12.0)"),
+        "structural or logic edit",
+    );
+
+    // 4. Editing a shorthand `.padding(8.0)` followed by `.padding_left(4.0)` in the same chain
+    //    must NOT clobber `.padding_left(4.0)` -> falls back to Tier-2; editing `.padding_left(4.0)`
+    //    itself IS Tier-1!
+    let shadowed_chain = element_with(
+        "nve_style: TypedStyle::new().padding(8.0).padding_left(4.0),",
+    );
+    assert_tier2_reason(
+        &shadowed_chain,
+        &shadowed_chain.replace(".padding(8.0)", ".padding(12.0)"),
+        "structural or logic edit",
+    );
+    let leaf_msg = expect_patch(diff_rsx_source(
+        "demo.rs",
+        &shadowed_chain,
+        &shadowed_chain.replace(".padding_left(4.0)", ".padding_left(10.0)"),
+        3,
+    ));
+    assert_eq!(leaf_msg.prop(Layout::PADDING_LEFT), Some(Length::points(10.0)));
+
+    // 5. Standalone `width: 240.0` shadows `nve_style: TypedStyle::new().width_px(100.0)` ->
+    //    editing `.width_px(100.0)` falls back to Tier-2 while `.radius(4.0)` & `width: 240.0` stay Tier-1!
+    let with_standalone = element_with(
+        "nve_style: TypedStyle::new().width_px(100.0).radius(4.0),\n            width: 240.0,",
+    );
+    assert_tier2_reason(
+        &with_standalone,
+        &with_standalone.replace(".width_px(100.0)", ".width_px(120.0)"),
+        "structural or logic edit",
+    );
+    let rad_msg = expect_patch(diff_rsx_source(
+        "demo.rs",
+        &with_standalone,
+        &with_standalone.replace(".radius(4.0)", ".radius(8.0)"),
+        4,
+    ));
+    assert_eq!(rad_msg.prop(Visual::BORDER_RADIUS), Some(8.0));
+
+    // 6. Unknown extension methods (e.g. `StudioStyleExt::{outline, stretch_col}`) fail closed
+    //    regardless of position; allowlisted disjoint `TypedStyle` methods remain Tier-1.
+    for (chain, from, to) in [
+        (
+            "nve_style: TypedStyle::new().padding(8.0).outline(1.0, ColorRgba::WHITE),",
+            ".padding(8.0)",
+            ".padding(12.0)",
+        ),
+        (
+            "nve_style: TypedStyle::new().stretch_col().padding(8.0),",
+            ".padding(8.0)",
+            ".padding(12.0)",
+        ),
+        (
+            "nve_style: TypedStyle::new().padding_inline_start(8.0).padding_left(12.0),",
+            ".padding_left(12.0)",
+            ".padding_left(20.0)",
+        ),
+        (
+            "nve_style: TypedStyle::new().margin_inline_end(8.0).margin_right(12.0),",
+            ".margin_right(12.0)",
+            ".margin_right(20.0)",
+        ),
+        (
+            "nve_style: TypedStyle::new().row_gap(4.0).gap(12.0),",
+            ".gap(12.0)",
+            ".gap(20.0)",
+        ),
+    ] {
+        let src = element_with(chain);
+        assert_tier2_reason(&src, &src.replace(from, to), "structural or logic edit");
+    }
+    let allowlisted = element_with(
+        "nve_style: TypedStyle::new().font_family(\"Inter\").rtl().translate(2.0, 4.0).padding_inline_start(8.0).padding_top(6.0).on_hover_with(|s| s.opacity(0.8)),",
+    );
+    let ok_msg = expect_patch(diff_rsx_source(
+        "demo.rs",
+        &allowlisted,
+        &allowlisted.replace(".padding_top(6.0)", ".padding_top(14.0)"),
+        5,
+    ));
+    assert_eq!(ok_msg.prop(Layout::PADDING_TOP), Some(Length::points(14.0)));
+}
+
+#[test]
+fn dead_standalone_attrs_are_rejected_as_tier2() {
+    // Standalone attrs that `dioxus_elements` / `NveMutationWriter` do NOT handle must NOT match Tier-1.
+    for (old_attr, new_attr) in [
+        ("background_color: \"#fff\",", "background_color: \"#000\","),
+        ("color: Rgba::WHITE,", "color: Rgba::BLACK,"),
+        ("flex_direction: FlexDirection::Row,", "flex_direction: FlexDirection::Column,"),
+        ("cursor: CursorKind::Pointer,", "cursor: CursorKind::Grab,"),
+        ("display: Display::Flex,", "display: Display::None,"),
+        ("padding_top: 4.0,", "padding_top: 8.0,"),
+    ] {
+        assert_tier2_reason(
+            &element_with(old_attr),
+            &element_with(new_attr),
+            "structural or logic edit",
+        );
     }
 }
 
 #[test]
 fn shape_changing_edits_rebuild_and_keep_the_baseline() {
     let cases = [
-        ("font_weight: 400,", "font_weight: FontWeight::Bold,"),
         (
-            "box_sizing: BoxSizing::BorderBox,",
-            "box_sizing: \"content-box\",",
+            "nve_style: TypedStyle::new().font_weight(400),",
+            "nve_style: TypedStyle::new().font_weight(FontWeight::Bold),",
         ),
         (
-            "flex_direction: FlexDirection::Row,",
-            "flex_direction: Hidden,",
+            "nve_style: TypedStyle::new().flex_direction(FlexDirection::Row),",
+            "nve_style: TypedStyle::new().flex_direction(Hidden),",
         ),
         (
-            "flex_direction: FlexDirection::Row,",
-            "flex_direction: Display::Row,",
+            "nve_style: TypedStyle::new().flex_direction(FlexDirection::Row),",
+            "nve_style: TypedStyle::new().flex_direction(Display::Row),",
         ),
         ("padding: 8.0,", "padding: 8,"),
         ("padding: 8.0,", "padding: 8.0f32,"),
         ("z_index: 1,", "z_index: 1i32,"),
-        ("padding: 12,", "padding: Length::points(16.0),"),
         (
-            "color: Rgba::rgb(1, 2, 3),",
-            "color: ColorRgba::rgb(1, 2, 3),",
-        ),
-        ("color: Rgba::WHITE,", "color: Rgba::rgb(255, 255, 255),"),
-        (
-            "width: Length::points(8.0),",
-            "width: Length::percent(8.0),",
+            "nve_style: TypedStyle::new().color(Rgba::rgb(1, 2, 3)),",
+            "nve_style: TypedStyle::new().color(ColorRgba::rgb(1, 2, 3)),",
         ),
         (
-            "width: Length::points(8.0),",
-            "width: nve_store::Length::points(8.0),",
+            "nve_style: TypedStyle::new().color(ColorRgba::WHITE),",
+            "nve_style: TypedStyle::new().color(ColorRgba::rgb(255, 255, 255)),",
         ),
         (
-            "background: theme.surface.base,",
-            "background: theme.radius,",
+            "nve_style: TypedStyle::new().width(Dimension::Points(8.0)),",
+            "nve_style: TypedStyle::new().width(Dimension::Percent(8.0)),",
         ),
-        ("background: \"#fff\",", "background: Rgba::WHITE,"),
+        (
+            "nve_style: TypedStyle::new().bg(theme.surface.base),",
+            "nve_style: TypedStyle::new().bg(theme.radius),",
+        ),
     ];
     for (old_attr, new_attr) in cases {
         assert_tier2_reason(
@@ -292,17 +489,16 @@ fn shape_changing_edits_rebuild_and_keep_the_baseline() {
 fn semantically_identical_rewrites_are_noop() {
     let pairs = [
         (
-            "padding: Length::points( 8.0 ),",
-            "padding: Length::points(8.0),",
+            "nve_style: TypedStyle::new().width(Dimension::Points( 8.0 )),",
+            "nve_style: TypedStyle::new().width(Dimension::Points(8.0)),",
         ),
         ("padding: 8.0,", "padding: 8.000 /* same */,"),
         ("padding: /* a */ 8.0,", "padding: 8.0 // b\n,"),
         ("z_index: 0x0F,", "z_index: 15,"),
         ("z_index: 1_000,", "z_index: 1000,"),
-        ("color: \"#fff\",", "color: r#\"#fff\"#,"),
         (
-            "color: Rgba::rgb(0xff, 0, 0),",
-            "color: Rgba::rgb(255, 0, 0),",
+            "nve_style: TypedStyle::new().color(ColorRgba::rgb(0xff, 0, 0)),",
+            "nve_style: TypedStyle::new().color(ColorRgba::rgb(255, 0, 0)),",
         ),
         ("margin: -0.0,", "margin: 0.0,"),
     ];
@@ -350,30 +546,20 @@ fn edits_group_per_element_in_first_appearance_order_with_text_messages_first() 
         vec![("Inner".into(), "Inner text".into())]
     );
     assert_eq!(messages[0].target_test_id.as_deref(), Some("inner"));
+    assert_eq!(messages[0].node_path, vec![0, 0, 0, 0]);
     assert_eq!(
-        messages[0].node_path,
-        vec![0, 0, 0, 0],
-        "view > view > text > literal"
+        messages[1].prop(Layout::PADDING_TOP),
+        Some(Length::points(16.0))
     );
-    // Parent / child / parent edits: the outer element's two edits merge into one message.
-    assert_eq!(
-        messages[1].attr_updates,
-        vec![
-            ("padding".into(), "16px".into()),
-            ("gap".into(), "6px".into())
-        ]
-    );
+    assert_eq!(messages[1].prop(Layout::ROW_GAP), Some(Length::points(6.0)));
     assert_eq!(messages[1].target_test_id.as_deref(), Some("outer"));
-    assert_eq!(
-        messages[2].attr_updates,
-        vec![("width".into(), "25px".into())]
-    );
+    assert_eq!(messages[2].prop(Layout::WIDTH), Some(Length::points(25.0)));
     assert_eq!(messages[2].target_test_id.as_deref(), Some("inner"));
     assert_eq!(messages[2].node_path, vec![0, 0]);
 }
 
 #[test]
-fn template_targets_carry_ordinal_line_column_path_and_test_id() {
+fn template_targets_and_untagged_elements_carry_exact_coordinates() {
     let base = "fn header() -> Element {\n    rsx! { text { \"Head\" } }\n}\n\nfn body(on: bool) -> Element {\n    let inner = rsx! { view { test_id: \"leaf\", padding: 1.0 } };\n    rsx! {\n        view {\n            view { \"x\" }\n            if on {\n                pressable { test_id: \"go\", opacity: 1.0, \"Go\" }\n            }\n        }\n    }\n}\n";
     let edited = base
         .replace("opacity: 1.0", "opacity: 0.25")
@@ -394,109 +580,51 @@ fn template_targets_carry_ordinal_line_column_path_and_test_id() {
     assert_eq!(coord(leaf), (1, 6, 17));
     assert_eq!(leaf.target.node_path, vec![0]);
     assert_eq!(leaf.target.test_id.as_deref(), Some("leaf"));
-    // The `if` body is its own template (ordinal 3, anchored at its `{`).
     assert_eq!(coord(go), (3, 10, 19));
     assert_eq!(go.target.node_path, vec![0]);
     assert_eq!(go.target.test_id.as_deref(), Some("go"));
     assert_eq!(
-        (go.old.clone(), go.new.clone()),
-        (V::Float(1.0), V::Float(0.25))
-    );
-    assert_eq!(
         go.to_string(),
         "opacity: 1.0 -> 0.25 (template#3 @10:19 path [0] test_id \"go\")"
     );
-}
 
-#[test]
-fn typed_only_attributes_theme_tokens_and_untargetable_elements_stay_typed_but_rebuild() {
-    let cases = [
-        (
-            "\"top\": 4.0,",
-            "\"top\": 6.0,",
-            "`top` has no string TemplatePatch form",
-        ),
-        (
-            "cursor: CursorKind::Pointer,",
-            "cursor: CursorKind::NotAllowed,",
-            "`cursor` has no string",
-        ),
-        (
-            "background: theme.surface.base,",
-            "background: theme.surface.raised,",
-            "theme token `theme.surface.raised`",
-        ),
-        (
-            "\"white-space\": WhiteSpace::Normal,",
-            "\"white-space\": WhiteSpace::BreakSpaces,",
-            "cannot carry WhiteSpace::BreakSpaces",
-        ),
-        (
-            "text_align: TextAlign::Left,",
-            "text_align: TextAlign::Start,",
-            "cannot carry TextAlign::Start",
-        ),
-    ];
-    for (old_attr, new_attr, needle) in cases {
-        let (old, new) = (element_with(old_attr), element_with(new_attr));
-        let typed = typed_patch(&old, &new).unwrap_or_else(|e| panic!("{e}"));
-        assert!(
-            typed.is_some_and(|p| p.attr_changes.len() == 1),
-            "{old_attr}"
-        );
-        assert_tier2_reason(&old, &new, needle);
-    }
-
-    // A save mixing a lowerable literal with a theme token keeps both typed, then rebuilds.
-    let (old, new) = (
-        element_with("padding: 1.0, background: theme.surface.base,"),
-        element_with("padding: 2.0, background: theme.surface.raised,"),
-    );
-    let typed = typed_patch(&old, &new).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(typed.map(|p| p.attr_changes.len()), Some(2));
-    assert_tier2_reason(&old, &new, "theme token");
-
-    let no_id = "fn a() -> Element {\n    rsx! { view { padding: 1.0 } }\n}\n";
-    assert_tier2_reason(
+    // Untagged elements without `test_id` lower cleanly to Tier-1 via `(template_key, node_path)`.
+    let no_id = "fn a() -> Element {\n    rsx! { view { nve_style: TypedStyle::new().padding(1.0) } }\n}\n";
+    let no_id_msg = expect_patch(diff_rsx_source(
+        "a.rs",
         no_id,
         &no_id.replace("1.0", "2.0"),
-        "without a static `test_id`",
+        2,
+    ));
+    assert_eq!(no_id_msg.target_test_id, None);
+    assert_eq!(no_id_msg.template_key, hot_patch_template_key("a.rs", 0));
+    assert_eq!(no_id_msg.node_path, vec![0]);
+    assert_eq!(
+        no_id_msg.prop(Layout::PADDING_TOP),
+        Some(Length::points(2.0))
     );
-    // Text edits need no test_id: exact old-text replacement.
-    let text = "fn a() -> Element {\n    rsx! { view { \"Hi\" } }\n}\n";
-    let msg = expect_patch(diff_rsx_source("a.rs", text, &text.replace("Hi", "Ho"), 2));
-    assert_eq!(msg.target_test_id, None);
 }
 
 #[test]
 fn ill_typed_values_and_unhonoured_integers_rebuild() {
     let cases = [
+        ("padding: 12,", "padding: 16,", "`padding` does not accept 16"),
+        ("opacity: true,", "opacity: false,", "`opacity` does not accept false"),
         (
-            "padding: 12,",
-            "padding: 16,",
-            "`padding` does not accept 16",
-        ),
-        (
-            "\"font-weight\": 400,",
-            "\"font-weight\": 700,",
-            "`font-weight` does not accept 700",
-        ),
-        (
-            "opacity: true,",
-            "opacity: false,",
-            "`opacity` does not accept false",
-        ),
-        (
-            "flex_direction: FlexDirection::Row,",
-            "flex_direction: FlexDirection::Diagonal,",
+            "nve_style: TypedStyle::new().flex_direction(FlexDirection::Row),",
+            "nve_style: TypedStyle::new().flex_direction(FlexDirection::Diagonal),",
             "does not accept FlexDirection::Diagonal",
         ),
         (
-            "display: Overflow::Hidden,",
-            "display: Overflow::Auto,",
+            "nve_style: TypedStyle::new().display(Overflow::Hidden),",
+            "nve_style: TypedStyle::new().display(Overflow::Auto),",
             "does not accept Overflow::Auto",
         ),
-        ("style: 1.0,", "style: 2.0,", "`style` does not accept 2.0"),
+        (
+            "nve_style: TypedStyle::new().position(PositionMode::Relative),",
+            "nve_style: TypedStyle::new().position(PositionMode::Fixed),",
+            "does not accept PositionMode::Fixed",
+        ),
     ];
     for (old_attr, new_attr, needle) in cases {
         assert_tier2_reason(&element_with(old_attr), &element_with(new_attr), needle);

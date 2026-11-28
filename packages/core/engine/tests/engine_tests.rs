@@ -14,8 +14,9 @@ use nve_abi::{
     NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 use nve_engine::{
-    BackendApplyStats, BackendError, FrameProfiler, FrameTiming, HotPatchMsg, LayoutRect, NveApp,
-    StoreBackend, StoreWireReplica, SurfaceRunner, Viewport,
+    hot_patch_template_key, BackendApplyStats, BackendError, FrameProfiler, FrameTiming,
+    HotPatchMsg, LayoutRect, NveApp, StoreBackend, StoreWireReplica, SurfaceRunner, Viewport,
+    HOT_PATCH_VERSION,
 };
 use nve_store::{ChangeSet, NodeStore, RealizationOrder};
 
@@ -29,14 +30,11 @@ fn hot_patch_msg_roundtrip_all_variants_and_wire_tags() {
         (
             HotPatchMsg::TemplatePatch {
                 generation: 42,
-                template_id: "card::header".into(),
-                attr_updates: vec![
-                    ("opacity".into(), "0.85".into()),
-                    ("background-color".into(), "#0f172a".into()),
-                ],
-                text_updates: vec![(0, "Hello 🚀".into()), (3, "".into())],
+                template_key: hot_patch_template_key("card.rs", 0),
+                node_path: vec![0, 1],
                 target_test_id: None,
-                node_path: vec![],
+                row_patch_words: vec![0],
+                text_updates: vec![(0, "Hello 🚀".into()), (3, "".into())],
                 text_replacements: vec![],
             },
             1,
@@ -44,11 +42,11 @@ fn hot_patch_msg_roundtrip_all_variants_and_wire_tags() {
         (
             HotPatchMsg::TemplatePatch {
                 generation: 0,
-                template_id: "".into(),
-                attr_updates: vec![],
-                text_updates: vec![],
-                target_test_id: None,
+                template_key: 0,
                 node_path: vec![],
+                target_test_id: None,
+                row_patch_words: vec![],
+                text_updates: vec![],
                 text_replacements: vec![],
             },
             1,
@@ -73,7 +71,8 @@ fn hot_patch_msg_roundtrip_all_variants_and_wire_tags() {
     for (msg, expected_tag) in cases {
         let bytes = msg.to_bytes().unwrap();
         assert_eq!(&bytes[..4], b"NVP1");
-        assert_eq!(bytes[4], expected_tag, "variant tag");
+        assert_eq!(bytes[4], HOT_PATCH_VERSION, "wire version");
+        assert_eq!(bytes[5], expected_tag, "variant tag");
         let decoded = HotPatchMsg::from_bytes(&bytes).expect("roundtrip decode");
         assert_eq!(decoded, msg);
     }
@@ -266,14 +265,14 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
             NveGestureDisposition::PassThrough
         );
 
-        // Valid TemplatePatch NVP1 frame routes cleanly -> returns 1.
+        // Valid TemplatePatch NVP1 v2 frame routes cleanly -> returns 1.
         let valid_patch = HotPatchMsg::TemplatePatch {
             generation: 1,
-            template_id: "root".into(),
-            attr_updates: vec![("opacity".into(), "0.6".into())],
-            text_updates: vec![],
+            template_key: hot_patch_template_key("root.rs", 0),
+            node_path: vec![0],
             target_test_id: None,
-            node_path: vec![],
+            row_patch_words: vec![0],
+            text_updates: vec![],
             text_replacements: vec![],
         }
         .to_bytes()

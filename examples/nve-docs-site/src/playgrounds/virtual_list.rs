@@ -3,7 +3,7 @@
 
 use dioxus_core::Callback;
 use nve_dioxus::prelude::*;
-use nve_ui::{ColorHex, 
+use nve_ui::{
     Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, RowHeights, VirtualList,
     VirtualListState, use_theme,
 };
@@ -22,7 +22,7 @@ pub fn VirtualList100kDemo() -> Element {
     let render_row = Callback::new(move |(idx, selected): (usize, bool)| {
         rsx! {
             view {
-                style: "width: 100%; flex-direction: row; justify-content: space-between; padding-horizontal: 10px;",
+                nve_style: TypedStyle::row().width_pct(100.0).justify(FlexJustify::SpaceBetween).padding_x(10.0),
                 text { "Row #{idx:05} — Frame Telemetry Event" }
                 text { if selected { "Selected" } else { "0.14ms" } }
             }
@@ -103,34 +103,46 @@ pub fn VirtualList100kDemo() -> Element {
     preview_state.set_scroll_offset(scroll_offset);
     let slice = preview_state.slice();
 
-    let accent_color = theme.status.accent.text.hex();
-    let text_primary = theme.text.primary.hex();
-    let text_muted = theme.text.tertiary.hex();
-    let border_color = theme.border.default.hex();
+    let accent_color = theme.status.accent.text;
+    let text_primary = theme.text.primary;
+    let text_muted = theme.text.tertiary;
+    let border_color = theme.border.default;
 
     let render_row = Callback::new(move |(idx, is_selected): (usize, bool)| {
         let src_idx = current_filter.source_index(idx);
         let (kind_tag, subsystem) = RowFilter::tag_for(src_idx);
         let latency_us = 110 + ((src_idx * 37) % 240);
         let row_fg = if is_selected { accent_color } else { text_primary };
-        let weight = if is_selected { "700" } else { "500" };
+        let weight = if is_selected { 700 } else { 500 };
 
         rsx! {
             view {
-                style: "width: 100%; height: 100%; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 10px; border-width: 1px; border-color: {border_color};",
+                nve_style: TypedStyle::row()
+                    .width_pct(100.0)
+                    .height_pct(100.0)
+                    .justify(FlexJustify::SpaceBetween)
+                    .align(FlexAlign::Center)
+                    .padding_x(10.0)
+                    .border(1.0, border_color),
                 view {
-                    style: "flex-direction: row; align-items: center; gap: 10px;",
+                    nve_style: TypedStyle::row().align(FlexAlign::Center).gap(10.0),
                     text {
-                        style: "font-size: 11px; font-weight: 700; color: {accent_color};",
+                        nve_style: TypedStyle::new()
+                            .font_size(11.0)
+                            .font_weight(700)
+                            .color(accent_color),
                         "[{kind_tag}]"
                     }
                     text {
-                        style: "font-size: 12px; font-weight: {weight}; color: {row_fg};",
+                        nve_style: TypedStyle::new()
+                            .font_size(12.0)
+                            .font_weight(weight)
+                            .color(row_fg),
                         "Row #{src_idx:05} · {subsystem}"
                     }
                 }
                 text {
-                    style: "font-size: 11px; color: {text_muted};",
+                    nve_style: TypedStyle::new().font_size(11.0).color(text_muted),
                     "{latency_us} µs"
                 }
             }
@@ -146,14 +158,22 @@ pub fn VirtualList100kDemo() -> Element {
     rsx! {
         view {
             test_id: "pg-vlist-root",
-            style: "width: 100%; flex-direction: column; gap: 10px;",
+            nve_style: TypedStyle::col().width_pct(100.0).gap(10.0),
 
             // Live virtualization telemetry bar
             view {
                 test_id: "pg-vlist-telemetry",
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;",
+                nve_style: TypedStyle::row()
+                    .width_pct(100.0)
+                    .justify(FlexJustify::SpaceBetween)
+                    .align(FlexAlign::Center)
+                    .flex_wrap(FlexWrap::Wrap)
+                    .gap(8.0),
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; gap: 6px; align-items: center;",
+                    nve_style: TypedStyle::row()
+                        .flex_wrap(FlexWrap::Wrap)
+                        .gap(6.0)
+                        .align(FlexAlign::Center),
                     Badge {
                         test_id: Some("pg-vlist-total".to_string()),
                         label: format!("Rows: {total_rows}"),
@@ -171,16 +191,20 @@ pub fn VirtualList100kDemo() -> Element {
                     }
                 }
                 text {
-                    style: "font-size: 11px; color: {theme.text.tertiary.hex()};",
+                    nve_style: TypedStyle::new().font_size(11.0).color(theme.text.tertiary),
                     "O(1) uniform windowing · 34px rows"
                 }
             }
 
             // Filter + Jump controls
             view {
-                style: "width: 100%; flex-direction: row; justify-content: space-between; flex-wrap: wrap; gap: 8px;",
+                nve_style: TypedStyle::row()
+                    .width_pct(100.0)
+                    .justify(FlexJustify::SpaceBetween)
+                    .flex_wrap(FlexWrap::Wrap)
+                    .gap(8.0),
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; gap: 6px;",
+                    nve_style: TypedStyle::row().flex_wrap(FlexWrap::Wrap).gap(6.0),
                     for (fid, variant_f) in [
                         ("all", RowFilter::All),
                         ("critical", RowFilter::Critical),
@@ -207,7 +231,7 @@ pub fn VirtualList100kDemo() -> Element {
                     }
                 }
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; gap: 6px;",
+                    nve_style: TypedStyle::row().flex_wrap(FlexWrap::Wrap).gap(6.0),
                     for (label, target) in [
                         ("Top", 0usize),
                         ("#25k", 25_000usize),

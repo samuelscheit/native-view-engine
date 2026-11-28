@@ -2,8 +2,9 @@
 //! placement switcher), `DropdownMenu`, `Tooltip`, `ToastProvider`/`ToastViewport` triggers,
 //! and multi-detent `BottomSheet` (`Peek` / `Half` / `Full`).
 
+use nve_abi::{FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
-use nve_ui::{ColorHex, 
+use nve_ui::{
     compute_overlay_position, use_theme, use_toast, Alignment, Badge, BadgeVariant, BottomSheet,
     Button, ButtonSize, ButtonVariant, Card, CardVariant, Dialog, DropdownMenu, MenuItem, Modal,
     Placement, Popover, PositionOptions, Rect, Separator, SheetDetent, Side, Size, ToastOptions,
@@ -41,8 +42,8 @@ pub fn OverlaysSection(handle: AppHandle) -> Element {
     let mut sheet_detent_idx = use_signal(|| 1usize);
     let mut sheet_detent_label = use_signal(|| "Half (50%)".to_owned());
 
-    let text_primary = theme.text.primary.hex();
-    let text_muted = theme.text.tertiary.hex();
+    let text_primary = theme.text.primary;
+    let text_muted = theme.text.tertiary;
 
     let active_placement = PLACEMENTS[placement_idx() % PLACEMENTS.len()];
     let anchor = Rect {
@@ -79,7 +80,7 @@ pub fn OverlaysSection(handle: AppHandle) -> Element {
     rsx! {
         view {
             test_id: "section-overlays",
-            style: "width: 100%; flex-direction: column; gap: 16px;",
+            nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(16.0),
 
             SectionHeader {
                 title: copy("Overlays & Feedback", pseudo),
@@ -94,9 +95,14 @@ pub fn OverlaysSection(handle: AppHandle) -> Element {
                 padding: Some(16.0),
                 gap: Some(12.0),
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;",
+                    nve_style: TypedStyle::new()
+                        .flex_row()
+                        .flex_wrap(FlexWrap::Wrap)
+                        .align_items(FlexAlign::Center)
+                        .justify_content(FlexJustify::SpaceBetween)
+                        .gap(8.0),
                     text {
-                        style: "font-size: 15px; font-weight: 700; color: {text_primary};",
+                        nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(text_primary),
                         "{copy(\"ToastProvider & ToastViewport\", pseudo)}"
                     }
                     Badge {
@@ -105,7 +111,7 @@ pub fn OverlaysSection(handle: AppHandle) -> Element {
                     }
                 }
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; gap: 8px;",
+                    nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(8.0),
                     Button {
                         test_id: Some("ks-toast-info".to_owned()),
                         variant: ButtonVariant::Secondary,
@@ -180,15 +186,15 @@ pub fn OverlaysSection(handle: AppHandle) -> Element {
                         padding: Some(16.0),
                         gap: Some(12.0),
                         text {
-                            style: "font-size: 15px; font-weight: 700; color: {text_primary};",
+                            nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(text_primary),
                             "{copy(\"Dialog & Modal\", pseudo)}"
                         }
                         text {
-                            style: "font-size: 12px; color: {text_muted};",
+                            nve_style: TypedStyle::new().font_size(12.0).color(text_muted),
                             "Both trap keyboard focus and dismiss via Escape or backdrop click."
                         }
                         view {
-                            style: "flex-direction: row; flex-wrap: wrap; gap: 8px;",
+                            nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(8.0),
                             Button {
                                 test_id: Some("ks-open-dialog".to_owned()),
                                 variant: ButtonVariant::Primary,
@@ -215,9 +221,14 @@ pub fn OverlaysSection(handle: AppHandle) -> Element {
                         padding: Some(16.0),
                         gap: Some(12.0),
                         view {
-                            style: "flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px;",
+                            nve_style: TypedStyle::new()
+                                .flex_row()
+                                .flex_wrap(FlexWrap::Wrap)
+                                .align_items(FlexAlign::Center)
+                                .justify_content(FlexJustify::SpaceBetween)
+                                .gap(6.0),
                             text {
-                                style: "font-size: 15px; font-weight: 700; color: {text_primary};",
+                                nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(text_primary),
                                 "{copy(\"Multi-Detent BottomSheet\", pseudo)}"
                             }
                             Badge {
@@ -226,7 +237,7 @@ pub fn OverlaysSection(handle: AppHandle) -> Element {
                             }
                         }
                         view {
-                            style: "flex-direction: row; flex-wrap: wrap; gap: 6px;",
+                            nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(6.0),
                             Button {
                                 test_id: Some("ks-sheet-peek".to_owned()),
                                 variant: ButtonVariant::Outline,
@@ -272,11 +283,15 @@ pub fn OverlaysSection(handle: AppHandle) -> Element {
                 padding: Some(16.0),
                 gap: Some(12.0),
                 text {
-                    style: "font-size: 15px; font-weight: 700; color: {text_primary};",
+                    nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(text_primary),
                     "{copy(\"Popover (positioning.rs), DropdownMenu & Tooltip\", pseudo)}"
                 }
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; gap: 6px; align-items: center;",
+                    nve_style: TypedStyle::new()
+                        .flex_row()
+                        .flex_wrap(FlexWrap::Wrap)
+                        .gap(6.0)
+                        .align_items(FlexAlign::Center),
                     for (idx, (label, _)) in PLACEMENTS.iter().enumerate() {
                         Button {
                             key: "{label}",
@@ -294,12 +309,16 @@ pub fn OverlaysSection(handle: AppHandle) -> Element {
                 }
                 text {
                     test_id: "ks-positioning-readout",
-                    style: "font-size: 12px; color: {text_muted};",
+                    nve_style: TypedStyle::new().font_size(12.0).color(text_muted),
                     "compute_overlay_position({active_placement.0}) -> x: {computed.x:.1}px, y: {computed.y:.1}px, flipped: {computed.flipped}"
                 }
                 Separator {}
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; gap: 12px; align-items: flex-start;",
+                    nve_style: TypedStyle::new()
+                        .flex_row()
+                        .flex_wrap(FlexWrap::Wrap)
+                        .gap(12.0)
+                        .align_items(FlexAlign::FlexStart),
                     Popover {
                         test_id: Some("ks-popover".to_owned()),
                         open: popover_open(),
@@ -310,13 +329,13 @@ pub fn OverlaysSection(handle: AppHandle) -> Element {
                         position_options: Some(pos_opts),
                         on_open_change: move |next: bool| popover_open.set(next),
                         view {
-                            style: "flex-direction: column; gap: 6px;",
+                            nve_style: TypedStyle::new().flex_col().gap(6.0),
                             text {
-                                style: "font-size: 13px; font-weight: 700; color: {text_primary};",
+                                nve_style: TypedStyle::new().font_size(13.0).font_weight(700).color(text_primary),
                                 "Anchored Popover ({active_placement.0})"
                             }
                             text {
-                                style: "font-size: 12px; color: {text_muted};",
+                                nve_style: TypedStyle::new().font_size(12.0).color(text_muted),
                                 "Collision-aware positioning with flip & shift."
                             }
                         }
@@ -362,7 +381,7 @@ pub fn OverlaysSection(handle: AppHandle) -> Element {
                 description: Some(copy("Dialog isolates keyboard focus and restores focus on close.", pseudo)),
                 on_close: move |_| dialog_open.set(false),
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; gap: 8px; padding-top: 8px;",
+                    nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(8.0).padding_top(8.0),
                     Button {
                         test_id: Some("ks-dialog-close".to_owned()),
                         variant: ButtonVariant::Primary,
@@ -380,7 +399,7 @@ pub fn OverlaysSection(handle: AppHandle) -> Element {
                 description: Some(copy("Modal alias shares the same focus-trapped Dialog surface.", pseudo)),
                 on_close: move |_| modal_open.set(false),
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; gap: 8px; padding-top: 8px;",
+                    nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(8.0).padding_top(8.0),
                     Button {
                         test_id: Some("ks-modal-close".to_owned()),
                         variant: ButtonVariant::Secondary,
@@ -411,9 +430,9 @@ pub fn OverlaysSection(handle: AppHandle) -> Element {
                         sheet_detent_label.set(lbl.to_owned());
                     },
                     view {
-                        style: "flex-direction: column; gap: 10px;",
+                        nve_style: TypedStyle::new().flex_col().gap(10.0),
                         text {
-                            style: "font-size: 13px; color: {text_primary};",
+                            nve_style: TypedStyle::new().font_size(13.0).color(text_primary),
                             "Active detent: {sheet_detent_label}"
                         }
                         Button {

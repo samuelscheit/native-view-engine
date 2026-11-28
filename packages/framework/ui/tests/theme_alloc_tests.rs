@@ -8,7 +8,8 @@ use std::fmt::Write as _;
 use std::hint::black_box;
 
 use dioxus_core::{Element, VirtualDom};
-use dioxus_core_macro::{component, rsx};
+use dioxus_core_macro::component;
+use nve_dioxus::rsx;
 use dioxus_signals::{Signal, WritableExt};
 use nve_abi::{ColorScheme, ContrastLevel};
 use nve_ui::{

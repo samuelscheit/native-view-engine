@@ -526,7 +526,7 @@ pub fn Link<R: Routable>(
     to: R,
     #[props(default)] replace: bool,
     #[props(default)] modal: bool,
-    #[props(default)] style: Option<String>,
+    #[props(default)] nve_style: Option<TypedStyle>,
     #[props(default)] test_id: Option<String>,
     #[props(default)] accessibility_label: Option<String>,
     #[props(default)] accessibility_hint: Option<String>,
@@ -546,7 +546,7 @@ pub fn Link<R: Routable>(
             accessibility_label: "{label}",
             accessibility_hint: "{hint}",
             test_id: test_id,
-            style: style,
+            nve_style: nve_style,
             onpress: move |_| {
                 if modal {
                     let _ = nav.open_modal(target.clone());

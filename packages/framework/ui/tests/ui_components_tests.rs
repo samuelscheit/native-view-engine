@@ -529,10 +529,13 @@ fn WrappedVerticalSeparatorApp() -> Element {
     rsx! {
         view {
             test_id: "wrap-row",
-            style: "width: 100px; flex-direction: row; flex-wrap: wrap; align-items: center;",
-            view { style: "width: 80px; height: 40px;" }
+            nve_style: TypedStyle::row()
+                .width_px(100.0)
+                .flex_wrap(FlexWrap::Wrap)
+                .align(FlexAlign::Center),
+            view { nve_style: TypedStyle::new().width_px(80.0).height_px(40.0) }
             Separator { test_id: "sep-v", orientation: Orientation::Vertical }
-            view { style: "width: 80px; height: 20px;" }
+            view { nve_style: TypedStyle::new().width_px(80.0).height_px(20.0) }
         }
     }
 }

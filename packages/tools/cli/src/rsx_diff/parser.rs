@@ -7,11 +7,12 @@
 
 use std::ops::Range;
 
-use super::attrs::{AttrSpec, is_native_tag, is_test_id_attr, lookup_patchable_attr};
+use super::attrs::{AttrSpec, is_native_tag, is_test_id_attr, lookup_standalone_attr};
 use super::lexer::{Lex, Tok};
 use super::strings::{
     has_interpolation_braces, string_lit_inner, unescape_format_braces, unescape_string_literal,
 };
+use super::typed_style_chain::{ChainArgSpan, scan_typed_style_chain};
 
 /// What a patchable span holds.
 #[derive(Debug, Clone, Copy)]
@@ -72,6 +73,7 @@ impl RsxIndex {
             path: Vec::with_capacity(16),
             path_base: 0,
             template: 0,
+            chain_steps: Vec::new(),
         };
         scanner.scan_rust_range(0, lex.len());
         let index = scanner.index;
@@ -128,6 +130,8 @@ struct Scanner<'a> {
     path: Vec<u32>,
     path_base: usize,
     template: u32,
+    /// Reusable scratch buffer for `scan_typed_style_chain` (zero per-element allocations).
+    chain_steps: Vec<(Option<ChainArgSpan>, u64)>,
 }
 
 impl Scanner<'_> {
@@ -305,22 +309,60 @@ impl Scanner<'_> {
 
         let mut pos = open + 1;
         let mut child_idx = 0u32;
+        let mut standalone_bits = 0u64;
+        let mut nve_style_range: Option<Range<usize>> = None;
         while pos < close {
+            // Attribute spread (`..expr,`): skip before children without incrementing `child_idx`.
+            if pos + 1 < close && lex.is_punct(pos, b'.') && lex.is_punct(pos + 1, b'.') {
+                let val_end = value_span_end(lex, pos + 2, close);
+                self.scan_rust_range(pos + 2, val_end);
+                pos = val_end + usize::from(val_end < close && lex.is_punct(val_end, b','));
+                continue;
+            }
             if let Some(attr) = parse_rsx_attribute(lex, pos, close) {
-                match lookup_patchable_attr(attr.name).filter(|_| is_native) {
-                    Some(spec) => {
-                        let node = match node {
-                            Some(n) => n,
-                            None => *node.insert(self.push_node(open, own_test_id)),
-                        };
-                        self.index.spans.push(PatchSpan {
-                            start: attr.value.start as u32,
-                            end: attr.value.end as u32,
-                            node,
-                            kind: SpanKind::Attr(spec),
-                        });
+                if is_native && attr.name == "nve_style" {
+                    if scan_typed_style_chain(
+                        lex,
+                        attr.value.start,
+                        attr.value.end,
+                        &mut self.chain_steps,
+                    ) {
+                        let range_start = self.index.spans.len();
+                        for idx in 0..self.chain_steps.len() {
+                            if let Some(item) = self.chain_steps[idx].0 {
+                                let node = match node {
+                                    Some(n) => n,
+                                    None => *node.insert(self.push_node(open, own_test_id)),
+                                };
+                                self.index.spans.push(PatchSpan {
+                                    start: item.start,
+                                    end: item.end,
+                                    node,
+                                    kind: SpanKind::Attr(item.spec),
+                                });
+                            }
+                        }
+                        let range_end = self.index.spans.len();
+                        if range_end > range_start && nve_style_range.is_none() {
+                            nve_style_range = Some(range_start..range_end);
+                        }
+                    } else {
+                        self.scan_rust_range(attr.value.start, attr.value.end);
                     }
-                    None => self.scan_rust_range(attr.value.start, attr.value.end),
+                } else if let Some(spec) = lookup_standalone_attr(attr.name).filter(|_| is_native) {
+                    standalone_bits |= spec.bits;
+                    let node = match node {
+                        Some(n) => n,
+                        None => *node.insert(self.push_node(open, own_test_id)),
+                    };
+                    self.index.spans.push(PatchSpan {
+                        start: attr.value.start as u32,
+                        end: attr.value.end as u32,
+                        node,
+                        kind: SpanKind::Attr(spec),
+                    });
+                } else {
+                    self.scan_rust_range(attr.value.start, attr.value.end);
                 }
                 pos = attr.next;
                 continue;
@@ -332,6 +374,19 @@ impl Scanner<'_> {
                 continue;
             }
             pos = self.scan_one_rsx_child(pos, close, child_owner, &mut child_idx);
+        }
+        // Standalone numeric attrs beat `nve_style` in `NveMutationWriter`: drop any `nve_style`
+        // spans on this element whose property slots are shadowed by a standalone attr here.
+        if standalone_bits != 0
+            && let Some(range) = nve_style_range
+        {
+            for idx in range.rev() {
+                if let SpanKind::Attr(spec) = self.index.spans[idx].kind
+                    && (spec.bits & standalone_bits) != 0
+                {
+                    self.index.spans.remove(idx);
+                }
+            }
         }
         close
     }

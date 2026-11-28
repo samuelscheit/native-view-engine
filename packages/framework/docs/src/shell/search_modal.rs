@@ -1,7 +1,7 @@
 //! `⌘K` instant full-text search dialog built on `nve_ui::Dialog`, `FocusTrap`, and `nve_mdx::SearchIndex`.
 
 use nve_dioxus::prelude::*;
-use nve_ui::{accent_indicator, ColorHex};
+use nve_ui::accent_indicator;
 use nve_ui::{Dialog, FocusTrap, FocusTrapAction};
 
 use crate::state::{navigate_to_target, use_docs_state};
@@ -67,14 +67,19 @@ pub fn SearchModal() -> Element {
             close_on_escape: true,
             close_on_backdrop: true,
             test_id: Some("docs-search-dialog".to_string()),
-            style: is_open.then(|| "min-width: 340px; max-width: 600px; width: 100%;".to_owned()),
+            nve_style: is_open.then(|| {
+                TypedStyle::new()
+                    .min_width_px(340.0)
+                    .max_width_px(600.0)
+                    .width_pct(100.0)
+            }),
             on_close: move |_| {
                 state.write().close_search();
             },
 
             view {
                 test_id: "docs-search-body",
-                style: "width: 100%; flex-direction: column; gap: 12px;",
+                nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(12.0),
                 onkeydown: move |ev: KeyEvent| {
                     let data = ev.data();
                     if matches!(
@@ -89,14 +94,21 @@ pub fn SearchModal() -> Element {
 
                 // Live query input
                 view {
-                    style: "width: 100%; flex-direction: row; align-items: center; gap: 8px;",
+                    nve_style: TypedStyle::new().width_pct(100.0).flex_row().align_items(FlexAlign::Center).gap(8.0),
                     textinput {
                         test_id: "docs-search-input",
                         accessibility_role: "searchbox",
                         accessibility_label: "Search documentation query",
                         placeholder: "Search pages, headings, APIs...",
                         value: "{query}",
-                        style: "flex-grow: 1; padding-horizontal: 12px; padding-vertical: 10px; border-radius: 8px; border-width: 1px; border-color: {accent_indicator(&theme).hex()}; background-color: {theme.surface.canvas.hex()}; color: {theme.text.primary.hex()}; font-size: 14px;",
+                        nve_style: TypedStyle::new()
+                            .flex_grow(1.0)
+                            .padding_xy(12.0, 10.0)
+                            .radius(8.0)
+                            .border(1.0, accent_indicator(&theme))
+                            .bg(theme.surface.canvas)
+                            .color(theme.text.primary)
+                            .font_size(14.0),
                         onchange: move |ev: TextEvent| {
                             state.write().set_search_query(ev.data().value.clone());
                         },
@@ -117,12 +129,16 @@ pub fn SearchModal() -> Element {
                         test_id: "docs-search-close",
                         accessibility_role: "button",
                         accessibility_label: "Close search dialog",
-                        style: "padding-horizontal: 10px; padding-vertical: 8px; border-radius: 6px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                        nve_style: TypedStyle::new()
+                            .padding_xy(10.0, 8.0)
+                            .radius(6.0)
+                            .bg(theme.surface.subtle)
+                            .border(1.0, theme.border.default),
                         onpress: move |_| {
                             state.write().close_search();
                         },
                         text {
-                            style: "font-size: 12px; color: {theme.text.secondary.hex()};",
+                            nve_style: TypedStyle::new().font_size(12.0).color(theme.text.secondary),
                             "Esc"
                         }
                     }
@@ -133,14 +149,18 @@ pub fn SearchModal() -> Element {
                     test_id: "docs-search-results",
                     accessibility_role: "listbox",
                     accessibility_label: "Search results",
-                    style: "width: 100%; flex-direction: column; gap: 6px;",
+                    nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(6.0),
 
                     if hit_count == 0 {
                         view {
                             test_id: "docs-search-empty",
-                            style: "padding: 20px; border-radius: 8px; background-color: {theme.surface.subtle.hex()}; align-items: center;",
+                            nve_style: TypedStyle::new()
+                                .padding(20.0)
+                                .radius(8.0)
+                                .bg(theme.surface.subtle)
+                                .align_items(FlexAlign::Center),
                             text {
-                                style: "font-size: 13px; color: {theme.text.secondary.hex()};",
+                                nve_style: TypedStyle::new().font_size(13.0).color(theme.text.secondary),
                                 "No matching results for \"{query}\"."
                             }
                         }
@@ -148,9 +168,9 @@ pub fn SearchModal() -> Element {
                         for (idx, hit) in hits.into_iter().enumerate() {
                             {
                                 let is_selected = idx == selected_idx;
-                                let bg = if is_selected { theme.status.accent.subtle.hex() } else { theme.surface.subtle.hex() };
-                                let border_c = if is_selected { accent_indicator(&theme).hex() } else { theme.border.default.hex() };
-                                let title_c = if is_selected { theme.text.link.hex() } else { theme.text.primary.hex() };
+                                let bg = if is_selected { theme.status.accent.subtle } else { theme.surface.subtle };
+                                let border_c = if is_selected { accent_indicator(&theme) } else { theme.border.default };
+                                let title_c = if is_selected { theme.text.link } else { theme.text.primary };
                                 let tid = format!("docs-search-hit-{idx}");
                                 let sel_attr = if is_selected { "true" } else { "false" };
                                 let hit_route = config.docs_route_for_content(&hit.route);
@@ -167,28 +187,44 @@ pub fn SearchModal() -> Element {
                                         test_id: "{tid}",
                                         accessibility_role: "option",
                                         aria_selected: "{sel_attr}",
-                                        style: "width: 100%; flex-direction: column; gap: 4px; padding-horizontal: 12px; padding-vertical: 10px; border-radius: 8px; background-color: {bg}; border-width: 1px; border-color: {border_c};",
+                                        nve_style: TypedStyle::new()
+                                            .width_pct(100.0)
+                                            .flex_col()
+                                            .gap(4.0)
+                                            .padding_xy(12.0, 10.0)
+                                            .radius(8.0)
+                                            .bg(bg)
+                                            .border(1.0, border_c),
                                         onpress: move |_| {
                                             let anchor = (!hit_anchor.is_empty()).then(|| hit_anchor.clone());
                                             navigate_to_target(state, Some(hit_route.clone()), anchor);
                                         },
                                         view {
-                                            style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; gap: 8px;",
+                                            nve_style: TypedStyle::new()
+                                                .width_pct(100.0)
+                                                .flex_row()
+                                                .justify_content(FlexJustify::SpaceBetween)
+                                                .align_items(FlexAlign::Center)
+                                                .gap(8.0),
                                             text {
-                                                style: "font-size: 14px; font-weight: 600; color: {title_c};",
+                                                nve_style: TypedStyle::new().font_size(14.0).font_weight(600).color(title_c),
                                                 "{hit.title}"
                                             }
                                             view {
-                                                style: "padding-horizontal: 6px; padding-vertical: 2px; border-radius: 4px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                                                nve_style: TypedStyle::new()
+                                                    .padding_xy(6.0, 2.0)
+                                                    .radius(4.0)
+                                                    .bg(theme.surface.base)
+                                                    .border(1.0, theme.border.default),
                                                 text {
-                                                    style: "font-size: 11px; color: {theme.status.info.text.hex()};",
+                                                    nve_style: TypedStyle::new().font_size(11.0).color(theme.status.info.text),
                                                     "{section_badge}"
                                                 }
                                             }
                                         }
                                         if !hit.excerpt.is_empty() {
                                             text {
-                                                style: "font-size: 12px; color: {theme.text.secondary.hex()};",
+                                                nve_style: TypedStyle::new().font_size(12.0).color(theme.text.secondary),
                                                 "{hit.excerpt}"
                                             }
                                         }

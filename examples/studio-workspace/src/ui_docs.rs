@@ -8,18 +8,19 @@
 //! [`DocsView`] subscribes to the `docs` domain (plus `nav` for the clipboard notice); each
 //! [`DocBlockCard`] is memoized on its block.
 
+use nve_abi::ColorRgba;
 use nve_dioxus::prelude::*;
 use nve_ui::{
-    Button, ButtonSize, ButtonVariant, Card, CardVariant, ColorHex, Input, Separator, TabList,
-    TabTrigger, TabsRoot, Theme,
+    Button, ButtonSize, ButtonVariant, Card, CardVariant, Input, Separator, TabList, TabTrigger,
+    TabsRoot, Theme,
 };
-
-use nve_abi::ColorRgba;
 
 use crate::state::{DocBlock, DocBlockKind};
 use crate::theme::badge_min_w;
 use crate::ui::store::use_studio;
-use crate::ui::style::use_studio_style;
+use crate::ui::style::{
+    Outline, StudioStyleExt, fixed_dims, min_w_dims, row_center, text_style, use_studio_style,
+};
 
 /// `(background, text, border)` of a block card.
 const fn block_colors(t: &Theme, kind: DocBlockKind) -> (ColorRgba, ColorRgba, ColorRgba) {
@@ -44,12 +45,12 @@ const fn block_colors(t: &Theme, kind: DocBlockKind) -> (ColorRgba, ColorRgba, C
     }
 }
 
-const fn block_font_size(kind: DocBlockKind) -> u32 {
+const fn block_font_size(kind: DocBlockKind) -> f32 {
     match kind {
-        DocBlockKind::Heading1 => 14,
-        DocBlockKind::Heading2 => 12,
-        DocBlockKind::Code => 10,
-        _ => 11,
+        DocBlockKind::Heading1 => 14.0,
+        DocBlockKind::Heading2 => 12.0,
+        DocBlockKind::Code => 10.0,
+        _ => 11.0,
     }
 }
 
@@ -103,24 +104,22 @@ pub(crate) fn DocsView(compact: bool) -> Element {
     let md_btn_lbl = if md_open { "Hide MD" } else { "Export MD" };
     let pill = |label: &str, active: bool| {
         s.compact_control(
-            &format!(
-                "min-width: {}px; height: 24px; min-height: 24px;",
-                badge_min_w(label)
-            ),
+            min_w_dims(badge_min_w(label) as f32, 24.0),
             4,
             s.m.pill_radius,
             Some(active),
         )
     };
-    let panel_card = |extra: &str| {
-        format!(
-            "width: 100%; flex-shrink: 0; padding: 8px; {extra} background-color: {}; border-radius: {}px; {}",
-            s.t.surface.base.hex(),
-            s.m.button_radius,
-            s.card()
-        )
+    let header_card = s.card_surface(8, 6, s.t.surface.base, s.m.button_radius);
+    let composer_card = s
+        .card_surface(8, 5, s.t.surface.base, s.m.button_radius)
+        .flex_row()
+        .align_items(FlexAlign::Center);
+    let tab_bar_dir = if compact {
+        FlexDirection::Column
+    } else {
+        FlexDirection::Row
     };
-    let tab_bar_dir = if compact { "column" } else { "row" };
     let block_count = blocks.len();
 
     rsx! {
@@ -129,15 +128,22 @@ pub(crate) fn DocsView(compact: bool) -> Element {
             test_id: Some("docs-header".into()),
             padding: Some(8.0),
             gap: Some(6.0),
-            style: Some(panel_card("gap: 6px;")),
+            nve_style: Some(header_card),
             view {
-                style: "width: 100%; flex-shrink: 0; flex-direction: {tab_bar_dir}; justify-content: space-between; align-items: center; gap: 6px; {s.row()}",
+                nve_style: TypedStyle::new()
+                    .width_pct(100.0)
+                    .flex_shrink(0.0)
+                    .flex_direction(tab_bar_dir)
+                    .justify_content(FlexJustify::SpaceBetween)
+                    .align_items(FlexAlign::Center)
+                    .gap(6.0)
+                    .outline(s.row()),
                 view {
-                    style: "flex: 1; width: 100%;",
+                    nve_style: TypedStyle::new().flex_1().width_pct(100.0),
                     TabsRoot {
                         value: active_id.map(|id| id.to_string()),
                         id_prefix: Some("docs-tabs".into()),
-                        style: Some("width: 100%; gap: 0px;".into()),
+                        nve_style: Some(TypedStyle::new().width_pct(100.0).gap(0.0)),
                         on_change: move |next: String| {
                             if let Ok(doc_id) = next.parse::<u32>() {
                                 store.update(|st| st.select_doc(doc_id));
@@ -145,13 +151,19 @@ pub(crate) fn DocsView(compact: bool) -> Element {
                         },
                         TabList {
                             accessibility_label: Some("Workspace documents".into()),
-                            style: Some("flex-direction: row; align-items: center; gap: 5px; padding: 0px; background-color: transparent; border-width: 0px; border-color: transparent; border-radius: 0px;".into()),
+                            nve_style: Some(
+                                row_center(5.0)
+                                    .padding(0.0)
+                                    .bg(ColorRgba::TRANSPARENT)
+                                    .border(0.0, ColorRgba::TRANSPARENT)
+                                    .radius(0.0),
+                            ),
                             for (doc_id, title) in tabs {
                                 TabTrigger {
                                     key: "doc-tab-{doc_id}",
                                     value: doc_id.to_string(),
                                     test_id: Some(format!("doc-tab-{doc_id}")),
-                                    style: Some(pill(&title, active_id == Some(doc_id))),
+                                    nve_style: Some(pill(&title, active_id == Some(doc_id))),
                                     "{title}"
                                 }
                             }
@@ -159,12 +171,12 @@ pub(crate) fn DocsView(compact: bool) -> Element {
                     }
                 }
                 view {
-                    style: "flex-direction: row; align-items: center; gap: 5px; flex-shrink: 0;",
+                    nve_style: row_center(5.0).flex_shrink(0.0),
                     Button {
                         variant: ButtonVariant::Secondary,
                         size: ButtonSize::Sm,
                         test_id: Some("doc-new-btn".into()),
-                        style: Some(pill("+ Doc", true)),
+                        nve_style: Some(pill("+ Doc", true)),
                         on_press: move |_| store.update(|st| {
                             let _ = st.create_new_doc();
                         }),
@@ -174,7 +186,7 @@ pub(crate) fn DocsView(compact: bool) -> Element {
                         variant: ButtonVariant::Secondary,
                         size: ButtonSize::Sm,
                         test_id: Some("doc-export-md".into()),
-                        style: Some(pill(md_btn_lbl, md_open)),
+                        nve_style: Some(pill(md_btn_lbl, md_open)),
                         on_press: move |_| store.update(|st| st.toggle_doc_markdown_preview()),
                         "{md_btn_lbl}"
                     }
@@ -183,7 +195,7 @@ pub(crate) fn DocsView(compact: bool) -> Element {
                         size: ButtonSize::Sm,
                         test_id: Some("doc-copy-md".into()),
                         accessibility_label: Some("Copy active document Markdown to clipboard".into()),
-                        style: Some(pill("Copy MD", false)),
+                        nve_style: Some(pill("Copy MD", false)),
                         on_press: move |_| {
                             let services = store.services();
                             store.update(|st| {
@@ -195,7 +207,7 @@ pub(crate) fn DocsView(compact: bool) -> Element {
                 }
             }
             Separator {}
-            text { style: "color: {s.t.text.tertiary.hex()}; font-size: 10px;", "{meta_summary}" }
+            text { nve_style: text_style(s.t.text.tertiary, 10.0), "{meta_summary}" }
         }
 
         if md_open {
@@ -204,20 +216,29 @@ pub(crate) fn DocsView(compact: bool) -> Element {
                 test_id: Some("doc-markdown-preview".into()),
                 padding: Some(8.0),
                 gap: Some(4.0),
-                style: Some(format!(
-                    "width: 100%; flex-shrink: 0; padding: 8px; gap: 4px; background-color: {}; border-radius: {}px; {}",
-                    s.t.surface.sunken.hex(),
-                    s.m.button_radius,
-                    s.control(true)
-                )),
-                text { style: "color: {s.t.text.link.hex()}; font-size: 9px;", "MARKDOWN EXPORT" }
-                text { style: "color: {s.t.text.secondary.hex()}; font-size: 10px;", "{md_preview}" }
+                nve_style: Some(
+                    TypedStyle::new()
+                        .width_pct(100.0)
+                        .flex_shrink(0.0)
+                        .padding(8.0)
+                        .gap(4.0)
+                        .bg(s.t.surface.sunken)
+                        .radius(s.m.button_radius as f32)
+                        .outline(s.control(true)),
+                ),
+                text { nve_style: text_style(s.t.text.link, 9.0), "MARKDOWN EXPORT" }
+                text { nve_style: text_style(s.t.text.secondary, 10.0), "{md_preview}" }
             }
         }
 
         scrollview {
             test_id: "docs-blocks-list",
-            style: "width: 100%; flex: 1; flex-direction: column; gap: {s.m.list_gap}px; {s.row()}",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .flex_1()
+                .flex_col()
+                .gap(s.m.list_gap as f32)
+                .outline(s.row()),
             for (idx, block) in blocks.into_iter().enumerate() {
                 DocBlockCard {
                     key: "doc-blk-{block.id}",
@@ -229,13 +250,13 @@ pub(crate) fn DocsView(compact: bool) -> Element {
             }
         }
 
-        DocComposer { card_style: panel_card("flex-direction: row; align-items: center; gap: 5px;") }
+        DocComposer { card_style: composer_card }
     }
 }
 
 /// New-block composer: the only docs part subscribed to `doc_drafts` (besides the open editor).
 #[component]
-fn DocComposer(card_style: String) -> Element {
+fn DocComposer(card_style: TypedStyle) -> Element {
     nve_dioxus::render_probe::record_render("DocComposer");
     let store = use_studio();
     let s = use_studio_style();
@@ -251,17 +272,17 @@ fn DocComposer(card_style: String) -> Element {
             test_id: Some("docs-composer".into()),
             padding: Some(8.0),
             gap: Some(5.0),
-            style: Some(card_style),
+            nve_style: Some(card_style),
             Button {
                 variant: ButtonVariant::Secondary,
                 size: ButtonSize::Sm,
                 test_id: Some("doc-new-block-kind".into()),
-                style: Some(s.compact_control("width: 54px; height: 34px; min-height: 34px;", 2, s.m.button_radius, Some(false))),
+                nve_style: Some(s.compact_control(fixed_dims(54.0, 34.0), 2, s.m.button_radius, Some(false))),
                 on_press: move |_| store.update(|st| st.cycle_doc_new_block_kind()),
                 "{new_kind_lbl}"
             }
             view {
-                style: "flex: 1;",
+                nve_style: TypedStyle::new().flex_1(),
                 Input {
                     test_id: Some("doc-new-block-input".into()),
                     placeholder: Some("Add block text (Enter to append)...".into()),
@@ -277,7 +298,7 @@ fn DocComposer(card_style: String) -> Element {
                 variant: ButtonVariant::Primary,
                 size: ButtonSize::Sm,
                 test_id: Some("doc-new-block-submit".into()),
-                style: Some(s.compact_control("width: 58px; height: 34px; min-height: 34px;", 2, s.m.button_radius, None)),
+                nve_style: Some(s.compact_control(fixed_dims(58.0, 34.0), 2, s.m.button_radius, None)),
                 on_press: move |_| store.update(|st| {
                     let _ = st.submit_new_doc_block_draft();
                 }),
@@ -294,19 +315,14 @@ fn DocBlockEditor(bid: u32) -> Element {
     let store = use_studio();
     let s = use_studio_style();
     let draft = store.doc_edit_draft.read().text.clone();
-    let field_btn = |w: u32, paint: Option<bool>| {
-        s.compact_control(
-            &format!("width: {w}px; height: 34px; min-height: 34px;"),
-            2,
-            s.m.button_radius,
-            paint,
-        )
+    let field_btn = |w: f32, paint: Option<bool>| {
+        s.compact_control(fixed_dims(w, 34.0), 2, s.m.button_radius, paint)
     };
     rsx! {
         view {
-            style: "width: 100%; flex-shrink: 0; flex-direction: row; align-items: center; gap: 5px;",
+            nve_style: row_center(5.0).width_pct(100.0).flex_shrink(0.0),
             view {
-                style: "flex: 1;",
+                nve_style: TypedStyle::new().flex_1(),
                 Input {
                     test_id: Some(format!("doc-block-input-{bid}")),
                     placeholder: Some("Edit block text...".into()),
@@ -322,7 +338,7 @@ fn DocBlockEditor(bid: u32) -> Element {
                 variant: ButtonVariant::Primary,
                 size: ButtonSize::Sm,
                 test_id: Some(format!("doc-block-save-{bid}")),
-                style: Some(field_btn(46, None)),
+                nve_style: Some(field_btn(46.0, None)),
                 on_press: move |_| store.update(|st| {
                     let _ = st.commit_doc_block_edit();
                 }),
@@ -332,7 +348,7 @@ fn DocBlockEditor(bid: u32) -> Element {
                 variant: ButtonVariant::Secondary,
                 size: ButtonSize::Sm,
                 test_id: Some(format!("doc-block-cancel-{bid}")),
-                style: Some(field_btn(50, Some(false))),
+                nve_style: Some(field_btn(50.0, Some(false))),
                 on_press: move |_| store.update(|st| st.cancel_edit_doc_block()),
                 "Cancel"
             }
@@ -351,30 +367,26 @@ fn DocBlockCard(block: DocBlock, can_up: bool, can_down: bool, editing: bool) ->
     let border = if s.xray() {
         s.card()
     } else {
-        crate::ui::style::Outline {
+        Outline {
             width: 1,
             color: border,
         }
     };
     let font_sz = block_font_size(block.kind);
     let kind_lbl = block.kind.label();
-    let card_style = format!(
-        "width: 100%; flex-shrink: 0; padding: {}px; gap: {}px; background-color: {}; border-radius: {}px; {border}",
-        s.m.card_pad,
-        s.m.card_gap,
-        bg.hex(),
-        s.m.card_radius
-    );
+    let card_style = TypedStyle::new()
+        .width_pct(100.0)
+        .flex_shrink(0.0)
+        .padding(s.m.card_pad as f32)
+        .gap(s.m.card_gap as f32)
+        .bg(bg)
+        .radius(s.m.card_radius as f32)
+        .outline(border);
     let radius_sm = s.t.radius.sm as u32;
-    let tool = |dims: &str, enabled: bool| {
+    let tool = |dims: TypedStyle, enabled: bool| {
         let style = s.compact_control(dims, 0, radius_sm, Some(false));
-        if enabled {
-            style
-        } else {
-            format!("{style} opacity: 0.35;")
-        }
+        if enabled { style } else { style.opacity(0.35) }
     };
-    let fg = fg.hex();
 
     rsx! {
         Card {
@@ -382,15 +394,21 @@ fn DocBlockCard(block: DocBlock, can_up: bool, can_down: bool, editing: bool) ->
             test_id: Some(format!("doc-block-{bid}")),
             padding: Some(s.m.card_pad as f32),
             gap: Some(s.m.card_gap as f32),
-            style: Some(card_style),
+            nve_style: Some(card_style),
             view {
-                style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; gap: 4px;",
+                nve_style: TypedStyle::new()
+                    .width_pct(100.0)
+                    .flex_shrink(0.0)
+                    .flex_row()
+                    .justify_content(FlexJustify::SpaceBetween)
+                    .align_items(FlexAlign::Center)
+                    .gap(4.0),
                 Button {
                     variant: ButtonVariant::Secondary,
                     size: ButtonSize::Sm,
                     test_id: Some(format!("doc-block-kind-{bid}")),
-                    style: Some(s.compact_control(
-                        &format!("min-width: {}px; height: 18px; min-height: 18px;", badge_min_w(kind_lbl)),
+                    nve_style: Some(s.compact_control(
+                        min_w_dims(badge_min_w(kind_lbl) as f32, 18.0),
                         4,
                         s.m.pill_radius,
                         Some(false),
@@ -401,12 +419,12 @@ fn DocBlockCard(block: DocBlock, can_up: bool, can_down: bool, editing: bool) ->
                     "{kind_lbl}"
                 }
                 view {
-                    style: "flex-direction: row; align-items: center; gap: 4px; flex-shrink: 0;",
+                    nve_style: row_center(4.0).flex_shrink(0.0),
                     Button {
                         variant: ButtonVariant::Secondary,
                         size: ButtonSize::Sm,
                         test_id: Some(format!("doc-block-up-{bid}")),
-                        style: Some(tool("width: 22px; height: 18px; min-height: 18px;", can_up)),
+                        nve_style: Some(tool(fixed_dims(22.0, 18.0), can_up)),
                         on_press: move |_| store.update(|st| {
                             let _ = st.move_doc_block(bid, -1);
                         }),
@@ -416,7 +434,7 @@ fn DocBlockCard(block: DocBlock, can_up: bool, can_down: bool, editing: bool) ->
                         variant: ButtonVariant::Secondary,
                         size: ButtonSize::Sm,
                         test_id: Some(format!("doc-block-down-{bid}")),
-                        style: Some(tool("width: 22px; height: 18px; min-height: 18px;", can_down)),
+                        nve_style: Some(tool(fixed_dims(22.0, 18.0), can_down)),
                         on_press: move |_| store.update(|st| {
                             let _ = st.move_doc_block(bid, 1);
                         }),
@@ -426,7 +444,7 @@ fn DocBlockCard(block: DocBlock, can_up: bool, can_down: bool, editing: bool) ->
                         variant: ButtonVariant::Secondary,
                         size: ButtonSize::Sm,
                         test_id: Some(format!("doc-block-edit-{bid}")),
-                        style: Some(tool("min-width: 34px; height: 18px; min-height: 18px;", true)),
+                        nve_style: Some(tool(min_w_dims(34.0, 18.0), true)),
                         on_press: move |_| store.update(|st| {
                             let _ = st.begin_edit_doc_block(bid);
                         }),
@@ -436,7 +454,7 @@ fn DocBlockCard(block: DocBlock, can_up: bool, can_down: bool, editing: bool) ->
                         variant: ButtonVariant::Destructive,
                         size: ButtonSize::Sm,
                         test_id: Some(format!("doc-block-del-{bid}")),
-                        style: Some(s.compact_control("width: 22px; height: 18px; min-height: 18px;", 0, radius_sm, None)),
+                        nve_style: Some(s.compact_control(fixed_dims(22.0, 18.0), 0, radius_sm, None)),
                         on_press: move |_| store.update(|st| {
                             let _ = st.delete_doc_block(bid);
                         }),
@@ -449,27 +467,37 @@ fn DocBlockCard(block: DocBlock, can_up: bool, can_down: bool, editing: bool) ->
                 DocBlockEditor { bid }
             } else if let DocBlockKind::Checklist { checked } = block.kind {
                 view {
-                    style: "width: 100%; flex-shrink: 0; flex-direction: row; align-items: center; gap: 8px;",
+                    nve_style: row_center(8.0).width_pct(100.0).flex_shrink(0.0),
                     Button {
                         variant: ButtonVariant::Secondary,
                         size: ButtonSize::Sm,
                         test_id: Some(format!("doc-check-{bid}")),
                         accessibility_label: Some("Toggle checklist item".into()),
-                        style: Some(format!(
-                            "{} background-color: {}; border-width: 1px; border-color: {};",
-                            s.compact_control("width: 30px; height: 22px; min-height: 22px;", 0, s.m.pill_radius, None),
-                            if checked { s.t.status.success.subtle.hex() } else { s.t.surface.subtle.hex() },
-                            if checked { s.t.status.success.border.hex() } else { s.t.border.default.hex() }
-                        )),
+                        nve_style: Some(
+                            s.compact_control(fixed_dims(30.0, 22.0), 0, s.m.pill_radius, None)
+                                .bg(if checked {
+                                    s.t.status.success.subtle
+                                } else {
+                                    s.t.surface.subtle
+                                })
+                                .border(
+                                    1.0,
+                                    if checked {
+                                        s.t.status.success.border
+                                    } else {
+                                        s.t.border.default
+                                    },
+                                ),
+                        ),
                         on_press: move |_| store.update(|st| {
                             let _ = st.toggle_doc_checklist(bid);
                         }),
                         if checked { "[x]" } else { "[ ]" }
                     }
-                    text { style: "flex: 1; color: {fg}; font-size: {font_sz}px;", "{block.text}" }
+                    text { nve_style: text_style(fg, font_sz).flex_1(), "{block.text}" }
                 }
             } else {
-                text { style: "color: {fg}; font-size: {font_sz}px;", "{block.text}" }
+                text { nve_style: text_style(fg, font_sz), "{block.text}" }
             }
         }
     }

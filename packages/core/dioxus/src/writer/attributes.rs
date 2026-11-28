@@ -2,8 +2,7 @@
 //!
 //! - Matches `AttributeValue::Float`/`Int`/`Bool` directly without string formatting/reparsing.
 //! - Matches `TypedStyle`, `MediaQuery`, and extensible [`TableAttr`] directly via `AttributeValue::Any`.
-//! - Routes inline `style` and CSS shorthands straight into `nve_tables::apply_css_attr_to_tx`.
-//! - Zero `set_raw_prop`, zero `ComponentKind`, zero module-specific downcasts.
+//! - Zero runtime CSS string parsing, zero `set_raw_prop`, zero `ComponentKind`, zero module-specific downcasts.
 
 use dioxus_core::{AttributeValue, ElementId};
 use nve_tables::input_hints::{AutofillHint, InputMode};
@@ -19,7 +18,8 @@ use crate::table_attr::TableAttr;
 use crate::typed_style::{pack_media_query, TypedStyle, NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR};
 
 use super::attributes_num::apply_numeric_attr_untracked;
-use super::{StandaloneStyleRef, StoreMutationTx};
+use super::standalone_style::numeric_attr_layer;
+use super::{StandaloneStyleVal, StoreMutationTx, StoredTypedStyle};
 
 const NVE_SHOW_ON_KEBAB_ATTR: &str = "nve-show-on";
 
@@ -43,15 +43,30 @@ impl StoreMutationTx<'_, '_> {
                 if name == NVE_TYPED_STYLE_ATTR
                     && let Some(ts) = any.as_any().downcast_ref::<TypedStyle>()
                 {
-                    if let Some(prev) = self.typed_styles.get_mut(node) {
-                        prev.clear_diff_from(Some(ts), self.tx, node);
-                        ts.apply_to_tx(self.tx, node);
-                        *prev = ts.clone();
+                    let dropped_cursor = if let Some(prev) = self.typed_styles.get_mut(node) {
+                        if prev.ptr_eq(any) {
+                            return;
+                        }
+                        let prev_style = prev.as_style();
+                        if prev_style == ts {
+                            *prev = StoredTypedStyle::from_rc(any);
+                            return;
+                        }
+                        let dropped_cursor = prev_style.cursor.is_some() && ts.cursor.is_none();
+                        prev_style.clear_diff_from(Some(ts), self.tx, node);
+                        ts.apply_to_tx_with_prev(Some(prev_style), self.tx, node);
+                        *prev = StoredTypedStyle::from_rc(any);
+                        dropped_cursor
                     } else {
-                        ts.apply_to_tx(self.tx, node);
-                        self.typed_styles.insert(node, ts.clone());
+                        ts.apply_to_tx_with_prev(None, self.tx, node);
+                        self.typed_styles
+                            .insert(node, StoredTypedStyle::from_rc(any));
+                        false
+                    };
+                    if dropped_cursor {
+                        self.restore_tag_default_cursor(node);
                     }
-                    self.replay_standalone_and_inline(node, nve_tables::STYLE_LAYER_ALL);
+                    self.replay_standalone_styles(node, nve_tables::STYLE_LAYER_ALL);
                     return;
                 }
                 if (name == NVE_SHOW_ON_ATTR || name == NVE_SHOW_ON_KEBAB_ATTR)
@@ -79,17 +94,6 @@ impl StoreMutationTx<'_, '_> {
                         }
                     }
                     table_attr.write_to(self.tx, node);
-                    return;
-                }
-                // Fallback: allow TypedStyle or MediaQuery even if passed on custom attribute name.
-                if let Some(ts) = any.as_any().downcast_ref::<TypedStyle>() {
-                    ts.apply_to_tx(self.tx, node);
-                } else if let Some(&q) = any.as_any().downcast_ref::<MediaQuery>() {
-                    let (w, env) = pack_media_query(q);
-                    self.tx
-                        .edit::<Responsive>(node)
-                        .show_on_widths(w)
-                        .show_on_env(env);
                 }
             }
             AttributeValue::Float(f) => self.apply_numeric_attr(node, name, *f),
@@ -102,14 +106,14 @@ impl StoreMutationTx<'_, '_> {
     }
 
     #[inline]
-    fn apply_numeric_attr(&mut self, node: NodeId, name: &str, v: f64) {
+    fn apply_numeric_attr(&mut self, node: NodeId, name: &'static str, v: f64) {
         if apply_numeric_attr_untracked(self.tx, node, name, v) {
-            self.finish_standalone_style(node, name, StandaloneStyleRef::Float(v));
+            self.finish_standalone_style(node, name, StandaloneStyleVal::Float(v));
         }
     }
 
     #[inline]
-    fn apply_int_attr(&mut self, node: NodeId, name: &str, v: i64) {
+    fn apply_int_attr(&mut self, node: NodeId, name: &'static str, v: i64) {
         match name {
             "tabIndex" | "tab-index" | "tab_index" => {
                 self.tx
@@ -120,7 +124,7 @@ impl StoreMutationTx<'_, '_> {
                 self.tx
                     .edit::<Visual>(node)
                     .z_index(v.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
-                self.finish_standalone_style(node, name, StandaloneStyleRef::Int(v));
+                self.finish_standalone_style(node, name, StandaloneStyleVal::Int(v));
             }
             "minlength" => {
                 let len = (v >= 0).then(|| v.min(i64::from(u16::MAX)) as u16);
@@ -212,30 +216,6 @@ impl StoreMutationTx<'_, '_> {
     }
 
     pub(crate) fn apply_str_attr(&mut self, node: NodeId, name: &str, value: &str) {
-        if name == "style" {
-            self.apply_inline_style_attr(node, value);
-            return;
-        }
-        match nve_tables::apply_css_attr_layers_status_to_tx(
-            self.tx,
-            node,
-            name,
-            value,
-            nve_tables::STYLE_LAYER_ALL,
-        ) {
-            nve_tables::CssAttrResult::Applied(_) => {
-                self.finish_standalone_style(node, name, StandaloneStyleRef::Str(value));
-                return;
-            }
-            nve_tables::CssAttrResult::Invalid(layer) => {
-                debug_assert!(layer != 0, "invalid CSS attr `{name}` must carry a non-zero layer");
-                if self.remove_standalone_style(node, name) {
-                    self.rebuild_style_layers_mask(node, layer);
-                }
-                return;
-            }
-            nve_tables::CssAttrResult::Unknown => {}
-        }
         if self.apply_identity_attr(node, name, Some(value)) {
             return;
         }
@@ -305,9 +285,23 @@ impl StoreMutationTx<'_, '_> {
                 let b = matches!(value.trim(), "" | "true" | "1");
                 self.apply_bool_attr(node, name, b);
             }
-            "minlength" | "maxlength" | "tabIndex" | "tab-index" | "tab_index" => {
+            "minlength" => {
                 if let Ok(i) = value.trim().parse::<i64>() {
-                    self.apply_int_attr(node, name, i);
+                    let len = (i >= 0).then(|| i.min(i64::from(u16::MAX)) as u16);
+                    self.tx.edit::<TextInput>(node).min_length(len);
+                }
+            }
+            "maxlength" => {
+                if let Ok(i) = value.trim().parse::<i64>() {
+                    let len = (i >= 0).then(|| i.min(i64::from(u16::MAX)) as u16);
+                    self.tx.edit::<TextInput>(node).max_length(len);
+                }
+            }
+            "tabIndex" | "tab-index" | "tab_index" => {
+                if let Ok(i) = value.trim().parse::<i64>() {
+                    self.tx
+                        .edit::<Interaction>(node)
+                        .tab_index(Some(i.clamp(i16::MIN as i64, i16::MAX as i64) as i16));
                 }
             }
             "accessibilityLabel" | "aria-label" | "ariaLabel" => {
@@ -392,7 +386,7 @@ impl StoreMutationTx<'_, '_> {
             | "aria-valuemin" | "aria_valuemin" | "ariaValueMax" | "aria-valuemax"
             | "aria_valuemax" => {
                 if let Ok(v) = value.trim().parse::<f64>() {
-                    self.apply_numeric_attr(node, name, v);
+                    let _ = apply_numeric_attr_untracked(self.tx, node, name, v);
                 }
             }
             _ => {}
@@ -401,11 +395,11 @@ impl StoreMutationTx<'_, '_> {
 
     fn clear_attr(&mut self, node: NodeId, name: &str) {
         if self.remove_standalone_style(node, name) {
-            if super::current_color::key_sets_border_color(name) {
-                self.refresh_current_color_border(node);
-            }
-            let layer = nve_tables::css_attr_layer(name);
-            debug_assert!(layer != 0, "removed standalone style `{name}` must have a non-zero layer");
+            let layer = numeric_attr_layer(name);
+            debug_assert!(
+                layer != 0,
+                "removed standalone numeric style `{name}` must have a non-zero layer"
+            );
             self.rebuild_style_layers_mask(node, layer);
             return;
         }
@@ -424,23 +418,16 @@ impl StoreMutationTx<'_, '_> {
             return;
         }
         match name {
-            "style" => {
-                if let Some((inline, prev_mask)) = self.inline_styles.remove(node) {
-                    self.buffer_pool.recycle_inline(inline);
-                    if nve_tables::mask_border_color_source(prev_mask).is_some() {
-                        self.refresh_current_color_border(node);
-                    }
-                    let layers = nve_tables::prop_bits_to_layers(prev_mask);
-                    if layers != 0 {
-                        self.rebuild_style_layers_mask(node, layers);
-                    }
-                }
-            }
             NVE_TYPED_STYLE_ATTR => {
                 if let Some(prev) = self.typed_styles.remove(node) {
-                    prev.clear_diff_from(None, self.tx, node);
+                    let prev_style = prev.as_style();
+                    let dropped_cursor = prev_style.cursor.is_some();
+                    prev_style.clear_diff_from(None, self.tx, node);
+                    if dropped_cursor {
+                        self.restore_tag_default_cursor(node);
+                    }
                 }
-                self.replay_standalone_and_inline(node, nve_tables::STYLE_LAYER_ALL);
+                self.replay_standalone_styles(node, nve_tables::STYLE_LAYER_ALL);
             }
             NVE_SHOW_ON_ATTR | NVE_SHOW_ON_KEBAB_ATTR => {
                 if self.tx.store().has::<Responsive>(node) {

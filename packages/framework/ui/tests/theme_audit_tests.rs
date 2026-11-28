@@ -11,7 +11,7 @@ use nve_dioxus::prelude::*;
 use nve_i18n::{CalendarDate, LocaleId};
 use nve_ui::audit::{indicator_contrast_violations, text_contrast_violations};
 use nve_ui::prelude::*;
-use nve_ui::{AppBrand, ColorHex, Polarity};
+use nve_ui::{AppBrand, Polarity};
 
 thread_local! {
     static POLARITY: Cell<Polarity> = const { Cell::new(Polarity::Light) };
@@ -38,7 +38,7 @@ fn Showcase() -> Element {
             Col {
                 padding: 12.0,
                 gap: 8.0,
-                style: format!("background-color: {}; color: {};", theme.surface.canvas.hex(), theme.text.primary.hex()),
+                nve_style: TypedStyle::new().bg(theme.surface.canvas).color(theme.text.primary),
                 Row {
                     for v in [ButtonVariant::Primary, ButtonVariant::Secondary, ButtonVariant::Ghost, ButtonVariant::Destructive, ButtonVariant::Outline] {
                         Button { variant: v, "{v:?}" }

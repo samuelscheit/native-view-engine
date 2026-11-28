@@ -2,7 +2,7 @@
 //! (`/examples/studio/`, `/examples/kitchen-sink/`) and all 5 live interactive docs playgrounds.
 
 use nve_dioxus::prelude::*;
-use nve_ui::{accent_indicator, ColorHex};
+use nve_ui::accent_indicator;
 use nve_docs::{DocsRoute, navigate_to, use_docs_state};
 
 use crate::landing::{PillBadge, SiteFooter, resolve_example_app_href};
@@ -72,16 +72,32 @@ pub fn ExamplesGalleryPage() -> Element {
     let mut active_pg_id = use_signal(|| "ui-playground");
     let selected_id = active_pg_id();
 
-    let outer_resp = TypedStyle::new().at(
-        MediaQuery::max_width(959),
-        RowPatch::new().padding_xy(16.0, 40.0),
-    );
-    let mobile_col = TypedStyle::new()
+    let outer_style = TypedStyle::new()
+        .width_pct(100.0)
+        .max_width_px(1180.0)
+        .flex_col()
+        .padding_xy(32.0, 40.0)
+        .gap(44.0)
+        .at(
+            MediaQuery::max_width(959),
+            RowPatch::new().padding_xy(16.0, 40.0),
+        );
+    let mobile_col_row = TypedStyle::new()
+        .width_pct(100.0)
+        .flex_row()
+        .gap(18.0)
         .at(MediaQuery::max_width(959), RowPatch::new().flex_col());
-    let h1_resp = TypedStyle::new().at(
-        MediaQuery::max_width(959),
-        RowPatch::new().font_size(30.0),
-    );
+    let h1_style = TypedStyle::new()
+        .font_size(40.0)
+        .font_weight(800)
+        .color(theme.text.primary)
+        .at(
+            MediaQuery::max_width(959),
+            RowPatch::new().font_size(30.0),
+        );
+    let app_card_style = TypedStyle::new()
+        .flex_1().min_width_px(0.0).flex_col().justify_content(FlexJustify::SpaceBetween)
+        .gap(20.0).padding(24.0).radius(14.0).bg(theme.surface.base).border(1.0, theme.border.default);
 
     let studio_href = resolve_example_app_href(&config.base_path, "/examples/studio");
     let kitchen_sink_href = resolve_example_app_href(&config.base_path, "/examples/kitchen-sink");
@@ -96,18 +112,19 @@ pub fn ExamplesGalleryPage() -> Element {
     rsx! {
         view {
             test_id: "examples-gallery-page",
-            style: "width: 100%; flex-direction: column; align-items: center; background-color: {theme.surface.canvas.hex()}; color: {theme.text.primary.hex()};",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0).flex_col().align_items(FlexAlign::Center)
+                .bg(theme.surface.canvas).color(theme.text.primary),
 
             view {
-                nve_style: outer_resp,
-                style: "width: 100%; max-width: 1180px; flex-direction: column; padding-horizontal: 32px; padding-vertical: 40px; gap: 44px;",
+                nve_style: outer_style,
 
                 // Gallery Header
                 view {
                     test_id: "examples-hero",
-                    style: "width: 100%; flex-direction: column; gap: 14px; max-width: 780px;",
+                    nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(14.0).max_width_px(780.0),
                     view {
-                        style: "flex-direction: row; align-items: center; gap: 8px; flex-wrap: wrap;",
+                        nve_style: TypedStyle::new().flex_row().align_items(FlexAlign::Center).gap(8.0).flex_wrap(FlexWrap::Wrap),
                         PillBadge { label: "Lazy-Loaded WASM Apps".to_string(), accent: true }
                         PillBadge { label: "5 Live Embedded Playgrounds".to_string(), secondary: true }
                     }
@@ -116,13 +133,12 @@ pub fn ExamplesGalleryPage() -> Element {
                         accessibility_role: "heading",
                         "aria-level": "1",
                         text {
-                            nve_style: h1_resp,
-                            style: "font-size: 40px; font-weight: 800; color: {theme.text.primary.hex()};",
+                            nve_style: h1_style,
                             "Interactive Examples & Live Playgrounds"
                         }
                     }
                     text {
-                        style: "font-size: 16px; color: {theme.text.secondary.hex()}; line-height: 1.55;",
+                        nve_style: TypedStyle::new().font_size(16.0).color(theme.text.secondary).line_height_ratio(1.55),
                         "Run full NVE applications compiled to WebAssembly on demand — keeping the landing page and documentation ultra-fast — or experiment directly inside the live embedded playgrounds below."
                     }
                 }
@@ -130,47 +146,46 @@ pub fn ExamplesGalleryPage() -> Element {
                 // Section 1: Standalone Lazy-Loaded WASM Apps
                 view {
                     test_id: "examples-wasm-apps",
-                    style: "width: 100%; flex-direction: column; gap: 16px;",
+                    nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(16.0),
                     view {
                         accessibility_role: "heading",
                         "aria-level": "2",
                         text {
-                            style: "font-size: 20px; font-weight: 700; color: {theme.text.primary.hex()};",
+                            nve_style: TypedStyle::new().font_size(20.0).font_weight(700).color(theme.text.primary),
                             "Standalone Live WASM Applications"
                         }
                     }
 
                     view {
-                        nve_style: mobile_col,
-                        style: "width: 100%; flex-direction: row; gap: 18px;",
+                        nve_style: mobile_col_row,
 
                         // Studio App Card
                         view {
                             test_id: "example-card-studio",
-                            style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 20px; padding: 24px; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                            nve_style: app_card_style.clone(),
                             view {
-                                style: "flex-direction: column; gap: 12px;",
+                                nve_style: TypedStyle::new().flex_col().gap(12.0),
                                 view {
-                                    style: "flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;",
+                                    nve_style: TypedStyle::new().flex_row().justify_content(FlexJustify::SpaceBetween).align_items(FlexAlign::Center).flex_wrap(FlexWrap::Wrap).gap(8.0),
                                     text {
-                                        style: "font-size: 11px; font-weight: 700; color: {theme.text.link.hex()};",
+                                        nve_style: TypedStyle::new().font_size(11.0).font_weight(700).color(theme.text.link),
                                         "FLAGSHIP WORKBENCH"
                                     }
                                     text {
-                                        style: "font-size: 11px; font-family: monospace; color: {theme.text.secondary.hex()};",
+                                        nve_style: TypedStyle::new().font_size(11.0).font_family("monospace").color(theme.text.secondary),
                                         "/examples/studio/"
                                     }
                                 }
                                 text {
-                                    style: "font-size: 22px; font-weight: 800; color: {theme.text.primary.hex()};",
+                                    nve_style: TypedStyle::new().font_size(22.0).font_weight(800).color(theme.text.primary),
                                     "Aether Workspace + NVE Studio"
                                 }
                                 text {
-                                    style: "font-size: 14px; color: {theme.text.secondary.hex()}; line-height: 1.55;",
+                                    nve_style: TypedStyle::new().font_size(14.0).color(theme.text.secondary).line_height_ratio(1.55),
                                     "Full multi-pane issue tracker, docs workbench, live X-Ray layout & FFI inspector, 100,000-row virtualized table, binary NVC1 CRDT sync, and NVE_DRAW1 telemetry canvas running in WebAssembly."
                                 }
                                 view {
-                                    style: "flex-direction: row; flex-wrap: wrap; gap: 6px; padding-top: 2px;",
+                                    nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(6.0).padding_top(2.0),
                                     PillBadge { label: "WASM".to_string(), accent: true }
                                     PillBadge { label: "Native Desktop".to_string() }
                                     PillBadge { label: "100k Fenwick".to_string(), secondary: true }
@@ -179,7 +194,7 @@ pub fn ExamplesGalleryPage() -> Element {
                                 }
                             }
                             view {
-                                style: "flex-direction: row; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;",
+                                nve_style: TypedStyle::new().flex_row().align_items(FlexAlign::Center).justify_content(FlexJustify::SpaceBetween).flex_wrap(FlexWrap::Wrap).gap(10.0),
                                 pressable {
                                     test_id: "example-launch-studio",
                                     accessibility_role: "link",
@@ -192,14 +207,14 @@ pub fn ExamplesGalleryPage() -> Element {
                                             )]),
                                         ));
                                     }),
-                                    style: "padding-horizontal: 18px; padding-vertical: 10px; border-radius: 9px; background-color: {theme.status.accent.solid.hex()}; border-width: 1px; border-color: {theme.status.accent.solid.hex()};",
+                                    nve_style: TypedStyle::new().padding_xy(18.0, 10.0).radius(9.0).bg(theme.status.accent.solid).border(1.0, theme.status.accent.solid),
                                     text {
-                                        style: "font-size: 14px; font-weight: 700; color: {theme.text.on_accent.hex()};",
+                                        nve_style: TypedStyle::new().font_size(14.0).font_weight(700).color(theme.text.on_accent),
                                         "Launch Live Studio →"
                                     }
                                 }
                                 text {
-                                    style: "font-size: 12px; font-family: monospace; color: {theme.text.secondary.hex()};",
+                                    nve_style: TypedStyle::new().font_size(12.0).font_family("monospace").color(theme.text.secondary),
                                     "Lazy-loaded · Portal Bar"
                                 }
                             }
@@ -208,30 +223,30 @@ pub fn ExamplesGalleryPage() -> Element {
                         // Kitchen Sink Gallery Card
                         view {
                             test_id: "example-card-kitchen-sink",
-                            style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 20px; padding: 24px; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                            nve_style: app_card_style,
                             view {
-                                style: "flex-direction: column; gap: 12px;",
+                                nve_style: TypedStyle::new().flex_col().gap(12.0),
                                 view {
-                                    style: "flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;",
+                                    nve_style: TypedStyle::new().flex_row().justify_content(FlexJustify::SpaceBetween).align_items(FlexAlign::Center).flex_wrap(FlexWrap::Wrap).gap(8.0),
                                     text {
-                                        style: "font-size: 11px; font-weight: 700; color: {theme.status.info.text.hex()};",
+                                        nve_style: TypedStyle::new().font_size(11.0).font_weight(700).color(theme.status.info.text),
                                         "COMPONENT GALLERY"
                                     }
                                     text {
-                                        style: "font-size: 11px; font-family: monospace; color: {theme.text.secondary.hex()};",
+                                        nve_style: TypedStyle::new().font_size(11.0).font_family("monospace").color(theme.text.secondary),
                                         "/examples/kitchen-sink/"
                                     }
                                 }
                                 text {
-                                    style: "font-size: 22px; font-weight: 800; color: {theme.text.primary.hex()};",
+                                    nve_style: TypedStyle::new().font_size(22.0).font_weight(800).color(theme.text.primary),
                                     "NVE Kitchen Sink Gallery"
                                 }
                                 text {
-                                    style: "font-size: 14px; color: {theme.text.secondary.hex()}; line-height: 1.55;",
+                                    nve_style: TypedStyle::new().font_size(14.0).color(theme.text.secondary).line_height_ratio(1.55),
                                     "Interactive showcase of every nve-ui component and engine primitive: Dark/Light themes, UiDensity, live nve-i18n locales & RTL, overlays, 1k VirtualList, NVE_DRAW1 Canvas, and UiErrorBoundary recovery."
                                 }
                                 view {
-                                    style: "flex-direction: row; flex-wrap: wrap; gap: 6px; padding-top: 2px;",
+                                    nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(6.0).padding_top(2.0),
                                     PillBadge { label: "All nve-ui".to_string(), accent: true }
                                     PillBadge { label: "nve-i18n + RTL".to_string() }
                                     PillBadge { label: "Binary ABI".to_string(), secondary: true }
@@ -239,7 +254,7 @@ pub fn ExamplesGalleryPage() -> Element {
                                 }
                             }
                             view {
-                                style: "flex-direction: row; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;",
+                                nve_style: TypedStyle::new().flex_row().align_items(FlexAlign::Center).justify_content(FlexJustify::SpaceBetween).flex_wrap(FlexWrap::Wrap).gap(10.0),
                                 pressable {
                                     test_id: "example-launch-kitchen-sink",
                                     accessibility_role: "link",
@@ -252,14 +267,14 @@ pub fn ExamplesGalleryPage() -> Element {
                                             )]),
                                         ));
                                     }),
-                                    style: "padding-horizontal: 18px; padding-vertical: 10px; border-radius: 9px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                                    nve_style: TypedStyle::new().padding_xy(18.0, 10.0).radius(9.0).bg(theme.surface.subtle).border(1.0, theme.border.default),
                                     text {
-                                        style: "font-size: 14px; font-weight: 700; color: {theme.text.primary.hex()};",
+                                        nve_style: TypedStyle::new().font_size(14.0).font_weight(700).color(theme.text.primary),
                                         "Launch Kitchen Sink →"
                                     }
                                 }
                                 text {
-                                    style: "font-size: 12px; font-family: monospace; color: {theme.text.secondary.hex()};",
+                                    nve_style: TypedStyle::new().font_size(12.0).font_family("monospace").color(theme.text.secondary),
                                     "Lazy-loaded · Portal Bar"
                                 }
                             }
@@ -270,22 +285,22 @@ pub fn ExamplesGalleryPage() -> Element {
                 // Section 2: Interactive Live Playground Stage (all 5 playgrounds right here!)
                 view {
                     test_id: "examples-playgrounds-section",
-                    style: "width: 100%; flex-direction: column; gap: 16px;",
+                    nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(16.0),
 
                     view {
-                        style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 10px;",
+                        nve_style: TypedStyle::new().width_pct(100.0).flex_row().justify_content(FlexJustify::SpaceBetween).align_items(FlexAlign::FlexEnd).flex_wrap(FlexWrap::Wrap).gap(10.0),
                         view {
-                            style: "flex-direction: column; gap: 4px;",
+                            nve_style: TypedStyle::new().flex_col().gap(4.0),
                             view {
                                 accessibility_role: "heading",
                                 "aria-level": "2",
                                 text {
-                                    style: "font-size: 20px; font-weight: 700; color: {theme.text.primary.hex()};",
+                                    nve_style: TypedStyle::new().font_size(20.0).font_weight(700).color(theme.text.primary),
                                     "Live Embedded Playgrounds"
                                 }
                             }
                             text {
-                                style: "font-size: 13px; color: {theme.text.secondary.hex()};",
+                                nve_style: TypedStyle::new().font_size(13.0).color(theme.text.secondary),
                                 "Select any subsystem below to interact immediately in-page, or open its full technical guide."
                             }
                         }
@@ -293,12 +308,12 @@ pub fn ExamplesGalleryPage() -> Element {
                             test_id: "examples-open-guide-link",
                             accessibility_role: "link",
                             "href": "{selected_guide_href}",
-                            style: "padding-horizontal: 12px; padding-vertical: 7px; border-radius: 8px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                            nve_style: TypedStyle::new().padding_xy(12.0, 7.0).radius(8.0).bg(theme.surface.base).border(1.0, theme.border.default),
                             onpress: move |_| {
                                 navigate_to(state, selected_guide_route.clone());
                             },
                             text {
-                                style: "font-size: 13px; font-weight: 600; color: {theme.text.link.hex()};",
+                                nve_style: TypedStyle::new().font_size(13.0).font_weight(600).color(theme.text.link),
                                 "Open Full Guide →"
                             }
                         }
@@ -307,13 +322,13 @@ pub fn ExamplesGalleryPage() -> Element {
                     // Playground switcher tabs
                     view {
                         accessibility_role: "tablist",
-                        style: "width: 100%; flex-direction: row; flex-wrap: wrap; gap: 8px;",
+                        nve_style: TypedStyle::new().width_pct(100.0).flex_row().flex_wrap(FlexWrap::Wrap).gap(8.0),
                         for spec in &PLAYGROUND_SPECS {
                             {
                                 let is_sel = spec.id == selected_id;
-                                let bg = if is_sel { theme.status.accent.subtle.hex() } else { theme.surface.base.hex() };
-                                let fg = if is_sel { theme.text.link.hex() } else { theme.text.secondary.hex() };
-                                let bc = if is_sel { accent_indicator(&theme).hex() } else { theme.border.default.hex() };
+                                let bg = if is_sel { theme.status.accent.subtle } else { theme.surface.base };
+                                let fg = if is_sel { theme.text.link } else { theme.text.secondary };
+                                let bc = if is_sel { accent_indicator(&theme) } else { theme.border.default };
                                 let id_val = spec.id;
                                 let sel_attr = if is_sel { "true" } else { "false" };
                                 rsx! {
@@ -322,12 +337,12 @@ pub fn ExamplesGalleryPage() -> Element {
                                         test_id: "examples-pg-tab-{spec.id}",
                                         accessibility_role: "tab",
                                         aria_selected: "{sel_attr}",
-                                        style: "flex-shrink: 0; padding-horizontal: 14px; padding-vertical: 8px; border-radius: 8px; background-color: {bg}; border-width: 1px; border-color: {bc};",
+                                        nve_style: TypedStyle::new().flex_shrink(0.0).padding_xy(14.0, 8.0).radius(8.0).bg(bg).border(1.0, bc),
                                         onpress: move |_| {
                                             active_pg_id.set(id_val);
                                         },
                                         text {
-                                            style: "font-size: 13px; font-weight: 600; color: {fg};",
+                                            nve_style: TypedStyle::new().font_size(13.0).font_weight(600).color(fg),
                                             "{spec.tab_label}"
                                         }
                                     }
@@ -339,23 +354,28 @@ pub fn ExamplesGalleryPage() -> Element {
                     // Active live playground preview card
                     view {
                         test_id: "examples-live-stage",
-                        style: "width: 100%; flex-direction: column; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()}; overflow: hidden;",
+                        nve_style: TypedStyle::new()
+                            .width_pct(100.0).flex_col().radius(14.0)
+                            .bg(theme.surface.base).border(1.0, theme.border.default).overflow_mode(Overflow::Hidden),
 
                         view {
-                            style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; padding-horizontal: 18px; padding-vertical: 12px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                            nve_style: TypedStyle::new()
+                                .width_pct(100.0).flex_row().justify_content(FlexJustify::SpaceBetween)
+                                .align_items(FlexAlign::Center).flex_wrap(FlexWrap::Wrap).gap(8.0)
+                                .padding_xy(18.0, 12.0).bg(theme.surface.subtle).border(1.0, theme.border.default),
                             view {
-                                style: "flex-direction: column; gap: 2px;",
+                                nve_style: TypedStyle::new().flex_col().gap(2.0),
                                 text {
-                                    style: "font-size: 14px; font-weight: 700; color: {theme.text.primary.hex()};",
+                                    nve_style: TypedStyle::new().font_size(14.0).font_weight(700).color(theme.text.primary),
                                     "{selected_spec.title}"
                                 }
                                 text {
-                                    style: "font-size: 12px; color: {theme.text.secondary.hex()};",
+                                    nve_style: TypedStyle::new().font_size(12.0).color(theme.text.secondary),
                                     "{selected_spec.summary}"
                                 }
                             }
                             view {
-                                style: "flex-direction: row; flex-wrap: wrap; gap: 6px;",
+                                nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(6.0),
                                 for b in selected_spec.badges {
                                     PillBadge { key: "stage-badge-{b}", label: (*b).to_string() }
                                 }
@@ -363,7 +383,7 @@ pub fn ExamplesGalleryPage() -> Element {
                         }
 
                         view {
-                            style: "width: 100%; padding: 20px; background-color: {theme.surface.canvas.hex()};",
+                            nve_style: TypedStyle::new().width_pct(100.0).padding(20.0).bg(theme.surface.canvas),
                             if let Some(entry) = selected_entry {
                                 {(entry.render)()}
                             }

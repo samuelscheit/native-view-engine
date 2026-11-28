@@ -2,8 +2,9 @@
 //! live `FormState` validation (sync + cross-field password match + dirty/touched + submit/reset),
 //! and `UndoRedoStack` live editor.
 
+use nve_abi::{FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
-use nve_ui::{ColorHex, 
+use nve_ui::{
     use_theme, AutofillHint, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card,
     CardVariant, Checkbox, FormState, Input, InputMode, Row, Separator, Switch, UndoRedoStack,
 };
@@ -71,8 +72,8 @@ pub fn FormsSection(handle: AppHandle) -> Element {
     let mut submit_status = use_signal(|| Option::<String>::None);
     let mut history = use_signal(|| UndoRedoStack::new(snap.notes.clone(), 32));
 
-    let text_primary = theme.text.primary.hex();
-    let text_muted = theme.text.tertiary.hex();
+    let text_primary = theme.text.primary;
+    let text_muted = theme.text.tertiary;
 
     let (email_val, pw_val, confirm_val, otp_val, email_err, pw_err, confirm_err, otp_err, dirty_count, is_dirty, is_valid) = {
         let f = form.read();
@@ -105,7 +106,7 @@ pub fn FormsSection(handle: AppHandle) -> Element {
     rsx! {
         view {
             test_id: "section-forms",
-            style: "width: 100%; flex-direction: column; gap: 16px;",
+            nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(16.0),
 
             SectionHeader {
                 title: copy("Inputs & Forms", pseudo),
@@ -126,13 +127,18 @@ pub fn FormsSection(handle: AppHandle) -> Element {
                         gap: Some(12.0),
 
                         view {
-                            style: "flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;",
+                            nve_style: TypedStyle::new()
+                                .flex_row()
+                                .flex_wrap(FlexWrap::Wrap)
+                                .align_items(FlexAlign::Center)
+                                .justify_content(FlexJustify::SpaceBetween)
+                                .gap(8.0),
                             text {
-                                style: "font-size: 15px; font-weight: 700; color: {text_primary};",
+                                nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(text_primary),
                                 "{copy(\"FormState Validation\", pseudo)}"
                             }
                             view {
-                                style: "flex-direction: row; gap: 6px; flex-wrap: wrap;",
+                                nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(6.0),
                                 Badge {
                                     label: if is_dirty { format!("Dirty ({dirty_count})") } else { "Clean".to_owned() },
                                     variant: if is_dirty { BadgeVariant::Warning } else { BadgeVariant::Neutral },
@@ -209,7 +215,11 @@ pub fn FormsSection(handle: AppHandle) -> Element {
                         }
 
                         view {
-                            style: "flex-direction: row; flex-wrap: wrap; gap: 8px; align-items: center;",
+                            nve_style: TypedStyle::new()
+                                .flex_row()
+                                .flex_wrap(FlexWrap::Wrap)
+                                .gap(8.0)
+                                .align_items(FlexAlign::Center),
                             Button {
                                 test_id: Some("ks-form-submit".to_owned()),
                                 variant: ButtonVariant::Primary,
@@ -254,7 +264,7 @@ pub fn FormsSection(handle: AppHandle) -> Element {
                         if let Some(msg) = submit_status() {
                             text {
                                 test_id: "ks-form-status",
-                                style: "font-size: 12px; color: {text_muted};",
+                                nve_style: TypedStyle::new().font_size(12.0).color(text_muted),
                                 "{msg}"
                             }
                         }
@@ -263,8 +273,7 @@ pub fn FormsSection(handle: AppHandle) -> Element {
 
                 // Right Column: Checkbox + Switch + UndoRedoStack
                 view {
-                    nve_style: responsive_two_col_cell(),
-                    style: "flex-direction: column; gap: 14px;",
+                    nve_style: responsive_two_col_cell().flex_col().gap(14.0),
 
                     Card {
                         test_id: Some("ks-toggles-card".to_owned()),
@@ -272,7 +281,7 @@ pub fn FormsSection(handle: AppHandle) -> Element {
                         padding: Some(16.0),
                         gap: Some(10.0),
                         text {
-                            style: "font-size: 15px; font-weight: 700; color: {text_primary};",
+                            nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(text_primary),
                             "{copy(\"Checkbox & Switch\", pseudo)}"
                         }
                         Checkbox {
@@ -325,7 +334,7 @@ pub fn FormsSection(handle: AppHandle) -> Element {
                             justify: Some("space-between".to_owned()),
                             align: Some("center".to_owned()),
                             text {
-                                style: "font-size: 15px; font-weight: 700; color: {text_primary};",
+                                nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(text_primary),
                                 "{copy(\"UndoRedoStack Editor\", pseudo)}"
                             }
                             Badge {
@@ -346,7 +355,7 @@ pub fn FormsSection(handle: AppHandle) -> Element {
                         }
 
                         view {
-                            style: "flex-direction: row; flex-wrap: wrap; gap: 6px;",
+                            nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(6.0),
                             Button {
                                 test_id: Some("ks-history-append".to_owned()),
                                 variant: ButtonVariant::Secondary,

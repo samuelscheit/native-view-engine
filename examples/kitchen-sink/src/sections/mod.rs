@@ -7,23 +7,26 @@ pub mod overview;
 pub mod overlays;
 pub mod selection;
 
+use nve_abi::FlexAlign;
 use nve_dioxus::prelude::*;
-use nve_ui::{ColorHex, use_theme, Badge, BadgeVariant};
+use nve_ui::{use_theme, Badge, BadgeVariant};
 
 /// Reusable section heading banner shared across all 6 gallery sections.
 #[component]
 pub fn SectionHeader(title: String, subtitle: String, tag: String) -> Element {
     let theme = use_theme();
-    let text_primary = theme.text.primary.hex();
-    let text_muted = theme.text.tertiary.hex();
 
     rsx! {
         view {
-            style: "width: 100%; flex-direction: column; gap: 6px;",
+            nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(6.0),
             view {
-                style: "flex-direction: row; flex-wrap: wrap; align-items: center; gap: 10px;",
+                nve_style: TypedStyle::new()
+                    .flex_row()
+                    .flex_wrap(FlexWrap::Wrap)
+                    .align_items(FlexAlign::Center)
+                    .gap(10.0),
                 text {
-                    style: "font-size: 22px; font-weight: 700; color: {text_primary};",
+                    nve_style: TypedStyle::new().font_size(22.0).font_weight(700).color(theme.text.primary),
                     "{title}"
                 }
                 Badge {
@@ -32,7 +35,7 @@ pub fn SectionHeader(title: String, subtitle: String, tag: String) -> Element {
                 }
             }
             text {
-                style: "font-size: 13px; color: {text_muted};",
+                nve_style: TypedStyle::new().font_size(13.0).color(theme.text.tertiary),
                 "{subtitle}"
             }
         }
