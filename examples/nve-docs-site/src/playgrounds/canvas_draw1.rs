@@ -2,10 +2,12 @@
 //! rendered by `<skia_canvas>` across Skia GPU, HTML5 Canvas2D, CoreGraphics, and Flutter/Compose.
 
 use nve_abi::ColorRgba;
-use nve_canvas::{Canvas, DrawList};
+use nve_canvas::{
+    write_canvas, CanvasPaintSize, CanvasPainter, CanvasSink, DirectCanvasRegistry, DrawList,
+    GuardedPainter, PolylinePoints,
+};
 use nve_dioxus::prelude::*;
 use nve_dioxus::table_attr_fn;
-use nve_store::FlatResource;
 use nve_ui::{
     Accent, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, ColorHex, Theme, use_theme,
     with_alpha,
@@ -70,22 +72,73 @@ impl PaletteChoice {
     }
 }
 
-fn build_scene_draw_list(
+/// Zero-allocation op counter used for direct-mode telemetry without constructing a `DrawList`.
+#[derive(Default)]
+struct OpCounter(u32);
+
+impl CanvasSink for OpCounter {
+    fn clear(&mut self, _color: ColorRgba) {
+        self.0 += 1;
+    }
+    fn fill_rect(&mut self, _x: f32, _y: f32, _w: f32, _h: f32, _color: ColorRgba) {
+        self.0 += 1;
+    }
+    fn fill_rounded_rect(
+        &mut self,
+        _x: f32,
+        _y: f32,
+        _w: f32,
+        _h: f32,
+        _radius: f32,
+        _color: ColorRgba,
+    ) {
+        self.0 += 1;
+    }
+    fn fill_circle(&mut self, _cx: f32, _cy: f32, _radius: f32, _color: ColorRgba) {
+        self.0 += 1;
+    }
+    fn stroke_line(
+        &mut self,
+        _x0: f32,
+        _y0: f32,
+        _x1: f32,
+        _y1: f32,
+        _width: f32,
+        _color: ColorRgba,
+    ) {
+        self.0 += 1;
+    }
+    fn stroke_polyline(&mut self, _points: PolylinePoints<'_>, _width: f32, _color: ColorRgba) {
+        self.0 += 1;
+    }
+    fn push_clip_rect(&mut self, _x: f32, _y: f32, _w: f32, _h: f32) {
+        self.0 += 1;
+    }
+    fn pop_clip(&mut self) {
+        self.0 += 1;
+    }
+}
+
+/// Shared scene painter driving both in-process direct painting (`write_canvas`) and recorded
+/// `DrawList::record` output from one single implementation.
+fn paint_demo_scene(
+    p: &mut impl CanvasPainter,
+    size: CanvasPaintSize,
     theme: &Theme,
     mode: SceneMode,
     palette: PaletteChoice,
     stroke_width: f32,
-) -> (DrawList, u32, usize) {
+) {
     let (primary, secondary, tint) = palette.colors(theme);
     let bg = theme.surface.sunken;
     let grid = theme.border.subtle;
 
-    let mut dl = DrawList::with_capacity(24);
-    dl.clear(bg);
+    p.clear(bg);
 
-    // Subtle baseline grid lines
+    // Subtle baseline grid lines adapting to live logical width.
+    let right = (size.width - 14.0).max(14.0);
     for y in [36.0f32, 76.0, 116.0] {
-        dl.stroke_line(14.0, y, 520.0, y, 1.0, grid);
+        p.stroke_line(14.0, y, right, y, 1.0, grid);
     }
 
     match mode {
@@ -102,10 +155,10 @@ fn build_scene_draw_list(
                 (468.0, 38.0),
                 (510.0, 22.0),
             ];
-            dl.fill_rounded_rect(18.0, 18.0, 158.0, 42.0, 8.0, tint);
-            dl.stroke_polyline(&pts, stroke_width, primary);
+            p.fill_rounded_rect(18.0, 18.0, 158.0, 42.0, 8.0, tint);
+            p.stroke_polyline(&pts, stroke_width, primary);
             for &(x, y) in &pts {
-                dl.fill_circle(x, y, stroke_width + 2.0, secondary);
+                p.fill_circle(x, y, stroke_width + 2.0, secondary);
             }
         }
         SceneMode::Bars => {
@@ -114,15 +167,15 @@ fn build_scene_draw_list(
                 let x = 24.0 + (idx as f32) * 54.0;
                 let y = 134.0 - h;
                 let color = if idx % 2 == 0 { primary } else { secondary };
-                dl.fill_rounded_rect(x, y, 36.0, h, 6.0, color);
-                dl.stroke_line(x, y, x + 36.0, y, stroke_width, theme.surface.base);
+                p.fill_rounded_rect(x, y, 36.0, h, 6.0, color);
+                p.stroke_line(x, y, x + 36.0, y, stroke_width, theme.surface.base);
             }
         }
         SceneMode::Geometry => {
-            dl.fill_rounded_rect(26.0, 26.0, 144.0, 96.0, 16.0, tint);
-            dl.fill_circle(236.0, 76.0, 44.0, primary);
-            dl.fill_circle(272.0, 76.0, 30.0, secondary);
-            dl.stroke_polyline(
+            p.fill_rounded_rect(26.0, 26.0, 144.0, 96.0, 16.0, tint);
+            p.fill_circle(236.0, 76.0, 44.0, primary);
+            p.fill_circle(272.0, 76.0, 30.0, secondary);
+            p.stroke_polyline(
                 &[
                     (336.0, 118.0),
                     (388.0, 26.0),
@@ -132,30 +185,36 @@ fn build_scene_draw_list(
                 stroke_width,
                 primary,
             );
-            dl.fill_rounded_rect(462.0, 32.0, 44.0, 88.0, 10.0, secondary);
+            p.fill_rounded_rect(462.0, 32.0, 44.0, 88.0, 10.0, secondary);
         }
     }
-
-    let list = dl.finish();
-    let op_count = list.op_count();
-    let mut words = Vec::new();
-    let raw_len = if list.write_words(&mut words) {
-        words.len() * 4
-    } else {
-        0
-    };
-    (list, op_count, raw_len)
 }
 
 #[component]
 pub fn CanvasDraw1Demo() -> Element {
     let theme = use_theme();
+    let direct = try_consume_context::<DirectCanvasRegistry>();
     let mut mode = use_signal(|| SceneMode::Sparkline);
     let mut palette = use_signal(|| PaletteChoice::Cyan);
     let mut stroke_w = use_signal(|| 2.5f32);
 
-    let (draw_list, op_count, byte_len) = build_scene_draw_list(&theme, mode(), palette(), stroke_w());
-    let palette_name = palette().label();
+    let cur_mode = mode();
+    let cur_pal = palette();
+    let cur_stroke = stroke_w();
+    let fallback = CanvasPaintSize::new(536.0, 152.0, 1.0);
+    let (op_count, byte_len) = if direct.is_some() {
+        let mut counter = GuardedPainter::new(OpCounter::default());
+        paint_demo_scene(&mut counter, fallback, &theme, cur_mode, cur_pal, cur_stroke);
+        (counter.sink().0, 0usize)
+    } else {
+        let list = DrawList::record(|p| {
+            paint_demo_scene(p, fallback, &theme, cur_mode, cur_pal, cur_stroke);
+        });
+        (list.op_count(), list.byte_len())
+    };
+    let palette_name = cur_pal.label();
+    let theme_for_draw = theme;
+    let direct_for_write = direct;
 
     rsx! {
         view {
@@ -194,7 +253,22 @@ pub fn CanvasDraw1Demo() -> Element {
                 test_id: "pg-canvas-surface",
                 accessibility_label: "Interactive DrawList vector canvas",
                 nve_table: table_attr_fn(move |tx, node| {
-                    tx.edit::<Canvas>(node).draw_list_ephemeral(draw_list.clone());
+                    write_canvas(
+                        tx,
+                        node,
+                        direct_for_write.as_ref(),
+                        fallback,
+                        move |mut p, size| {
+                            paint_demo_scene(
+                                &mut p,
+                                size,
+                                &theme_for_draw,
+                                cur_mode,
+                                cur_pal,
+                                cur_stroke,
+                            );
+                        },
+                    );
                 }),
                 style: "width: 100%; height: 152px; border-radius: 8px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: {theme.surface.sunken.hex()};",
             }

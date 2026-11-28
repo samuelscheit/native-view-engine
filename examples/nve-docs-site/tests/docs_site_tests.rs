@@ -28,7 +28,7 @@ impl InteractiveHarness {
         let mut surface = create_nve_docs_surface(route, "", DocsViewport::desktop_default());
         let mut backend = WebBackend::new();
         register_web_html_systems(backend.table_registry_mut());
-        backend.register_table_system(CanvasWebSystem);
+        backend.register_table_system(CanvasWebSystem::new());
         surface
             .commit_to(FrameId(1), &mut backend)
             .expect("initial commit_to");
@@ -223,7 +223,7 @@ fn zero_mismatch_hydrate_from_ssr_preserves_dom_identity() {
         ] {
             let mut hydrated = WebBackend::hydrate_from_ssr(&ssr);
             register_web_html_systems(hydrated.table_registry_mut());
-            hydrated.register_table_system(CanvasWebSystem);
+            hydrated.register_table_system(CanvasWebSystem::new());
 
             let mut surface = create_nve_docs_surface(route, "", client_vp);
             surface
@@ -455,7 +455,7 @@ fn native_docs_site_module_renders_on_skia_backend_and_preserves_route_snapshot(
     let _ = <nve_canvas::Canvas as nve_store::NveTable>::slot();
     nve_web_html::register_web_html_tables();
     let mut skia = SkiaBackend::new();
-    skia.register_table_system(nve_canvas_skia::CanvasSkiaSystem);
+    skia.register_table_system(nve_canvas_skia::CanvasSkiaSystem::new());
     skia.set_viewport(
         SurfaceId::ROOT,
         Viewport {

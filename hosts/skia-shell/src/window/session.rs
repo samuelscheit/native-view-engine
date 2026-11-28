@@ -55,7 +55,7 @@ pub fn new_shell_skia_replica_with_layout(
 ) -> StoreWireReplica<ShellSkiaBackend> {
     register_core_tables();
     let mut backend = SkiaBackend::with_layout(layout);
-    backend.register_table_system(CanvasSkiaSystem);
+    backend.register_table_system(CanvasSkiaSystem::new());
     backend.register_table_system(SvgSkiaSystem);
     backend.register_frame_hook(MotionDriver::new());
     backend.set_viewport(surface_id, viewport);
