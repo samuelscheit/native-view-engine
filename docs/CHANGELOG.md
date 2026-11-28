@@ -4,6 +4,17 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
 
 ---
 
+## Track 1B-2/3B Slice 4 — Desktop Host Parity (`gtk-shell`, `qt-shell`, `windows-shell`, `nve-accessibility-windows`) & Hygiene/Benchmark Ratchets
+
+- **Desktop native hosts & Windows UIA C-ABI bridge (`75d4dbb1`, `packages/core/host-cxx`, `packages/modules/accessibility/windows`, `hosts/{gtk,qt,windows}-shell`)**:
+  - Extended shared `packages/core/host-cxx` with `AriaRelations` (`nve.res.aria_relations`) codec, full `AccessibilityData` + `DebugId` binding, and shared `apply_pair_transport`.
+  - Shipped standalone `packages/modules/accessibility/windows` (`nve-accessibility-windows`, `rlib` + `cdylib`, `nve_a11y_win.h`) wrapping AccessKit Windows UIA with `SceneGeo` rect/transform propagation, skipped-frame rebuild without epoch bump, `aria_rel_owners` tracking, per-thread `CountingAlloc` zero-alloc guard, and Criterion benchmark.
+  - Hardened `hosts/windows-shell` (keyboard focus traversal, non-input keyboard events, UIA bridge wiring, multiline `\r\n` offset mapping, `BLUR` focus sync, non-finite `SET_NUMERIC_VALUE` validation, `alive_` re-entrant teardown guards), `hosts/gtk-shell` (keyboard controller, IBus/Wayland IME composition & preedit-before-commit ordering guards, multiline `GtkTextView`, full `GtkAccessible` + ARIA relations, 64-bit Frame-0 boot, `gtk_shell_input_parity_test`), and `hosts/qt-shell` (64-bit Frame-0 boot, Qt 6.11 `#if` guards, ordered `notify_semantics_change`, `in_ime_` double-edit & simultaneous commit+preedit guards). Verified: `codegen abi --check` (30/30), `nve-accessibility` + `nve-accessibility-windows` (unit, parity, zero-alloc, bench, `cdylib`), `nve-arch-invariants`, `host-cxx` (44/44), `windows-shell` portable (1/1), `gtk-shell` (1/1), `qt-shell` + `qt_quick` (2/2), `ast-grep`.
+- **Retired acronym zero-tolerance, mirrored enum deduplication & 12-module Criterion coverage (`46bce70e`, `502239af`, `803ec93d`)**:
+  - Eliminated 100% of `NVT1`/`NVD1`/`NVC1` across 45 files, promoted `NVT1`/`NVD1`/`NVC1`/`NVERELOC`/`NVE_MET1` to zero-tolerance in `nve-arch-invariants`, and lowered legacy acronym ratchet (`423 → 266`).
+  - Consolidated `nve-tv` `RemoteAction` canonical key names onto one `CANONICAL_KEY_NAMES` slice (`ALLOWLISTED_DUPLICATES 10 → 8`, zero mirrored duplicate enum match tables workspace-wide).
+  - Added `wasm32`-safe Criterion benchmarks across 12 capability modules (`{blur,camera,video,webview,web-element,web-html}` + `*/web`), lowering `all_crate_benches` (`19 → 7`).
+
 ## Track 1B-2/3B Slice 3 — Apple Parity (`swiftui-kit`, `apple-common`, `macos-shell`, `ios-shell`) & Zero-Tolerance `alloc_guards`
 
 - **Apple hosts & `NveSwiftUI` parity (`825c5887`, `45c49626`, `hosts/{apple-common,macos-shell,ios-shell,swiftui-kit}`, `nve-codegen`, `nve-cli`)**:

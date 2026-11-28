@@ -6,10 +6,9 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 
 ## P1 — Direct Typed Render ABI, Interaction Primitives & Host Parity (from [quality-audit.md](./quality-audit.md))
 
-- [ ] **Track 1B-2 — Host-Owned `packages/core/runtime` Follow-Ups (Slice 4 & Platform Adapters; Slices 1–3 — ABI v6 / `RuntimeHostRouter` / `measure_surface` / Frame-0 / Android & Compose ABI v6 / Apple `swiftui-kit` + `apple-common` + `macos-shell` + `ios-shell` parity — landed)**
+- [ ] **Track 1B-2 — Host-Owned `packages/core/runtime` Follow-Ups (Platform Adapters; Slices 1–4 — ABI v6 / Android & Compose / Apple / Desktop `gtk-shell` + `qt-shell` + `windows-shell` + `nve-accessibility-windows` — landed)**
   - **Apple native-view & camera adapters**: re-bind opt-in `NVE_ENABLE_NATIVE_VIEWS` (`NSVisualEffectView`/`WKWebView`/`AVPlayer`) and `NVE_ENABLE_CAMERA` VisionCamera adapters onto `apple-common` / `macos-shell` / `ios-shell` (core ABI v6, Frame-0, `measure_surface`, `draw_list` canvas, CoreText typography, `swiftui-kit` `NveSurfaceRepresentable` & editable `TextInput`/IME, and `--pair-transport` landed in `825c5887`).
   - **Android emulator / Compose instrumentation CI**: add real emulator / Compose instrumentation runs in CI (JNI/Robolectric/Compose JVM suites already run in `check-all.sh`).
-  - **Desktop native hosts (Slice 4)**: `windows-shell` keyboard/IME/UIA (`packages/modules/accessibility/windows`), `gtk-shell` keyboard/IME/`GtkAccessible` relations, and desktop parity across `windows-shell` / `gtk-shell` / `qt-shell` (leaving host-service FFI binding for Direct-First Phase 4).
   - Dart / TS wasm32 `SceneReader`s read the row-index layout in tests only: wire them to a wasm32 `libnve_runtime` publisher once one exists (the browser shell lays out in the DOM and publishes no scene).
 
 - [ ] **Direct-First Hybrid FFI, Generic `ByteTransport`, Lock-Free `ServiceSlots` & Host-Service Decoupling (Phases 2–5; Phase 1 `8e0e535d` landed)**
@@ -29,7 +28,7 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
   - Wire real `:hover`/`:active`/`:focus-visible`, `CursorKind`, pointer dragging (`SplitPane`, `BottomSheet`), hover/anchored floating overlays (`Tooltip`, `Popover`, `DropdownMenu`, `Dialog`), and live controlled scroll sync (`VirtualList`) across `nve-ui` and `examples/kitchen-sink`, verified with live Skia `DesktopSession` & Chrome CDP behavioral assertions and desktop/mobile screenshot critique, plus Slice 2A verification polish.
 
 - [ ] **Track 3B — Native Host Linkage, Hardware Vulkan/D3D12 Verification & OS Parity (Post-Track 1B-2)**
-  - Finish `windows-shell` keyboard/IME/UIA verification on Windows (`samuel-pc`), bind direct-FFI host services (Direct-First Phase 4) across native hosts directly against `libnve_runtime` (zero throwaway C++/JNI/Swift rewrites), and run real hardware Vulkan/D3D12 Skia parity tests on Linux/Windows GPUs (`samuel-pc`).
+  - Run live MSVC `/W4 /WX` & native Win32 keyboard/IME/UIA (`nve_accessibility_windows.dll`) verification on Windows (`samuel-pc`; implementation + portable/zero-alloc tests landed in `75d4dbb1`), bind direct-FFI host services (Direct-First Phase 4) across native hosts directly against `libnve_runtime` (zero throwaway C++/JNI/Swift rewrites), and run real hardware Vulkan/D3D12 Skia parity tests on Linux/Windows GPUs (`samuel-pc`).
 
 - [ ] **TV, Watch & Spatial Platform Backends — Web TV D-Pad Dogfood & Live Verification**
   - Engine (`nve-tv`), backend key interceptor, and `nve-tv-web` controller are landed and live-probed in Chrome with trusted keys (E2E suite 5: shelves, `data-nve-next-*`, ARIA / `<select>` arrow ownership, `<dialog>` trap, Select activation, re-entrancy); remaining: install `WebTvController` in an example app, a live gamepad E2E (CDP has no gamepad input: inject `navigator.getGamepads`), on-device Tizen/webOS key-code validation, and Android TV host forwarding of Back (consumed by the Activity).
@@ -43,8 +42,8 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 - [ ] **Mobile Host Autofill/Keyboard Wiring & Mobile Selection Handles**
   - Subtree `ErrorBoundary`, `AutofillHint`/`InputMode` + Web autofill sync, `KeyboardInsets` + Web `visualViewport` + `KeyboardAvoidingView` (`38b351c`), UAX #29 grapheme-safe editing/selection, unified `CompositionStart/Update/End` + live caret screen-rect IME feedback, and Skia BiDi run/caret/selection mapping (`be5e394`) are landed; remaining work is native Apple/Android host prop wiring for `AutofillHint`/`KeyboardInsets` and mobile touch selection handles/loupes.
 
-- [ ] **Desktop OS Polish, Live Layout Inspector & Remaining Native Accessibility Hosts**
-  - Locale-aware `DatePicker`/`DateRangePicker` (`c69cdd0`), typed gradients/cached SVG (`7cfa635`), standalone `packages/modules/accessibility` (`nve-accessibility`), and `hosts/skia-shell` `accesskit_winit` wiring are landed; remaining work is OS drag-and-drop (internal + file drop), native menu bar / context menus / system tray, live visual layout/recomposition overlay inspector, and reusing `nve-accessibility` inside `windows-shell` (`accesskit_windows`/UIA) and `gtk-shell`.
+- [ ] **Desktop OS Polish & Live Layout Inspector**
+  - Locale-aware `DatePicker`/`DateRangePicker` (`c69cdd0`), typed gradients/cached SVG (`7cfa635`), standalone `nve-accessibility` + `nve-accessibility-windows` (`cdylib`), `skia-shell` `accesskit_winit`, `gtk-shell` keyboard/IME/`GtkAccessible` relations, and `windows-shell` keyboard/UIA bridge wiring (`75d4dbb1`) are landed; remaining work is OS drag-and-drop (internal + file drop), native menu bar / context menus / system tray, and a live visual layout/recomposition overlay inspector.
 
 - [ ] **Deferred OS Capability Modules (Deleted Pure-L0 Stubs)**
   - The 7 pure-L0 stub crates (`audio`, `fonts`, `location`, `notifications`, `sensors`, `share`, `web-auth`) were deleted in Step 1 Part B because they had zero real OS implementations. Re-introduce each module only when backed by real OS APIs (CoreAudio/WASAPI/AAudio, CoreText/DirectWrite/Fontconfig, CoreLocation/FusedLocation, UNUserNotificationCenter/WinRT Toast/NotificationManagerCompat, CoreMotion/SensorManager, UIActivityViewController/Android ShareSheet, ASWebAuthenticationSession/CustomTabs) and verified on real targets.
