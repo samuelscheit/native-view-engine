@@ -15,7 +15,7 @@ impl<'a> NveValueRef<'a> {
     /// All nested pointers reachable from `raw` must remain valid and immutable for `'a`.
     #[inline] pub const unsafe fn from_raw(raw: &'a NveValue) -> Self { Self { raw } }
     #[inline] pub const fn raw(&self) -> &'a NveValue { self.raw }
-    #[inline] pub const fn tag(&self) -> Option<NveValueTag> { NveValueTag::from_u32(self.raw.tag) }
+    #[inline] pub const fn tag(&self) -> Option<NveValueTag> { NveValueTag::try_from_u32(self.raw.tag) }
     #[inline] pub const fn is_null(&self) -> bool { self.raw.tag == NveValueTag::Null as u32 }
     #[inline] pub const fn as_bool(&self) -> Option<bool> {
         if self.raw.tag == NveValueTag::Bool as u32 {

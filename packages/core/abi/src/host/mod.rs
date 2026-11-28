@@ -4,7 +4,7 @@
 use std::ffi::c_void;
 use std::fmt;
 
-use nve_abi_macros::NveAbi;
+use nve_abi_macros::{NveAbi, ReprEnum};
 use nve_codec::NveCodec;
 
 use crate::ffi::{NveAppHandle, NveBufferSlice};
@@ -91,8 +91,9 @@ pub const SERVICE_HAPTICS: u32 = 0x0016;
 
 /// Signed status codes returned by `NveHostCallbacks::invoke` and `channel_publish`.
 #[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveAbi)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveAbi, ReprEnum)]
 #[nve_abi(c_prefix = "NVE_HOST_")]
+#[repr_enum(fallback = InternalError)]
 pub enum NveHostStatus {
     Ok = 0,
     Pending = 1,
@@ -107,25 +108,6 @@ pub enum NveHostStatus {
 }
 
 impl NveHostStatus {
-    pub const fn as_i32(self) -> i32 {
-        self as i32
-    }
-
-    pub const fn from_i32(code: i32) -> Self {
-        match code {
-            0 => Self::Ok,
-            1 => Self::Pending,
-            -1 => Self::BufferTooSmall,
-            -2 => Self::Unsupported,
-            -3 => Self::PermissionDenied,
-            -4 => Self::InvalidArg,
-            -5 => Self::NotFound,
-            -6 => Self::Cancelled,
-            -7 => Self::IoError,
-            _ => Self::InternalError,
-        }
-    }
-
     pub const fn is_ok(self) -> bool {
         matches!(self, Self::Ok)
     }

@@ -123,7 +123,7 @@ pub use flat_op::{
     FlatOpDesc, FlatOpFieldDesc, FlatOpFieldType, FlatOpScopeDesc, FlatOpStreamDesc,
     FloatConstraint,
 };
-pub use nve_abi_macros::NveCodec;
+pub use nve_abi_macros::{NveCodec, ReprEnum};
 pub use reader::{ByteReader, DEFAULT_MAX_DEPTH};
 pub use writer::{write_fixed, write_fixed_into, ByteSink, ByteWriter, SliceWriter};
 

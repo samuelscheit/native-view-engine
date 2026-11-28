@@ -7,7 +7,7 @@ mod vtable;
 use core::ffi::c_void;
 use core::mem::{align_of, offset_of, size_of};
 
-use nve_abi_macros::NveAbi;
+use nve_abi_macros::{NveAbi, ReprEnum};
 
 use crate::schema::{
     concat_abi_slices, hash_abi_descriptor_into, hash_tag_str, AbiCallbackDescriptor,
@@ -113,8 +113,9 @@ pub struct NveRuntimeTextStyle {
 
 /// Status codes returned by [`NveRuntimeApi`] entry points.
 #[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveAbi)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveAbi, ReprEnum)]
 #[nve_abi(c_prefix = "NVE_RUNTIME_")]
+#[repr_enum(fallback = Error)]
 pub enum NveRuntimeStatus {
     Ok = 0,
     InvalidArg = 1,
@@ -124,27 +125,6 @@ pub enum NveRuntimeStatus {
     Panic = 5,
     NotFound = 6,
     Error = 7,
-}
-
-impl NveRuntimeStatus {
-    #[inline]
-    pub const fn as_i32(self) -> i32 {
-        self as i32
-    }
-
-    #[inline]
-    pub const fn from_i32(code: i32) -> Self {
-        match code {
-            0 => Self::Ok,
-            1 => Self::InvalidArg,
-            2 => Self::Unsupported,
-            3 => Self::Busy,
-            4 => Self::Io,
-            5 => Self::Panic,
-            6 => Self::NotFound,
-            _ => Self::Error,
-        }
-    }
 }
 
 /// Zero-copy 16-byte absolute layout rectangle indexed by `NodeIndex` (`1..node_capacity`).

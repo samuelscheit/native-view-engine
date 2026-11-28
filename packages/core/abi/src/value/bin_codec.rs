@@ -81,7 +81,8 @@ pub(super) fn validate_value_at(
     depth: usize,
 ) -> Result<(NveValueTag, usize), DecodeError> {
     let raw_tag = *bytes.get(start).ok_or(DecodeError::Truncated)?;
-    let tag = NveValueTag::from_u8(raw_tag)?;
+    let tag = NveValueTag::try_from_u32(u32::from(raw_tag))
+        .ok_or(DecodeError::InvalidEnum("NveValueTag", u32::from(raw_tag)))?;
     let mut pos = start + 1;
     match tag {
         NveValueTag::Null => Ok((tag, pos)),
@@ -180,7 +181,7 @@ pub(super) fn validate_value_at(
 /// Fast O(1) skip over one already-validated value starting at `bytes[start..]`.
 #[inline]
 pub(super) fn skip_validated_value(bytes: &[u8], start: usize) -> Option<(NveValueTag, usize)> {
-    let tag = NveValueTag::from_u32(*bytes.get(start)? as u32)?;
+    let tag = NveValueTag::try_from_u32(u32::from(*bytes.get(start)?))?;
     let pos = start + 1;
     let end = match tag {
         NveValueTag::Null => pos,

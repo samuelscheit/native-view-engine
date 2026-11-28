@@ -7,11 +7,13 @@
 
 use core::mem::{align_of, size_of};
 
+use nve_abi_macros::ReprEnum;
+
 /// Canonical light/dark color scheme (`Light = 1`, `Dark = 2`).
 ///
 /// Use `Option<ColorScheme>` where "unspecified / follow system" is meaningful (`0` on the wire).
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ReprEnum)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum ColorScheme {
@@ -20,16 +22,6 @@ pub enum ColorScheme {
 }
 
 impl ColorScheme {
-    /// Decodes a canonical non-zero byte (`1 => Light`, `2 => Dark`).
-    #[inline]
-    pub const fn from_u8(raw: u8) -> Option<Self> {
-        match raw {
-            1 => Some(Self::Light),
-            2 => Some(Self::Dark),
-            _ => None,
-        }
-    }
-
     /// Encodes `Option<ColorScheme>` into its canonical ABI byte (`0 = None`, `1 = Light`, `2 = Dark`).
     #[inline]
     pub const fn opt_to_u8(scheme: Option<Self>) -> u8 {
@@ -42,11 +34,13 @@ impl ColorScheme {
     /// Decodes a canonical ABI byte (`0 => Ok(None)`, `1 => Ok(Some(Light))`, `2 => Ok(Some(Dark))`).
     #[inline]
     pub const fn opt_from_u8(raw: u8) -> Result<Option<Self>, u8> {
-        match raw {
-            0 => Ok(None),
-            1 => Ok(Some(Self::Light)),
-            2 => Ok(Some(Self::Dark)),
-            other => Err(other),
+        if raw == 0 {
+            Ok(None)
+        } else {
+            match Self::try_from_u8(raw) {
+                Some(scheme) => Ok(Some(scheme)),
+                None => Err(raw),
+            }
         }
     }
 
@@ -63,7 +57,7 @@ impl ColorScheme {
 
 /// Canonical display contrast accessibility preference (`Standard = 0`, `High = 1`).
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, ReprEnum)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum ContrastLevel {
@@ -73,15 +67,6 @@ pub enum ContrastLevel {
 }
 
 impl ContrastLevel {
-    #[inline]
-    pub const fn from_u8(raw: u8) -> Option<Self> {
-        match raw {
-            0 => Some(Self::Standard),
-            1 => Some(Self::High),
-            _ => None,
-        }
-    }
-
     #[inline]
     pub const fn is_high(self) -> bool {
         matches!(self, Self::High)

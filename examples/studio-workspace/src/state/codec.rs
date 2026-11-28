@@ -451,7 +451,7 @@ impl WorkspaceState {
 
         let theme = ThemeSnapshot {
             color_scheme: ColorScheme::opt_from_u8(r.read_u8()?).ok()?,
-            contrast: ContrastLevel::from_u8(r.read_u8()?)?,
+            contrast: ContrastLevel::try_from_u8(r.read_u8()?)?,
             reduced_motion: r.read_bool()?,
             reduced_transparency: r.read_bool()?,
             accent_rgba: r.read_u32()?,
@@ -459,7 +459,7 @@ impl WorkspaceState {
             scale_factor_x100: r.read_u16()?,
         };
         let locale = LocaleSnapshot {
-            text_direction: TextDirection::from_u8(r.read_u8()?)?,
+            text_direction: TextDirection::try_from_u8(r.read_u8()?)?,
             uses_24h_clock: r.read_bool()?,
             tag: r.read_str()?,
             language: r.read_str()?,

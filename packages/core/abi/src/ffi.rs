@@ -11,7 +11,7 @@
 
 use std::ffi::c_void;
 
-use nve_abi_macros::NveAbi;
+use nve_abi_macros::{NveAbi, ReprEnum};
 
 use crate::event::NveEventBatch;
 use crate::id::{FrameId, InterfaceId, SurfaceId};
@@ -136,22 +136,13 @@ pub struct NveIntrinsicSize {
 
 /// Gesture arbitration disposition returned by `NveLayoutApi::hit_test`.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, NveAbi)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, NveAbi, ReprEnum)]
 #[nve_abi(c_prefix = "NVE_GESTURE_", dart_fallback = "PassThrough")]
+#[repr_enum(fallback = PassThrough)]
 pub enum NveGestureDisposition {
     Claim = 1,
     PassThrough = 2,
     DeferToParent = 3,
-}
-
-impl NveGestureDisposition {
-    pub const fn from_u8(code: u8) -> Self {
-        match code {
-            1 => Self::Claim,
-            3 => Self::DeferToParent,
-            _ => Self::PassThrough,
-        }
-    }
 }
 
 /// Validation / decoding errors shared across zero-copy FFI views and binary wire codecs.

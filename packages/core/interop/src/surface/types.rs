@@ -11,7 +11,7 @@ pub use crate::window::SurfacePresentation;
 
 /// UI framework hosting or rendered within an orchestrated surface.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, nve_abi::ReprEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum FrameworkKind {
     Nve = 0,
@@ -23,18 +23,6 @@ pub enum FrameworkKind {
 }
 
 impl FrameworkKind {
-    pub fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            0 => Some(Self::Nve),
-            1 => Some(Self::ReactNativeFabric),
-            2 => Some(Self::Flutter),
-            3 => Some(Self::SwiftUI),
-            4 => Some(Self::JetpackCompose),
-            5 => Some(Self::WebDom),
-            _ => None,
-        }
-    }
-
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Nve => "nve",

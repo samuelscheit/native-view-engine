@@ -19,7 +19,7 @@ pub const NVE_NODE_PATCH_FLAG_STRING_SPAN: u16 = 1 << 0;
 
 /// Discriminator identifying which visual or text field an [`NveNodePatch`] updates.
 #[repr(u16)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, nve_codec::ReprEnum)]
 pub enum NveNodePatchField {
     Text = 1,
     BackgroundRgba = 2,
@@ -41,30 +41,6 @@ pub enum NveNodePatchField {
 }
 
 impl NveNodePatchField {
-    #[inline]
-    pub const fn from_u16(raw: u16) -> Option<Self> {
-        match raw {
-            1 => Some(Self::Text),
-            2 => Some(Self::BackgroundRgba),
-            3 => Some(Self::TextRgba),
-            4 => Some(Self::BorderRgba),
-            5 => Some(Self::Opacity),
-            6 => Some(Self::FontSize),
-            7 => Some(Self::Visibility),
-            8 => Some(Self::RectX),
-            9 => Some(Self::RectY),
-            10 => Some(Self::RectWidth),
-            11 => Some(Self::RectHeight),
-            12 => Some(Self::ZIndex),
-            13 => Some(Self::BorderRadius),
-            14 => Some(Self::BorderWidth),
-            15 => Some(Self::ImageSrc),
-            16 => Some(Self::Tag),
-            17 => Some(Self::CustomScalar),
-            _ => None,
-        }
-    }
-
     #[inline]
     pub const fn is_string_field(self) -> bool {
         matches!(self, Self::Text | Self::ImageSrc | Self::Tag)
@@ -140,7 +116,7 @@ impl NveNodePatch {
 
     #[inline]
     pub const fn field(&self) -> Option<NveNodePatchField> {
-        NveNodePatchField::from_u16(self.field_tag)
+        NveNodePatchField::try_from_u16(self.field_tag)
     }
 
     #[inline]

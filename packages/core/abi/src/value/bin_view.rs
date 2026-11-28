@@ -27,7 +27,7 @@ impl<'a> BinValueView<'a> {
     pub(crate) fn from_validated(bytes: &'a [u8]) -> Self {
         let tag = bytes
             .first()
-            .and_then(|&raw| NveValueTag::from_u32(u32::from(raw)))
+            .and_then(|&raw| NveValueTag::try_from_u32(u32::from(raw)))
             .unwrap_or(NveValueTag::Null);
         Self { bytes, tag }
     }

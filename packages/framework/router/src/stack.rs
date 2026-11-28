@@ -7,7 +7,7 @@ use crate::route::Routable;
 
 /// Wire-compatible navigation transition kind (matches `NVN1` byte `[5]`).
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, nve_codec::ReprEnum)]
 pub enum NavigationAction {
     Snapshot = 0,
     Push = 1,
@@ -18,24 +18,6 @@ pub enum NavigationAction {
     DeepLink = 6,
     OpenModal = 7,
     DismissModal = 8,
-}
-
-impl NavigationAction {
-    #[inline]
-    pub const fn from_u8(raw: u8) -> Option<Self> {
-        match raw {
-            0 => Some(Self::Snapshot),
-            1 => Some(Self::Push),
-            2 => Some(Self::Replace),
-            3 => Some(Self::Pop),
-            4 => Some(Self::PopToRoot),
-            5 => Some(Self::SwitchTab),
-            6 => Some(Self::DeepLink),
-            7 => Some(Self::OpenModal),
-            8 => Some(Self::DismissModal),
-            _ => None,
-        }
-    }
 }
 
 /// Errors returned when a navigation transition is rejected or out of bounds.

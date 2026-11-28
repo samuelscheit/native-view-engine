@@ -21,7 +21,8 @@ pub type CameraFrameWireCallbackFn =
     unsafe extern "C" fn(user_data: *mut c_void, frame: *const crate::CameraFrameWireLayout);
 
 #[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, nve_codec::ReprEnum)]
+#[repr_enum(fallback = InvocationFailed)]
 pub enum NitroStatus {
     Ok = 0,
     InvalidHandle = 1,
@@ -29,19 +30,6 @@ pub enum NitroStatus {
     Disposed = 3,
     BufferTooSmall = 4,
     InvocationFailed = 5,
-}
-
-impl NitroStatus {
-    pub const fn from_raw(code: i32) -> Self {
-        match code {
-            0 => Self::Ok,
-            1 => Self::InvalidHandle,
-            2 => Self::NotFound,
-            3 => Self::Disposed,
-            4 => Self::BufferTooSmall,
-            _ => Self::InvocationFailed,
-        }
-    }
 }
 
 /// Function table matching the `extern "C"` C ABI exported by `nve_nitro_bridge`.
@@ -106,7 +94,7 @@ impl NitroHybridHandle {
                 &mut out_len,
             )
         };
-        let status = NitroStatus::from_raw(rc);
+        let status = NitroStatus::from_i32(rc);
         if status == NitroStatus::BufferTooSmall {
             out.resize(out_len, 0);
             let rc2 = unsafe {
@@ -120,7 +108,7 @@ impl NitroHybridHandle {
                     &mut out_len,
                 )
             };
-            let status2 = NitroStatus::from_raw(rc2);
+            let status2 = NitroStatus::from_i32(rc2);
             if status2 != NitroStatus::Ok {
                 return Err(status2);
             }

@@ -13,7 +13,7 @@ mod value;
 use core::mem::{align_of, offset_of, size_of};
 use std::mem::ManuallyDrop;
 
-use nve_abi_macros::NveAbi;
+use nve_abi_macros::{NveAbi, ReprEnum};
 
 use crate::DecodeError;
 
@@ -29,7 +29,7 @@ pub const NVE_HYBRID_ABI_VERSION: u32 = 1;
 
 /// Status code returned by fallible hybrid trampolines (`NveHybridStatus` in the C header).
 #[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ReprEnum)]
 pub enum NveHybridStatus {
     Ok = 0,
     Err = 1,
@@ -39,15 +39,6 @@ pub enum NveHybridStatus {
 }
 
 impl NveHybridStatus {
-    /// Every status, in discriminant order (the C header and host runtimes mirror this list).
-    pub const ALL: [Self; 5] = [
-        Self::Ok,
-        Self::Err,
-        Self::InvalidArg,
-        Self::SchemaMismatch,
-        Self::NullHandle,
-    ];
-
     /// The variant name host runtimes spell (in their own case convention).
     pub const fn name(self) -> &'static str {
         match self {

@@ -34,7 +34,7 @@ pub use event::{
     NVE_TABLE_CUSTOM, NVE_TABLE_INTERACTION, NVE_TABLE_LAYOUT, NVE_TABLE_SCROLL,
     NVE_TABLE_TEXT_INPUT,
 };
-pub use nve_abi_macros::{EventEnum, NveAbi};
+pub use nve_abi_macros::{EventEnum, NveAbi, ReprEnum};
 pub use nve_hash::{const_id, xxh64, Key64, Xxh64Hasher};
 
 pub use ffi::{

@@ -205,7 +205,8 @@ pub fn decode_nav_packet_ref(bytes: &[u8]) -> Result<NavPacketRef<'_>, Nvn1Decod
     }
     let raw_action = r.read_u8().map_err(|_| Nvn1DecodeError::Truncated)?;
     let action =
-        NavigationAction::from_u8(raw_action).ok_or(Nvn1DecodeError::InvalidAction(raw_action))?;
+        NavigationAction::try_from_u8(raw_action)
+            .ok_or(Nvn1DecodeError::InvalidAction(raw_action))?;
     let flags = r.read_u8().map_err(|_| Nvn1DecodeError::Truncated)?;
     if (flags & !NVN1_KNOWN_FLAGS_MASK) != 0 {
         return Err(Nvn1DecodeError::InvalidFlags(flags));
