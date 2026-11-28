@@ -420,7 +420,18 @@ fn in_place_resource_redef_gradient_shadow_frame_hook_and_recycled_node_id_aba()
     backend.commit(&store, &changes).expect("in-place res redef");
     assert_scene_matches_fresh_display_list(&mut backend, &store, 180, 120, "in-place grad+shadow");
 
-    // 2. SkiaFrameHook composite + paint ticks & reduced-motion snap.
+    // 2. Precede SkiaFrameHook paint+composite tick with a `CompositeOnly` commit so the
+    //    `last_dirty_kind == PaintOnly` check genuinely falsifies a stale dirty tier!
+    {
+        let mut tx = store.tx();
+        tx.edit::<Visual>(comp_node).opacity(0.95);
+        tx.commit_into(&mut changes);
+    }
+    backend.commit(&store, &changes).expect("preceding composite");
+    assert_eq!(
+        backend.scene().stats().last_dirty_kind,
+        Some(SceneDirtyKind::CompositeOnly)
+    );
     assert!(backend.advance_animations(&store, 0.1));
     assert_eq!(
         backend.scene().stats().last_dirty_kind,

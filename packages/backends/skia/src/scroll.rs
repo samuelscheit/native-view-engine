@@ -7,9 +7,32 @@ use nve_backend_headless::HeadlessBackend;
 use nve_layout::StoreLayoutEngine;
 use nve_store::{ChangeSet, NodeStore};
 use nve_tables::tables::Scroll;
+use nve_tables::transform::affine_map_point;
 
 use crate::display_list::is_subtree_display_none_effective;
 use crate::{SkiaBackend, MAX_HIT_TEST_DEPTH};
+
+#[inline]
+fn map_rect_aabb(m: &[f32; 6], x0: f32, y0: f32, x1: f32, y1: f32) -> (f32, f32, f32, f32) {
+    let corners = [
+        affine_map_point(m, x0, y0),
+        affine_map_point(m, x1, y0),
+        affine_map_point(m, x1, y1),
+        affine_map_point(m, x0, y1),
+    ];
+    let (mut min_x, mut min_y) = (f32::INFINITY, f32::INFINITY);
+    let (mut max_x, mut max_y) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for (cx, cy) in corners {
+        if !cx.is_finite() || !cy.is_finite() {
+            return (x0, y0, x1, y1);
+        }
+        min_x = min_x.min(cx);
+        min_y = min_y.min(cy);
+        max_x = max_x.max(cx);
+        max_y = max_y.max(cy);
+    }
+    (min_x, min_y, max_x, max_y)
+}
 
 impl<L: StoreLayoutEngine> SkiaBackend<L> {
     #[inline]
@@ -69,8 +92,8 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     }
 
     /// Scrolls every ancestor `Scroll` container minimally so `node_id` becomes visible within its
-    /// viewport (accounting for `virtual_top_spacer` and rejecting `display: none` subtrees).
-    /// Returns `true` if any scroll offset changed.
+    /// viewport (accounting for `virtual_top_spacer`, `Position::Sticky`, and `Transform` deltas,
+    /// and rejecting `display: none` subtrees). Returns `true` if any scroll offset changed.
     pub fn scroll_into_view(&mut self, store: &NodeStore, node_id: NodeId) -> bool {
         if !store.is_live(node_id)
             || is_subtree_display_none_effective(store, &self.layout_tree, node_id)
@@ -81,10 +104,19 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             return false;
         };
         let mut changed = false;
-        let mut cur_x0 = target_rect.x;
-        let mut cur_y0 = target_rect.y;
-        let mut cur_x1 = target_rect.x + target_rect.width;
-        let mut cur_y1 = target_rect.y + target_rect.height;
+        let (own_stx, own_sty) = self.layout_tree.compute_sticky_delta(store, node_id);
+        let mut cur_x0 = target_rect.x + own_stx;
+        let mut cur_y0 = target_rect.y + own_sty;
+        let mut cur_x1 = cur_x0 + target_rect.width;
+        let mut cur_y1 = cur_y0 + target_rect.height;
+        if let Some(tf) = self
+            .frame_hooks
+            .resolve_transform(node_id, self.layout_tree.effective_transform(store, node_id))
+            && !tf.is_identity()
+        {
+            let m = tf.to_surface_matrix_2d(cur_x0, cur_y0, target_rect.width, target_rect.height);
+            (cur_x0, cur_y0, cur_x1, cur_y1) = map_rect_aabb(&m, cur_x0, cur_y0, cur_x1, cur_y1);
+        }
 
         let mut ancestor = store.parent(node_id);
         let mut depth = 0usize;
@@ -124,13 +156,15 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
 
                 if dx.abs() > 1e-3 || dy.abs() > 1e-3 {
                     let target_x = (sx + dx).max(0.0);
-                    let target_y = if dy.abs() > 1e-3 {
-                        let desired_shift_y = (shift_y + dy).max(0.0);
+                    let target_y = if dy > 1e-3 {
                         if spacer > 0.0 {
-                            spacer + desired_shift_y
+                            spacer + shift_y + dy
                         } else {
-                            desired_shift_y
+                            (shift_y + dy).max(0.0)
                         }
+                    } else if dy < -1e-3 {
+                        // Never jump forward to `spacer` when `0 <= sy < spacer` and scrolling up.
+                        (sy + dy).max(0.0)
                     } else {
                         sy
                     };
@@ -144,6 +178,25 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
                 cur_x1 -= new_shift_x;
                 cur_y0 -= new_shift_y;
                 cur_y1 -= new_shift_y;
+            }
+            let (stx, sty) = self.layout_tree.compute_sticky_delta(store, pid);
+            cur_x0 += stx;
+            cur_x1 += stx;
+            cur_y0 += sty;
+            cur_y1 += sty;
+            if let Some(tf) = self
+                .frame_hooks
+                .resolve_transform(pid, self.layout_tree.effective_transform(store, pid))
+                && !tf.is_identity()
+                && let Some(p_rect) = self.layout_tree.layout_of(pid)
+            {
+                let m = tf.to_surface_matrix_2d(
+                    p_rect.x + stx,
+                    p_rect.y + sty,
+                    p_rect.width,
+                    p_rect.height,
+                );
+                (cur_x0, cur_y0, cur_x1, cur_y1) = map_rect_aabb(&m, cur_x0, cur_y0, cur_x1, cur_y1);
             }
             ancestor = store.parent(pid);
         }

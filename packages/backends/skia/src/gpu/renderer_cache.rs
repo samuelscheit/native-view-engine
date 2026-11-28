@@ -17,7 +17,8 @@ use skia_safe::Typeface;
 
 use super::skia_graphics::GradientScratch;
 use super::text_blob::{
-    get_or_build_text_blob, BaseTypefaceEntry, CachedTextBlob, TextBlobKey, TypefaceBacking,
+    build_transient_text_blob, get_or_build_text_blob, BaseTypefaceEntry, CachedTextBlob,
+    TextBlobKey, TypefaceBacking,
 };
 use crate::image_cache::{DecodedImage, ImageSlot};
 use crate::raster::PixelBuffer;
@@ -256,6 +257,9 @@ impl SkiaRendererCaches {
     #[cfg(any(feature = "skia-metal", feature = "skia-vulkan", feature = "skia-d3d"))]
     pub(crate) fn sync_gpu_context(&mut self, direct_context: Option<&mut DirectContext>) -> u32 {
         let Some(dc) = direct_context else {
+            if self.active_context_id.is_some() {
+                self.evict_gpu_entries();
+            }
             return 0;
         };
         if dc.abandoned() {
@@ -308,24 +312,51 @@ impl SkiaRendererCaches {
         )
     }
 
-    pub(crate) fn get_or_create_blur_filter(&mut self, sigma: f32) -> Option<MaskFilter> {
-        self.get_or_create_blur_filter_ctm(sigma, false)
+    /// Shapes a one-shot `TextBlob` bypassing `text_blobs` and its hit/miss telemetry.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn build_transient_text_blob(
+        &mut self,
+        font_mgr: &FontMgr,
+        text_engine: &CosmicTextEngine,
+        text: &str,
+        font_size: f32,
+        font_weight: u16,
+        text_align: TextAlign,
+        wrap_width: Option<f32>,
+        align_width: f32,
+    ) -> Option<TextBlob> {
+        build_transient_text_blob(
+            font_mgr,
+            text_engine,
+            &mut self.base_typefaces,
+            &mut self.shaped_scratch,
+            text,
+            font_size,
+            font_weight,
+            text_align,
+            wrap_width,
+            align_width,
+            &mut self.stats.typeface_hits,
+            &mut self.stats.typeface_misses,
+        )
     }
 
-    pub(crate) fn get_or_create_blur_filter_ctm(
-        &mut self,
-        sigma: f32,
-        respect_ctm: bool,
-    ) -> Option<MaskFilter> {
-        let quantized = (sigma.clamp(0.5, 512.0) * 16.0).round() as u32;
-        let key = (quantized << 1) | u32::from(respect_ctm);
-        if let Some(hit) = self.mask_filters.get_mut(&key) {
+    /// Returns a cached CTM-respecting Gaussian blur `MaskFilter` for `logical_sigma` (quantized
+    /// to `1/64` px so HiDPI fractional sigmas like `0.25`/`0.3` logical px stay accurate without
+    /// hitting an artificial `0.5` logical floor).
+    pub(crate) fn get_or_create_blur_filter(&mut self, logical_sigma: f32) -> Option<MaskFilter> {
+        if !logical_sigma.is_finite() || logical_sigma <= 0.0 {
+            return None;
+        }
+        let clamped = logical_sigma.clamp(1.0 / 64.0, 16_384.0);
+        let quantized = (clamped * 64.0).round().max(1.0) as u32;
+        if let Some(hit) = self.mask_filters.get_mut(&quantized) {
             self.stats.mask_filter_hits = self.stats.mask_filter_hits.saturating_add(1);
             return Some(hit.clone());
         }
         self.stats.mask_filter_misses = self.stats.mask_filter_misses.saturating_add(1);
-        let filter = MaskFilter::blur(BlurStyle::Normal, quantized as f32 / 16.0, respect_ctm)?;
-        self.mask_filters.insert(key, filter.clone(), 64);
+        let filter = MaskFilter::blur(BlurStyle::Normal, quantized as f32 / 64.0, true)?;
+        self.mask_filters.insert(quantized, filter.clone(), 64);
         Some(filter)
     }
 
@@ -371,13 +402,13 @@ impl SkiaRendererCaches {
         self.stats.image_misses = self.stats.image_misses.saturating_add(1);
 
         let info = ImageInfo::new(
-            (decoded.width as i32, decoded.height as i32),
+            (decoded.width() as i32, decoded.height() as i32),
             ColorType::RGBA8888,
             AlphaType::Unpremul,
             None,
         );
-        let row_bytes = (decoded.width as usize) * 4;
-        let raster = images::raster_from_data(&info, Data::new_copy(&decoded.rgba), row_bytes)?;
+        let row_bytes = (decoded.width() as usize) * 4;
+        let raster = images::raster_from_data(&info, Data::new_copy(decoded.rgba()), row_bytes)?;
 
         #[cfg(any(feature = "skia-metal", feature = "skia-vulkan", feature = "skia-d3d"))]
         let (final_img, gpu_backed) = if context_tag != 0
@@ -400,13 +431,13 @@ impl SkiaRendererCaches {
 
         if let Some(slot) = slot {
             let key = SkiaImageKey { slot, context_tag };
-            let bytes = decoded.rgba.len().max(64);
+            let bytes = decoded.rgba().len().max(64);
             self.images.insert(
                 key,
                 CachedSkiaImage {
                     decoded_id,
-                    width: decoded.width,
-                    height: decoded.height,
+                    width: decoded.width(),
+                    height: decoded.height(),
                     image: final_img.clone(),
                     gpu_backed,
                 },

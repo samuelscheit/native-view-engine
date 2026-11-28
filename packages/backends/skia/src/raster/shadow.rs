@@ -1,7 +1,6 @@
-//! Analytical Gaussian-falloff rounded-rect shadow rasterizer.
-//!
-//! Uses an exact SDF + `erfc` Gaussian edge falloff with a solid interior-span fast path so soft
-//! rounded shadows render in microseconds without 2D convolution passes or scratch allocations.
+//! Analytical Gaussian-falloff rounded-rect shadow rasterizer (axis-aligned fast path plus shared
+//! physical-pixel blur sigma & inset geometry helpers). Affine-transformed outer and inset shadow
+//! rasterizers live in [`super::shadow_transformed`].
 
 use nve_abi::ColorRgba;
 use nve_engine::LayoutRect;
@@ -9,10 +8,43 @@ use nve_engine::LayoutRect;
 use super::clip::{rounded_rect_sdf, ClipStack};
 use super::{fill_rounded_rect, PixelBuffer};
 
+/// Maximum physical-pixel Gaussian blur sigma shared by CPU and GPU shadow rasterizers.
+pub(crate) const MAX_BLUR_SIGMA: f32 = 512.0;
+/// Crisp/blurred cutoff in physical device pixels (`phys_blur <= 0.5` renders crisp).
+pub(crate) const BLUR_CRISP_THRESHOLD_PX: f32 = 0.5;
+/// Minimum physical-pixel blur sigma once `phys_blur > BLUR_CRISP_THRESHOLD_PX`.
+pub(crate) const MIN_BLUR_SIGMA_PX: f32 = 0.5;
+
+/// Geometric mean column length `sqrt(|col0| * |col1|)` of a 2D affine matrix `[a, b, c, d, ..]`,
+/// matching Skia's `SkMatrix::mapRadius(1.0)` identically.
+#[inline]
+pub(crate) fn linear_ctm_scale(m: &[f32; 6]) -> f32 {
+    let sx = m[0].hypot(m[1]);
+    let sy = m[2].hypot(m[3]);
+    if !sx.is_finite() || !sy.is_finite() || sx <= 0.0 || sy <= 0.0 {
+        return 0.0;
+    }
+    (sx * sy).sqrt()
+}
+
+/// Evaluates the unified physical-pixel blur sigma from `blur_radius` and `ctm_scale`.
+/// Returns `None` when the shadow is crisp (`phys_blur <= 0.5 px` or degenerate scale).
+#[inline]
+pub(crate) fn physical_blur_sigma(blur_radius: f32, ctm_scale: f32) -> Option<f32> {
+    if !blur_radius.is_finite() || !ctm_scale.is_finite() || ctm_scale <= 0.0 {
+        return None;
+    }
+    let phys_blur = blur_radius * ctm_scale;
+    if phys_blur <= BLUR_CRISP_THRESHOLD_PX {
+        return None;
+    }
+    Some((phys_blur * 0.5).clamp(MIN_BLUR_SIGMA_PX, MAX_BLUR_SIGMA))
+}
+
 /// Fast Abramowitz & Stegun 7.1.26 approximation of `0.5 * erfc(x)` accurate to `< 1e-6`.
 /// Maps signed distance normalized by `sigma * sqrt(2)` into smooth Gaussian coverage `0.0..=1.0`.
 #[inline]
-fn gaussian_edge_coverage(x: f32) -> f32 {
+pub(super) fn gaussian_edge_coverage(x: f32) -> f32 {
     if x <= -3.0 {
         return 1.0;
     }
@@ -33,7 +65,162 @@ fn gaussian_edge_coverage(x: f32) -> f32 {
     }
 }
 
-/// Rasterizes a soft rounded box shadow in physical pixel coordinates.
+#[inline]
+pub(super) fn valid_outer_shadow_rect(
+    rect: LayoutRect,
+    offset_x: f32,
+    offset_y: f32,
+    blur_radius: f32,
+    spread_radius: f32,
+    opacity: f32,
+) -> Option<LayoutRect> {
+    if !rect.x.is_finite()
+        || !rect.y.is_finite()
+        || !rect.width.is_finite()
+        || !rect.height.is_finite()
+        || !offset_x.is_finite()
+        || !offset_y.is_finite()
+        || !blur_radius.is_finite()
+        || !spread_radius.is_finite()
+        || !opacity.is_finite()
+        || rect.width <= 0.0
+        || rect.height <= 0.0
+        || opacity <= 0.0
+    {
+        return None;
+    }
+    let shadow_w = rect.width + spread_radius * 2.0;
+    let shadow_h = rect.height + spread_radius * 2.0;
+    let shadow_x = rect.x + offset_x - spread_radius;
+    let shadow_y = rect.y + offset_y - spread_radius;
+    if !shadow_w.is_finite()
+        || !shadow_h.is_finite()
+        || !shadow_x.is_finite()
+        || !shadow_y.is_finite()
+        || shadow_w <= 0.0
+        || shadow_h <= 0.0
+    {
+        return None;
+    }
+    Some(LayoutRect {
+        x: shadow_x,
+        y: shadow_y,
+        width: shadow_w,
+        height: shadow_h,
+    })
+}
+
+/// Shared inset padding-box & cutout-hole geometry resolution.
+pub(super) enum InsetGeometry {
+    /// Zero shadow visible (degenerate rect or huge negative spread expanding hole to infinity).
+    Empty,
+    /// Cutout hole collapsed (`spread >= 0` and `hole_w <= 0 || hole_h <= 0`): solid-fill padding box.
+    SolidFill {
+        inner_rect: LayoutRect,
+        inner_radius: f32,
+    },
+    /// Standard blurred or crisp inset ring inside `inner_rect` outside `hole_rect`.
+    Ring {
+        inner_rect: LayoutRect,
+        inner_radius: f32,
+        hole_rect: LayoutRect,
+        base_hole_r: f32,
+    },
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn resolve_inset_geometry(
+    rect: LayoutRect,
+    radius: f32,
+    border_width: f32,
+    offset_x: f32,
+    offset_y: f32,
+    blur_radius: f32,
+    spread_radius: f32,
+    opacity: f32,
+) -> InsetGeometry {
+    if !rect.x.is_finite()
+        || !rect.y.is_finite()
+        || !rect.width.is_finite()
+        || !rect.height.is_finite()
+        || !offset_x.is_finite()
+        || !offset_y.is_finite()
+        || !blur_radius.is_finite()
+        || !spread_radius.is_finite()
+        || !opacity.is_finite()
+        || opacity <= 0.0
+    {
+        return InsetGeometry::Empty;
+    }
+    let bw = if border_width.is_finite() {
+        border_width.max(0.0)
+    } else {
+        0.0
+    };
+    let inner_w = rect.width - 2.0 * bw;
+    let inner_h = rect.height - 2.0 * bw;
+    if !inner_w.is_finite() || !inner_h.is_finite() || inner_w <= 0.0 || inner_h <= 0.0 {
+        return InsetGeometry::Empty;
+    }
+    let inner_rect = LayoutRect {
+        x: rect.x + bw,
+        y: rect.y + bw,
+        width: inner_w,
+        height: inner_h,
+    };
+    let safe_r = if radius.is_finite() {
+        radius.max(0.0)
+    } else {
+        0.0
+    };
+    let inner_radius = (safe_r - bw)
+        .max(0.0)
+        .min(inner_w * 0.5)
+        .min(inner_h * 0.5);
+
+    let hole_w = inner_w - 2.0 * spread_radius;
+    let hole_h = inner_h - 2.0 * spread_radius;
+    // Huge negative spread expands the cutout hole to infinity -> casts zero shadow (never invert!).
+    if spread_radius < 0.0 && (!hole_w.is_finite() || !hole_h.is_finite()) {
+        return InsetGeometry::Empty;
+    }
+    let hole_x = inner_rect.x + offset_x + spread_radius;
+    let hole_y = inner_rect.y + offset_y + spread_radius;
+    if spread_radius < 0.0 && (!hole_x.is_finite() || !hole_y.is_finite()) {
+        return InsetGeometry::Empty;
+    }
+    if !hole_w.is_finite()
+        || !hole_h.is_finite()
+        || !hole_x.is_finite()
+        || !hole_y.is_finite()
+        || hole_w <= 0.0
+        || hole_h <= 0.0
+    {
+        return InsetGeometry::SolidFill {
+            inner_rect,
+            inner_radius,
+        };
+    }
+
+    let base_hole_r = if inner_radius > 0.01 {
+        (inner_radius - spread_radius).max(0.0)
+    } else {
+        0.0
+    };
+    InsetGeometry::Ring {
+        inner_rect,
+        inner_radius,
+        hole_rect: LayoutRect {
+            x: hole_x,
+            y: hole_y,
+            width: hole_w,
+            height: hole_h,
+        },
+        base_hole_r,
+    }
+}
+
+/// Rasterizes an axis-aligned soft rounded box shadow in physical pixel coordinates.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_box_shadow(
     buf: &mut PixelBuffer,
@@ -47,42 +234,48 @@ pub(crate) fn draw_box_shadow(
     color: ColorRgba,
     opacity: f32,
 ) {
-    if color.a == 0 || opacity <= 0.0 || clip.is_empty() {
+    if color.a == 0 || clip.is_empty() {
         return;
     }
-    let shadow_w = rect.width + spread_radius * 2.0;
-    let shadow_h = rect.height + spread_radius * 2.0;
-    if shadow_w <= 0.0 || shadow_h <= 0.0 {
+    let Some(shadow_rect) =
+        valid_outer_shadow_rect(rect, offset_x, offset_y, blur_radius, spread_radius, opacity)
+    else {
         return;
-    }
-    let shadow_rect = LayoutRect {
-        x: rect.x + offset_x - spread_radius,
-        y: rect.y + offset_y - spread_radius,
-        width: shadow_w,
-        height: shadow_h,
     };
-    let base_r = if radius > 0.01 {
-        (radius + spread_radius).max(0.0)
+    let safe_r = if radius.is_finite() {
+        radius.max(0.0)
+    } else {
+        0.0
+    };
+    let base_r = if safe_r > 0.01 {
+        (safe_r + spread_radius).max(0.0)
     } else {
         0.0
     };
 
-    if blur_radius <= 0.5 {
+    let Some(sigma) = physical_blur_sigma(blur_radius, 1.0) else {
         fill_rounded_rect(buf, clip, shadow_rect, base_r, color, opacity);
         return;
-    }
+    };
 
     // Standard CSS blur-radius ~= 2 * sigma; 3*sigma (~1.5*blur) covers >99.7% of Gaussian energy.
-    let sigma = (blur_radius * 0.5).max(0.5);
     let inv_sigma_sqrt2 = 1.0 / (sigma * std::f32::consts::SQRT_2);
     let pad = (sigma * 3.0).ceil();
     let pad_i = pad as i32;
 
     let [cx0, cy0, cx1, cy1] = clip.bounds();
-    let min_x = (shadow_rect.x.floor() as i32 - pad_i).clamp(cx0, cx1);
-    let max_x = ((shadow_rect.x + shadow_rect.width).ceil() as i32 + pad_i).clamp(cx0, cx1);
-    let min_y = (shadow_rect.y.floor() as i32 - pad_i).clamp(cy0, cy1);
-    let max_y = ((shadow_rect.y + shadow_rect.height).ceil() as i32 + pad_i).clamp(cy0, cy1);
+    let min_x = (shadow_rect.x.floor() as i32)
+        .saturating_sub(pad_i)
+        .clamp(cx0, cx1);
+    let max_x = ((shadow_rect.x + shadow_rect.width).ceil() as i32)
+        .saturating_add(pad_i)
+        .clamp(cx0, cx1);
+    let min_y = (shadow_rect.y.floor() as i32)
+        .saturating_sub(pad_i)
+        .clamp(cy0, cy1);
+    let max_y = ((shadow_rect.y + shadow_rect.height).ceil() as i32)
+        .saturating_add(pad_i)
+        .clamp(cy0, cy1);
     if min_x >= max_x || min_y >= max_y {
         return;
     }
@@ -178,85 +371,54 @@ pub(crate) fn draw_inset_box_shadow(
     color: ColorRgba,
     opacity: f32,
 ) {
-    if !rect.x.is_finite()
-        || !rect.y.is_finite()
-        || !rect.width.is_finite()
-        || !rect.height.is_finite()
-        || !offset_x.is_finite()
-        || !offset_y.is_finite()
-        || !blur_radius.is_finite()
-        || !spread_radius.is_finite()
-        || !opacity.is_finite()
-        || color.a == 0
-        || opacity <= 0.0
-        || clip.is_empty()
-    {
+    if color.a == 0 || clip.is_empty() {
         return;
     }
-
-    let bw = if border_width.is_finite() {
-        border_width.max(0.0)
-    } else {
-        0.0
-    };
-    let inner_w = rect.width - 2.0 * bw;
-    let inner_h = rect.height - 2.0 * bw;
-    if !inner_w.is_finite() || !inner_h.is_finite() || inner_w <= 0.0 || inner_h <= 0.0 {
-        return;
-    }
-    let inner_rect = LayoutRect {
-        x: rect.x + bw,
-        y: rect.y + bw,
-        width: inner_w,
-        height: inner_h,
-    };
-    let safe_r = if radius.is_finite() {
-        radius.max(0.0)
-    } else {
-        0.0
-    };
-    let inner_radius = (safe_r - bw)
-        .max(0.0)
-        .min(inner_w * 0.5)
-        .min(inner_h * 0.5);
-
-    let hole_w = inner_w - 2.0 * spread_radius;
-    let hole_h = inner_h - 2.0 * spread_radius;
-    if !hole_w.is_finite() || !hole_h.is_finite() || hole_w <= 0.0 || hole_h <= 0.0 {
-        fill_rounded_rect(buf, clip, inner_rect, inner_radius, color, opacity);
-        return;
-    }
-
-    let hole_rect = LayoutRect {
-        x: inner_rect.x + offset_x + spread_radius,
-        y: inner_rect.y + offset_y + spread_radius,
-        width: hole_w,
-        height: hole_h,
-    };
-    let base_hole_r = if inner_radius > 0.01 {
-        (inner_radius - spread_radius).max(0.0)
-    } else {
-        0.0
+    let (inner_rect, inner_radius, hole_rect, base_hole_r) = match resolve_inset_geometry(
+        rect,
+        radius,
+        border_width,
+        offset_x,
+        offset_y,
+        blur_radius,
+        spread_radius,
+        opacity,
+    ) {
+        InsetGeometry::Empty => return,
+        InsetGeometry::SolidFill {
+            inner_rect,
+            inner_radius,
+        } => {
+            fill_rounded_rect(buf, clip, inner_rect, inner_radius, color, opacity);
+            return;
+        }
+        InsetGeometry::Ring {
+            inner_rect,
+            inner_radius,
+            hole_rect,
+            base_hole_r,
+        } => (inner_rect, inner_radius, hole_rect, base_hole_r),
     };
 
     let [cx0, cy0, cx1, cy1] = clip.bounds();
     let min_x = (inner_rect.x.floor() as i32).clamp(cx0, cx1);
-    let max_x = ((inner_rect.x + inner_w).ceil() as i32).clamp(cx0, cx1);
+    let max_x = ((inner_rect.x + inner_rect.width).ceil() as i32).clamp(cx0, cx1);
     let min_y = (inner_rect.y.floor() as i32).clamp(cy0, cy1);
-    let max_y = ((inner_rect.y + inner_h).ceil() as i32).clamp(cy0, cy1);
+    let max_y = ((inner_rect.y + inner_rect.height).ceil() as i32).clamp(cy0, cy1);
     if min_x >= max_x || min_y >= max_y {
         return;
     }
 
-    let crisp = blur_radius <= 0.5;
-    let sigma = (blur_radius * 0.5).max(0.5);
+    let phys_sigma = physical_blur_sigma(blur_radius, 1.0);
+    let crisp = phys_sigma.is_none();
+    let sigma = phys_sigma.unwrap_or(MIN_BLUR_SIGMA_PX);
     let inv_sigma_sqrt2 = 1.0 / (sigma * std::f32::consts::SQRT_2);
-    let pad_hx = inner_w * 0.5;
-    let pad_hy = inner_h * 0.5;
+    let pad_hx = inner_rect.width * 0.5;
+    let pad_hy = inner_rect.height * 0.5;
     let pad_cx = inner_rect.x + pad_hx;
     let pad_cy = inner_rect.y + pad_hy;
-    let hole_hx = hole_w * 0.5;
-    let hole_hy = hole_h * 0.5;
+    let hole_hx = hole_rect.width * 0.5;
+    let hole_hy = hole_rect.height * 0.5;
     let hole_cx = hole_rect.x + hole_hx;
     let hole_cy = hole_rect.y + hole_hy;
     let hole_r = if crisp {
@@ -271,13 +433,13 @@ pub(crate) fn draw_inset_box_shadow(
     let skip_pad = if crisp { 1.0 } else { (sigma * 3.0).ceil() };
     let corner_inset = hole_r + skip_pad;
     let core_x0 = ((hole_rect.x + corner_inset).ceil() as i32).max(min_x);
-    let core_x1 = ((hole_rect.x + hole_w - corner_inset).floor() as i32).min(max_x);
+    let core_x1 = ((hole_rect.x + hole_rect.width - corner_inset).floor() as i32).min(max_x);
     let core_y0 = ((hole_rect.y + skip_pad).ceil() as i32).max(min_y);
-    let core_y1 = ((hole_rect.y + hole_h - skip_pad).floor() as i32).min(max_y);
+    let core_y1 = ((hole_rect.y + hole_rect.height - skip_pad).floor() as i32).min(max_y);
     let band_y0 = ((hole_rect.y + corner_inset).ceil() as i32).max(min_y);
-    let band_y1 = ((hole_rect.y + hole_h - corner_inset).floor() as i32).min(max_y);
+    let band_y1 = ((hole_rect.y + hole_rect.height - corner_inset).floor() as i32).min(max_y);
     let band_x0 = ((hole_rect.x + skip_pad).ceil() as i32).max(min_x);
-    let band_x1 = ((hole_rect.x + hole_w - skip_pad).floor() as i32).min(max_x);
+    let band_x1 = ((hole_rect.x + hole_rect.width - skip_pad).floor() as i32).min(max_x);
 
     for py in min_y..max_y {
         let fy = py as f32 + 0.5;
@@ -295,7 +457,8 @@ pub(crate) fn draw_inset_box_shadow(
         let mut paint_span = |x_start: i32, x_end: i32| {
             for px in x_start..x_end {
                 let fx = px as f32 + 0.5;
-                let pad_sdf = rounded_rect_sdf(fx, fy, pad_cx, pad_cy, pad_hx, pad_hy, inner_radius);
+                let pad_sdf =
+                    rounded_rect_sdf(fx, fy, pad_cx, pad_cy, pad_hx, pad_hy, inner_radius);
                 let pad_cov = (0.5 - pad_sdf).clamp(0.0, 1.0);
                 if pad_cov <= 0.0 {
                     continue;
@@ -308,7 +471,8 @@ pub(crate) fn draw_inset_box_shadow(
                 if clip_cov <= 0.0 {
                     continue;
                 }
-                let hole_sdf = rounded_rect_sdf(fx, fy, hole_cx, hole_cy, hole_hx, hole_hy, hole_r);
+                let hole_sdf =
+                    rounded_rect_sdf(fx, fy, hole_cx, hole_cy, hole_hx, hole_hy, hole_r);
                 let cov = if crisp {
                     let hole_cov = (0.5 - hole_sdf).clamp(0.0, 1.0);
                     (pad_cov - hole_cov).max(0.0) * clip_cov

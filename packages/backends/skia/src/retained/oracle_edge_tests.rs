@@ -448,7 +448,7 @@ fn z_index_on_nodes_with_children_and_inplace_composite_reorder() {
     assert_scene_matches_fresh_display_list(&mut backend, &store, 120, 120, "z_index init");
 
     let emitted_before = backend.scene().stats().chunks_emitted;
-    let dead_before = backend.scene().arenas.dead_children;
+    let children_len_before = backend.scene().ordered_children_len();
     {
         let mut tx = store.tx();
         tx.edit::<Visual>(box_a).z_index(10);
@@ -461,6 +461,52 @@ fn z_index_on_nodes_with_children_and_inplace_composite_reorder() {
         Some(SceneDirtyKind::CompositeOnly)
     );
     assert_eq!(backend.scene().stats().chunks_emitted, emitted_before);
-    assert_eq!(backend.scene().arenas.dead_children, dead_before);
+    assert_eq!(
+        backend.scene().ordered_children_len(),
+        children_len_before,
+        "in-place z-sort must keep ordered_children length constant"
+    );
     assert_scene_matches_fresh_display_list(&mut backend, &store, 120, 120, "z_index swapped");
+
+    // Repeated structural add/remove churn cycles keep `ordered_children` strictly bounded at the
+    // exact live child count (4: box_a, box_b, child_a, child_b) with zero stale span growth.
+    for _ in 0..40 {
+        let ephemeral = {
+            let mut tx = store.tx();
+            let tmp = tx.create();
+            tx.edit::<Layout>(tmp)
+                .width(Length::points(10.0))
+                .height(Length::points(10.0));
+            tx.set_children(NodeId::ROOT, &[box_a, box_b, tmp]);
+            tx.commit_into(&mut changes);
+            tmp
+        };
+        backend.commit(&store, &changes).expect("churn add");
+        assert_eq!(backend.scene().ordered_children_len(), children_len_before + 1);
+        {
+            let mut tx = store.tx();
+            tx.set_children(NodeId::ROOT, &[box_a, box_b]);
+            tx.remove(ephemeral);
+            tx.commit_into(&mut changes);
+        }
+        backend.commit(&store, &changes).expect("churn remove");
+        assert_eq!(backend.scene().ordered_children_len(), children_len_before);
+    }
+
+    // Canonical `-0.0` float hashing in `compute_inherit_hash` prevents spurious subtree repaints.
+    let h_pos = super::emit::compute_inherit_hash(
+        super::chunks::ResolvedChunkText {
+            font_size: 0.0,
+            ..Default::default()
+        },
+        false,
+    );
+    let h_neg = super::emit::compute_inherit_hash(
+        super::chunks::ResolvedChunkText {
+            font_size: -0.0,
+            ..Default::default()
+        },
+        false,
+    );
+    assert_eq!(h_pos, h_neg, "compute_inherit_hash must canonicalize -0.0 == 0.0");
 }

@@ -17,6 +17,36 @@ pub(crate) fn rounded_rect_sdf(px: f32, py: f32, cx: f32, cy: f32, hx: f32, hy: 
     }
 }
 
+/// Signed distance and outward unit normal `(sdf, nx, ny)` to a rounded rectangle centered at
+/// `(cx, cy)` with half-size `(hx, hy)` and corner radius `r`. Used by transform-aware software
+/// shadows to normalize local SDF distances into exact device pixels under non-uniform scales.
+#[inline]
+pub(crate) fn rounded_rect_sdf_with_normal(
+    px: f32,
+    py: f32,
+    cx: f32,
+    cy: f32,
+    hx: f32,
+    hy: f32,
+    r: f32,
+) -> (f32, f32, f32) {
+    let dx = px - cx;
+    let dy = py - cy;
+    let sx = if dx >= 0.0 { 1.0 } else { -1.0 };
+    let sy = if dy >= 0.0 { 1.0 } else { -1.0 };
+    let qx = dx.abs() - (hx - r);
+    let qy = dy.abs() - (hy - r);
+    if qx > 0.0 && qy > 0.0 {
+        let len = (qx * qx + qy * qy).sqrt();
+        let inv = if len > 1e-6 { 1.0 / len } else { 0.0 };
+        (len - r, sx * qx * inv, sy * qy * inv)
+    } else if qx > qy {
+        (qx - r, sx, 0.0)
+    } else {
+        (qy - r, 0.0, sy)
+    }
+}
+
 const INLINE_CLIP_DEPTH: usize = 16;
 
 /// Active physical-pixel clip stack supporting nested rectangular and rounded-rect clips.

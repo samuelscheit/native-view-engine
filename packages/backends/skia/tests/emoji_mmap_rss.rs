@@ -36,6 +36,13 @@ fn macos_emoji_mmap_typeface_keeps_rss_delta_under_10mb() {
         "system + emoji fonts must be mmap-backed"
     );
     assert_eq!(stats.typeface_copied_entries, 0);
+    if std::path::Path::new("/System/Library/Fonts/Apple Color Emoji.ttc").exists() {
+        assert!(
+            stats.typeface_bytes > 10 * 1024 * 1024,
+            "expected macOS color emoji font (> 10 MiB) to be loaded so RSS delta check is non-vacuous, got {} bytes",
+            stats.typeface_bytes
+        );
+    }
     let rss_delta = rss_after.saturating_sub(rss_before);
     eprintln!(
         "[rss] emoji mmap delta = {} KiB (typeface_bytes = {} KiB)",

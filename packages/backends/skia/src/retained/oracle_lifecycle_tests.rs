@@ -6,8 +6,8 @@ use nve_engine::{StoreBackend, Viewport};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 use nve_tables::paint::{BackgroundFill, GradientStop};
 use nve_tables::tables::{
-    BackgroundFillRes, Display, FlexDirection, Layout, Overflow, Scroll, TextContent, Typography,
-    Visual,
+    BackgroundFillRes, Display, FlexDirection, Layout, Overflow, Position, Scroll, TextContent,
+    Transform, Typography, Visual,
 };
 
 use super::oracle_tests::assert_scene_matches_fresh_display_list;
@@ -230,7 +230,16 @@ fn scroll_into_view_handles_offscreen_display_none_and_virtual_top_spacer() {
         tx.commit_into(&mut changes);
     }
     backend.commit(&store, &changes).expect("virtual scroll");
+    assert_eq!(
+        backend.scene().stats().last_dirty_kind,
+        Some(SceneDirtyKind::LayoutOrTree)
+    );
     backend.set_scroll_offset(&store, scroll, 0.0, 500.0);
+    assert_eq!(
+        backend.scene().stats().last_dirty_kind,
+        Some(SceneDirtyKind::CompositeOnly),
+        "update_scroll must update last_dirty_kind from LayoutOrTree to CompositeOnly"
+    );
     assert!(backend.scroll_into_view(&store, target));
     let (_, vsy) = backend.scroll_offset(scroll);
     assert!(
@@ -238,4 +247,90 @@ fn scroll_into_view_handles_offscreen_display_none_and_virtual_top_spacer() {
         "expected virtualized raw scroll y ~= 1220 (spacer 1000 + shift 220), got {vsy}"
     );
     assert!(!backend.scroll_into_view(&store, target));
+
+    // 4. Upward scroll (`dy < 0`) while `0 <= sy < virtual_top_spacer`:
+    //    Translate the first item above `view.y` (`-30px`) with `sy = 500.0 < spacer (1000.0)`
+    //    -> MUST scroll UPWARD (to `470.0`), NEVER jump forward to `spacer (1000.0)`!
+    let top_item = store.children(scroll)[0];
+    {
+        let mut tx = store.tx();
+        tx.edit::<Transform>(top_item).translate_y(-30.0);
+        tx.commit_into(&mut changes);
+    }
+    backend.commit(&store, &changes).expect("translate top_item");
+    backend.set_scroll_offset(&store, scroll, 0.0, 500.0);
+    assert!(backend.scroll_into_view(&store, top_item));
+    let (_, up_sy) = backend.scroll_offset(scroll);
+    assert!(
+        (up_sy - 470.0).abs() <= 1.0,
+        "upward scroll_into_view with 0 <= sy < spacer must decrease sy to ~470 (never jump forward to spacer 1000), got {up_sy}"
+    );
+    // And when `sy == 0.0 < spacer`, upward scroll must clamp at `0.0` (not jump forward to 1000!).
+    backend.set_scroll_offset(&store, scroll, 0.0, 0.0);
+    assert!(!backend.scroll_into_view(&store, top_item));
+    assert_eq!(backend.scroll_offset(scroll).1, 0.0);
+
+    // 5. Ancestor `Transform` and `Position::Sticky` deltas inside a `Scroll` container.
+    let (tf_scroll, tf_target, sticky_target) = {
+        let mut tx = store.tx();
+        let sc = tx.create();
+        tx.edit::<Layout>(sc)
+            .width(Length::points(200.0))
+            .height(Length::points(100.0))
+            .flex_direction(FlexDirection::Column);
+        tx.edit::<Scroll>(sc);
+        tx.edit::<Visual>(sc).overflow_y(Overflow::Scroll);
+
+        let sticky = tx.create();
+        tx.edit::<Layout>(sticky)
+            .position(Position::Sticky)
+            .inset_top(Length::points(0.0))
+            .width(Length::points(200.0))
+            .height(Length::points(30.0))
+            .flex_shrink(0.0);
+
+        let wrapper = tx.create();
+        tx.edit::<Layout>(wrapper)
+            .width(Length::points(200.0))
+            .height(Length::points(40.0))
+            .flex_shrink(0.0);
+        // Ancestor Transform shifts `tf_target` down by +180px (below the 100px viewport!).
+        tx.edit::<Transform>(wrapper).translate_y(180.0);
+        let tf_target = tx.create();
+        tx.edit::<Layout>(tf_target)
+            .width(Length::points(200.0))
+            .height(Length::points(40.0));
+        tx.set_children(wrapper, &[tf_target]);
+
+        let spacer_box = tx.create();
+        tx.edit::<Layout>(spacer_box)
+            .width(Length::points(200.0))
+            .height(Length::points(300.0))
+            .flex_shrink(0.0);
+
+        let content = tx.create();
+        tx.edit::<Layout>(content)
+            .width(Length::points(200.0))
+            .flex_direction(FlexDirection::Column)
+            .flex_shrink(0.0);
+        tx.set_children(content, &[sticky, wrapper, spacer_box]);
+        tx.set_children(sc, &[content]);
+        tx.set_children(NodeId::ROOT, &[sc]);
+        tx.commit_into(&mut changes);
+        (sc, tf_target, sticky)
+    };
+    backend.commit(&store, &changes).expect("tf+sticky scroll");
+    // `tf_target` layout y=30..70, shifted by wrapper's translate_y(+180) -> y=210..250 -> scroll to 150!
+    assert!(backend.scroll_into_view(&store, tf_target));
+    let (_, tf_sy) = backend.scroll_offset(tf_scroll);
+    assert!(
+        (tf_sy - 150.0).abs() <= 1.0,
+        "ancestor Transform translate_y(+180) must scroll tf_target to ~150, got {tf_sy}"
+    );
+    // `sticky_target` is stuck at top of viewport (`sticky_y = +150`) -> already visible, zero scroll!
+    assert!(
+        !backend.scroll_into_view(&store, sticky_target),
+        "currently stuck Position::Sticky header is already visible and must not scroll"
+    );
+    assert!((backend.scroll_offset(tf_scroll).1 - 150.0).abs() <= 1.0);
 }

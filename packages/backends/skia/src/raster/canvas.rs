@@ -28,7 +28,7 @@ pub(crate) fn draw_image(
     let Ok(img) = ImageCache::shared().get_or_decode(src) else {
         return;
     };
-    let Some(placement) = compute_image_placement(rect, img.width, img.height, fit) else {
+    let Some(placement) = compute_image_placement(rect, img.width(), img.height(), fit) else {
         return;
     };
 

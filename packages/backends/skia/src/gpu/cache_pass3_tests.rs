@@ -136,7 +136,7 @@ fn multi_image_fast_path_survives_sibling_inserts_and_oversized_uncached_draws()
         .get_or_decode_with_slot(&huge_uri)
         .expect("decode oversized png");
     assert!(huge_slot.is_none(), "oversized image must return slot=None");
-    assert_eq!((huge_dec.width, huge_dec.height), (8, 8));
+    assert_eq!((huge_dec.width(), huge_dec.height()), (8, 8));
     assert_eq!(small.resolve_cached_handle("k1"), Some(s1));
     assert_eq!(small.resolve_cached_handle("k2"), Some(s2));
     assert_eq!(small.resolve_cached_handle("k3"), Some(s3));

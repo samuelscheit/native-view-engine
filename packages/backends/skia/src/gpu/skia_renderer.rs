@@ -429,7 +429,9 @@ impl SkiaCanvasRenderer {
         };
         let drew_blob = if self.text_engine.has_system_fonts() {
             let mut caches = self.caches.borrow_mut();
-            if let Some(blob) = caches.get_or_build_text_blob(
+            // Bypass `caches.text_blobs` for per-frame changing FPS/latency HUD text so UI cache
+            // telemetry and entries are never polluted.
+            if let Some(blob) = caches.build_transient_text_blob(
                 &self.font_mgr,
                 &self.text_engine,
                 banner,
