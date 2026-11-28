@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use nve_abi::SERVICE_CLIPBOARD;
+pub use nve_clipboard::decode_read_text_response;
 use nve_clipboard::{
     decode_write_text_request, encode_read_text_response, ClipboardBackend, METHOD_CLEAR,
     METHOD_HAS_TEXT, METHOD_READ_TEXT, METHOD_WRITE_TEXT,
@@ -110,13 +111,24 @@ impl WebClipboard {
             .is_some_and(|s| !s.is_empty())
     }
 
-    /// Cancels all in-flight browser clipboard `readText()` Promises owned by this instance and
-    /// drops their `Closure` entries without leaking (deferring any actively executing callback).
+    /// Cancels all in-flight browser clipboard `readText()` Promises owned by this instance,
+    /// resolves their `CompletionSink` entries as `Cancelled`, and drops their `Closure` entries.
     pub fn cancel_pending(&self) {
         #[cfg(target_arch = "wasm32")]
         wasm_impl::cancel_for_instance(self.instance_id);
         #[cfg(all(test, not(target_arch = "wasm32")))]
         native_test_slab::cancel_for_instance(self.instance_id);
+    }
+
+    /// Cancels ONLY in-flight browser clipboard `readText()` Promises belonging to `owner_tag`
+    /// on this instance, leaving sibling owners' pending Promises intact.
+    pub fn cancel_pending_for_owner(&self, owner_tag: u64) {
+        #[cfg(target_arch = "wasm32")]
+        wasm_impl::cancel_for_owner(self.instance_id, owner_tag);
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        native_test_slab::cancel_for_owner(self.instance_id, owner_tag);
+        #[cfg(not(any(target_arch = "wasm32", test)))]
+        let _ = owner_tag;
     }
 
     /// Drops `wasm-bindgen` closures for Promises that have already settled outside JS callbacks.
@@ -209,9 +221,11 @@ impl HostServiceHandler for WebClipboard {
                 #[cfg(target_arch = "wasm32")]
                 {
                     let token = NEXT_READ_TOKEN.fetch_add(1, Ordering::Relaxed);
+                    let owner_tag = done.owner_tag_for_in_flight(request_id).unwrap_or(0);
                     if wasm_impl::start_async_read(
                         token,
                         self.instance_id,
+                        owner_tag,
                         request_id,
                         Arc::clone(&self.shadow),
                         done.clone(),
@@ -223,9 +237,11 @@ impl HostServiceHandler for WebClipboard {
                 {
                     if self.force_async_read.load(Ordering::Acquire) {
                         let token = NEXT_READ_TOKEN.fetch_add(1, Ordering::Relaxed);
+                        let owner_tag = done.owner_tag_for_in_flight(request_id).unwrap_or(0);
                         native_test_slab::insert(
                             token,
                             self.instance_id,
+                            owner_tag,
                             request_id,
                             Arc::clone(&self.shadow),
                             done.clone(),
@@ -266,6 +282,7 @@ mod native_test_slab {
     #[derive(Clone)]
     struct PendingReadEntry {
         instance_id: u64,
+        owner_tag: u64,
         request_id: u64,
         shadow: Arc<Mutex<Option<String>>>,
         done: CompletionSink,
@@ -277,31 +294,53 @@ mod native_test_slab {
     pub(super) fn insert(
         token: u64,
         instance_id: u64,
+        owner_tag: u64,
         request_id: u64,
         shadow: Arc<Mutex<Option<String>>>,
         done: CompletionSink,
     ) {
-        SLAB.lock().unwrap_or_else(|e| e.into_inner()).insert(
+        let evicted = SLAB.lock().unwrap_or_else(|e| e.into_inner()).insert(
             token,
             PendingReadEntry {
                 instance_id,
+                owner_tag,
                 request_id,
                 shadow,
                 done,
             },
         );
+        drop(evicted);
+    }
+
+    fn cancel_matching(mut pred: impl FnMut(&PendingReadEntry) -> bool) {
+        let mut to_cancel: Vec<(u64, CompletionSink)> = Vec::new();
+        let (_keys, evicted) = SLAB
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove_where(
+                |_, e| pred(e),
+                |_, e| to_cancel.push((e.request_id, e.done.clone())),
+            );
+        drop(evicted);
+        for (req_id, done) in to_cancel {
+            let _ = done.complete_err(req_id, &ServiceError::Cancelled);
+        }
     }
 
     pub(super) fn cancel_for_instance(instance_id: u64) {
-        SLAB.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove_where(|_, e| e.instance_id == instance_id, |_| {});
+        cancel_matching(|e| e.instance_id == instance_id);
+    }
+
+    pub(super) fn cancel_for_owner(instance_id: u64, owner_tag: u64) {
+        cancel_matching(|e| e.instance_id == instance_id && e.owner_tag == owner_tag);
     }
 
     pub(super) fn reap_settled() {
-        SLAB.lock()
+        let evicted = SLAB
+            .lock()
             .unwrap_or_else(|e| e.into_inner())
             .reap_deferred();
+        drop(evicted);
     }
 
     pub(super) fn debug_slab_counts() -> ClipboardSlabCounts {
@@ -324,7 +363,7 @@ mod native_test_slab {
     fn resolve_token(token: u64, text: Result<&str, ServiceError>) -> bool {
         let entry = {
             let mut st = SLAB.lock().unwrap_or_else(|e| e.into_inner());
-            let Some((_, e)) = st.iter().find(|(k, _)| *k == token) else {
+            let Some((_, e)) = st.iter().find(|(k, _)| **k == token) else {
                 return false;
             };
             let cloned = e.clone();
@@ -334,10 +373,15 @@ mod native_test_slab {
         struct LeaveGuard(u64);
         impl Drop for LeaveGuard {
             fn drop(&mut self) {
-                let mut st = SLAB.lock().unwrap_or_else(|e| e.into_inner());
-                if st.leave(self.0, true) {
-                    st.reap_deferred();
-                }
+                let evicted = {
+                    let mut st = SLAB.lock().unwrap_or_else(|e| e.into_inner());
+                    if st.leave(self.0, true) {
+                        st.reap_deferred()
+                    } else {
+                        Vec::new()
+                    }
+                };
+                drop(evicted);
             }
         }
         let _guard = LeaveGuard(token);
@@ -412,5 +456,66 @@ mod native_test_slab {
         assert!(tokens_for(clip_a.instance_id()).is_empty());
         assert!(tokens_for(clip_b.instance_id()).is_empty());
         assert_eq!(WebClipboard::debug_slab_counts().pending_reads, 0);
+    }
+
+    #[test]
+    fn cancel_pending_for_owner_preserves_sibling_and_cancel_resolves_sink() {
+        let clip = Arc::new(WebClipboard::headless());
+        clip.force_async_read.store(true, Ordering::Release);
+        let sink = CompletionSink::new();
+
+        let h1 = sink
+            .register_in_flight_for_owner(10, 1, 0x0010, METHOD_READ_TEXT)
+            .unwrap();
+        let h2 = sink
+            .register_in_flight_for_owner(20, 1, 0x0010, METHOD_READ_TEXT)
+            .unwrap();
+        assert_eq!(
+            clip.handle(METHOD_READ_TEXT, h1, &[], &sink).unwrap(),
+            HandlerReply::Pending
+        );
+        assert_eq!(
+            clip.handle(METHOD_READ_TEXT, h2, &[], &sink).unwrap(),
+            HandlerReply::Pending
+        );
+
+        // Cancel ONLY owner 10: owner 10's request resolves as Cancelled; owner 20 stays pending!
+        clip.cancel_pending_for_owner(10);
+        let toks = tokens_for(clip.instance_id());
+        assert_eq!(toks.len(), 1, "sibling owner 20's pending read must remain intact");
+        let mut b10 = nve_abi::NveHostEventBatchBuilder::new();
+        assert_eq!(sink.drain_batch_for_owner_into(10, &mut b10).unwrap(), 1);
+        let parsed10 = nve_abi::NveHostEventBatchRef::parse(b10.as_bytes()).unwrap();
+        let rec10 = parsed10.iter().next().unwrap();
+        assert_eq!(rec10.status, nve_abi::NveHostStatus::Cancelled);
+
+        // Owner 20 still completes normally!
+        assert!(resolve_token(toks[0], Ok("sibling-intact")));
+        let mut b20 = nve_abi::NveHostEventBatchBuilder::new();
+        assert_eq!(sink.drain_batch_for_owner_into(20, &mut b20).unwrap(), 1);
+        let parsed20 = nve_abi::NveHostEventBatchRef::parse(b20.as_bytes()).unwrap();
+        let rec20 = parsed20.iter().next().unwrap();
+        assert_eq!(rec20.status, nve_abi::NveHostStatus::Ok);
+        assert_eq!(
+            decode_read_text_response(rec20.payload).unwrap().as_deref(),
+            Some("sibling-intact")
+        );
+
+        // Dropping WebClipboard with a live pending read resolves CompletionSink as Cancelled.
+        let h3 = sink
+            .register_in_flight_for_owner(30, 7, 0x0010, METHOD_READ_TEXT)
+            .unwrap();
+        assert_eq!(
+            clip.handle(METHOD_READ_TEXT, h3, &[], &sink).unwrap(),
+            HandlerReply::Pending
+        );
+        drop(clip);
+        let mut b30 = nve_abi::NveHostEventBatchBuilder::new();
+        assert_eq!(sink.drain_batch_for_owner_into(30, &mut b30).unwrap(), 1);
+        let parsed30 = nve_abi::NveHostEventBatchRef::parse(b30.as_bytes()).unwrap();
+        assert_eq!(
+            parsed30.iter().next().unwrap().status,
+            nve_abi::NveHostStatus::Cancelled
+        );
     }
 }

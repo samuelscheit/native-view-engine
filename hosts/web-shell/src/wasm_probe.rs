@@ -286,6 +286,43 @@ pub fn host_services_arm_reentrant_unmount(surface_id: u32) -> bool {
         .is_some()
 }
 
+/// Seeds `WebClipboard`'s synchronous shadow buffer on `surface_id` (E2E probe for `NotAllowedError`
+/// and missing `navigator.clipboard` fallback behavior).
+#[wasm_bindgen]
+pub fn host_services_set_clipboard_shadow(surface_id: u32, text: Option<String>) -> bool {
+    nve_abi::SurfaceId::from_raw(surface_id)
+        .and_then(|sid| {
+            crate::wasm_api::with_active_host_guard(sid, |g| {
+                g.debug_set_clipboard_shadow(text);
+            })
+        })
+        .is_some()
+}
+
+/// Invokes `SERVICE_CLIPBOARD::METHOD_READ_TEXT` on `surface_id`, returning `"sync:<text>"`,
+/// `"sync-none"`, `"pending:<request_id>"`, or `"err:<status_i32>"`.
+#[wasm_bindgen]
+pub fn host_services_clipboard_read_probe(surface_id: u32) -> String {
+    nve_abi::SurfaceId::from_raw(surface_id)
+        .and_then(|sid| {
+            crate::wasm_api::with_active_host_guard(sid, |g| g.debug_clipboard_read_probe())
+        })
+        .unwrap_or_else(|| "missing-surface".to_owned())
+}
+
+/// Consumes a settled clipboard probe response from `CompletionSink`, returning `"ok:<text>"`,
+/// `"ok-none"`, `"err:<status_i32>"`, or `"none"`.
+#[wasm_bindgen]
+pub fn host_services_take_clipboard_result(surface_id: u32, request_id: u64) -> String {
+    nve_abi::SurfaceId::from_raw(surface_id)
+        .and_then(|sid| {
+            crate::wasm_api::with_active_host_guard(sid, |g| {
+                g.debug_take_clipboard_result(request_id)
+            })
+        })
+        .unwrap_or_else(|| "missing-surface".to_owned())
+}
+
 /// Panics with `message`, so the E2E can check that a release bundle prints the panic message and
 /// its `file:line`. Dev bundle only: production bundles carry no trigger.
 #[wasm_bindgen]

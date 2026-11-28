@@ -567,7 +567,8 @@ export function nve_web_sysenv_schedule_reap(cb) {
     }
 
     pub(super) fn reap_deferred() {
-        WATCHER_SLAB.with(|slab| slab.borrow_mut().reap_deferred());
+        let evicted = WATCHER_SLAB.with(|slab| slab.borrow_mut().reap_deferred());
+        drop(evicted);
     }
 
     pub(super) fn install_watcher(id: u64, env: Arc<WebSystemEnv>, sink: CompletionSink) {
@@ -595,20 +596,22 @@ export function nve_web_sysenv_schedule_reap(cb) {
             }
         });
         nve_web_sysenv_watch(id as f64, on_theme.as_ref(), on_locale.as_ref());
-        WATCHER_SLAB.with(|slab| {
+        let evicted = WATCHER_SLAB.with(|slab| {
             slab.borrow_mut().insert(
                 id,
                 WatcherSlot {
                     _on_theme: on_theme,
                     _on_locale: on_locale,
                 },
-            );
+            )
         });
+        drop(evicted);
     }
 
     pub(super) fn uninstall_watcher(id: u64) {
         nve_web_sysenv_unwatch(id as f64);
-        WATCHER_SLAB.with(|slab| slab.borrow_mut().remove_or_defer(id));
+        let evicted = WATCHER_SLAB.with(|slab| slab.borrow_mut().remove_or_defer(id));
+        drop(evicted);
     }
 
     pub(super) fn debug_slab_counts() -> SystemEnvSlabCounts {

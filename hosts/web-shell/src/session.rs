@@ -48,6 +48,8 @@ mod session_app;
 pub(crate) use session_app::SessionApp;
 #[path = "session_host.rs"]
 mod host_bridge;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use host_bridge::defer_session_unbind_host;
 #[cfg(feature = "dev")]
 #[path = "session_hot_reload.rs"]
 mod hot_reload;

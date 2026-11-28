@@ -171,6 +171,13 @@ fn web_shell_index_html_embeds_snapshot_boot_and_replay_scripts_within_budget_an
         "WEB_SHELL_SNAPSHOT_BOOT_SCRIPT_TAG ({} B) must remain < {SNAPSHOT_BOOTSTRAP_MAX_BYTES} B",
         WEB_SHELL_SNAPSHOT_BOOT_SCRIPT_TAG.len()
     );
+    let expected_ver_clause = format!(
+        "v=p=='kitchen-sink'?{KITCHEN_SINK_STATE_VERSION}:{STUDIO_SNAPSHOT_SCHEMA_VERSION},"
+    );
+    assert!(
+        WEB_SHELL_SNAPSHOT_BOOT_SCRIPT_TAG.contains(&expected_ver_clause),
+        "WEB_SHELL_SNAPSHOT_BOOT_SCRIPT_TAG must match KITCHEN_SINK_STATE_VERSION ({KITCHEN_SINK_STATE_VERSION}) and STUDIO_SNAPSHOT_SCHEMA_VERSION ({STUDIO_SNAPSHOT_SCHEMA_VERSION})"
+    );
     let main_close = html
         .find("</main>")
         .expect("hosts/web-shell/index.html must contain </main>");

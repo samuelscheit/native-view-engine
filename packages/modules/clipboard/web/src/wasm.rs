@@ -121,6 +121,9 @@ type TextClosure = Closure<dyn FnMut(String)>;
 
 struct PendingReadSlot {
     instance_id: u64,
+    owner_tag: u64,
+    request_id: u64,
+    done: CompletionSink,
     _on_ok: TextClosure,
     _on_err: TextClosure,
 }
@@ -178,31 +181,52 @@ pub(crate) fn attach_dom_listeners(instance_id: u64, shadow: Arc<Mutex<Option<St
         *shadow.lock().unwrap_or_else(|e| e.into_inner()) = Some(txt);
     });
     nve_web_clip_attach(instance_id as f64, cb.as_ref());
-    DOM_LISTENERS.with(|slab| slab.borrow_mut().insert(instance_id, cb));
+    let evicted = DOM_LISTENERS.with(|slab| slab.borrow_mut().insert(instance_id, cb));
+    drop(evicted);
 }
 
 pub(crate) fn detach_dom_listeners(instance_id: u64) {
     nve_web_clip_detach(instance_id as f64);
-    DOM_LISTENERS.with(|slab| slab.borrow_mut().remove_or_defer(instance_id));
+    let evicted = DOM_LISTENERS.with(|slab| slab.borrow_mut().remove_or_defer(instance_id));
+    drop(evicted);
 }
 
 pub(crate) fn reap_settled() {
-    PENDING_READS.with(|slab| slab.borrow_mut().reap_deferred());
-    DOM_LISTENERS.with(|slab| slab.borrow_mut().reap_deferred());
+    let evicted_reads = PENDING_READS.with(|slab| slab.borrow_mut().reap_deferred());
+    drop(evicted_reads);
+    let evicted_listeners = DOM_LISTENERS.with(|slab| slab.borrow_mut().reap_deferred());
+    drop(evicted_listeners);
+}
+
+fn cancel_matching(mut pred: impl FnMut(&PendingReadSlot) -> bool) {
+    let mut to_cancel: Vec<(u64, CompletionSink)> = Vec::new();
+    let (_keys, evicted) = PENDING_READS.with(|slab| {
+        slab.borrow_mut().remove_where(
+            |_, slot| pred(slot),
+            |token, slot| {
+                nve_web_clip_cancel(token as f64);
+                to_cancel.push((slot.request_id, slot.done.clone()));
+            },
+        )
+    });
+    drop(evicted);
+    for (req_id, done) in to_cancel {
+        let _ = done.complete_err(req_id, &ServiceError::Cancelled);
+    }
 }
 
 pub(crate) fn cancel_for_instance(instance_id: u64) {
-    PENDING_READS.with(|slab| {
-        slab.borrow_mut().remove_where(
-            |_, slot| slot.instance_id == instance_id,
-            |token| nve_web_clip_cancel(token as f64),
-        );
-    });
+    cancel_matching(|slot| slot.instance_id == instance_id);
+}
+
+pub(crate) fn cancel_for_owner(instance_id: u64, owner_tag: u64) {
+    cancel_matching(|slot| slot.instance_id == instance_id && slot.owner_tag == owner_tag);
 }
 
 pub(crate) fn start_async_read(
     token: u64,
     instance_id: u64,
+    owner_tag: u64,
     request_id: u64,
     shadow: Arc<Mutex<Option<String>>>,
     done: CompletionSink,
@@ -224,35 +248,44 @@ pub(crate) fn start_async_read(
         }
     });
 
+    let done_err = done.clone();
     let on_err = Closure::<dyn FnMut(String)>::new(move |name: String| {
         PENDING_READS.with(|slab| slab.borrow_mut().enter(token));
         let _guard = ActiveReadGuard(token);
-        let fallback = shadow.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if let Some(cached) = fallback {
-            if let Ok(payload) = encode_read_text_response(Some(&cached)) {
-                let _ = done.complete_ok(request_id, payload);
-            } else {
-                let _ = done.complete_err(request_id, &ServiceError::PermissionDenied);
+        if name.eq_ignore_ascii_case("NotAllowedError")
+            || name.eq_ignore_ascii_case("SecurityError")
+        {
+            let _ = done_err.complete_err(request_id, &ServiceError::PermissionDenied);
+        } else if let Some(cached) = shadow.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            match encode_read_text_response(Some(&cached)) {
+                Ok(payload) => {
+                    let _ = done_err.complete_ok(request_id, payload);
+                }
+                Err(err) => {
+                    let _ = done_err.complete_err(request_id, &err);
+                }
             }
-        } else if name.eq_ignore_ascii_case("NotAllowedError") {
-            let _ = done.complete_err(request_id, &ServiceError::PermissionDenied);
         } else {
-            let _ = done.complete_err(request_id, &ServiceError::Unsupported);
+            let _ = done_err.complete_err(request_id, &ServiceError::Unsupported);
         }
     });
 
     let started = nve_web_clip_read(token as f64, on_ok.as_ref(), on_err.as_ref());
     if started {
-        PENDING_READS.with(|slab| {
+        let evicted = PENDING_READS.with(|slab| {
             slab.borrow_mut().insert(
                 token,
                 PendingReadSlot {
                     instance_id,
+                    owner_tag,
+                    request_id,
+                    done,
                     _on_ok: on_ok,
                     _on_err: on_err,
                 },
-            );
+            )
         });
+        drop(evicted);
     }
     started
 }
