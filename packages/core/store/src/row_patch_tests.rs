@@ -1122,3 +1122,166 @@ fn apply_row_patch_inherited_64bit_hi_word_skip_and_orphan_word0_preserve_inheri
         "parent's inherited resource must not be clobbered by orphan word-0 bit"
     );
 }
+
+#[test]
+fn apply_row_patch_inherited_packed_sibling_and_partial_mask_reject_forged_explicit_bits() {
+    #[allow(dead_code)]
+    #[derive(crate::NveTable)]
+    #[nve_table(name = "test.patch.inherited_packed", storage = "sparse", flags = "publish", inherited)]
+    struct InheritedPacked {
+        #[effect(paint)]
+        align: PatchAlign,
+        #[effect(paint)]
+        wrap: bool,
+        #[effect(paint)]
+        #[default(400u16)]
+        weight: u16,
+        #[effect(paint)]
+        opt_tint: Option<Rgba>,
+    }
+
+    // Premise check: `align`, `wrap`, `weight`, and `opt_tint`'s presence bit all pack into word 1.
+    assert_eq!(InheritedPacked::ALIGN.word, InheritedPacked::WRAP.word);
+    assert_eq!(InheritedPacked::ALIGN.word, InheritedPacked::WEIGHT.word);
+    assert_eq!(InheritedPacked::ALIGN.word, InheritedPacked::OPT_TINT.word);
+
+    let mut store = NodeStore::new();
+    let (parent, child_sibling, child_partial) = {
+        let mut tx = store.tx();
+        let parent = tx.create();
+        let child_sibling = tx.create();
+        let child_partial = tx.create();
+        tx.set_children(NodeId::ROOT, &[parent]);
+        tx.set_children(parent, &[child_sibling, child_partial]);
+        tx.edit::<InheritedPacked>(parent)
+            .align(PatchAlign::End)
+            .wrap(true)
+            .weight(700)
+            .opt_tint(Some(Rgba::rgb(12, 34, 56)));
+        commit_tx(tx);
+        (parent, child_sibling, child_partial)
+    };
+
+    let build_wire_patch = |ops: &[(u8, u16, u32, u32)]| -> Vec<u32> {
+        let mut sorted = ops.to_vec();
+        sorted.sort_by_key(|o| o.0);
+        let key = InheritedPacked::KEY;
+        let mut w = vec![1u32, key.lo(), key.hi(), sorted.len() as u32];
+        for (word, flags, clear_mask, set_bits) in sorted {
+            w.push(u32::from(word) | (u32::from(flags) << 16));
+            w.push(clear_mask);
+            w.push(set_bits);
+        }
+        w
+    };
+
+    // Case 1: Patch ONLY `align` in shared packed word 1, while forging word-0 explicit bits
+    // for sibling fields `wrap`, `weight`, and `opt_tint` that share word 1.
+    {
+        let forged_explicit = (1u32 << InheritedPacked::ALIGN.explicit_bit)
+            | (1u32 << InheritedPacked::WRAP.explicit_bit)
+            | (1u32 << InheritedPacked::WEIGHT.explicit_bit)
+            | (1u32 << InheritedPacked::OPT_TINT.explicit_bit);
+        let align_bits = (PatchAlign::Center as u32) << InheritedPacked::ALIGN.shift;
+        let words = build_wire_patch(&[
+            (0, crate::WORD_OP_SCALAR, forged_explicit, forged_explicit),
+            (
+                InheritedPacked::ALIGN.word,
+                crate::WORD_OP_SCALAR,
+                InheritedPacked::ALIGN.mask,
+                align_bits,
+            ),
+        ]);
+        let view = RowPatchView::from_words(&words).expect("valid crafted packed-sibling patch");
+        let mut tx = store.tx();
+        tx.apply_row_patch(child_sibling, view);
+        commit_tx(tx);
+    }
+    let row_sib = store.row::<InheritedPacked>(child_sibling);
+    assert!(row_sib.is_align_explicit(), "fully patched packed field must set its explicit bit");
+    assert!(!row_sib.is_wrap_explicit(), "unpatched sibling in same word must NOT set explicit bit");
+    assert!(!row_sib.is_weight_explicit(), "unpatched sibling in same word must NOT set explicit bit");
+    assert!(!row_sib.is_opt_tint_explicit(), "unpatched wide-opt in same word must NOT set explicit bit");
+    {
+        let root_r = ResolvedRow::<InheritedPacked>::root(&store);
+        let parent_r = ResolvedRow::<InheritedPacked>::resolve(&store, parent, &root_r);
+        let sib_r = ResolvedRow::<InheritedPacked>::resolve(&store, child_sibling, &parent_r);
+        assert_eq!(sib_r.get().align(), PatchAlign::Center);
+        assert!(sib_r.get().wrap(), "parent wrap must remain inherited");
+        assert_eq!(sib_r.get().weight(), 700, "parent weight must remain inherited");
+        assert_eq!(
+            sib_r.get().opt_tint(),
+            Some(Rgba::rgb(12, 34, 56)),
+            "parent opt_tint must remain inherited"
+        );
+    }
+
+    // Case 2: Patch `align` fully + only a PARTIAL `clear_mask` on 16-bit `weight` (low 8 bits)
+    // and only a PARTIAL `clear_mask` on `opt_tint`'s `val_word` (low 16 bits) + `opt_tint`'s
+    // presence bit. Neither `weight` nor `opt_tint` has full mask coverage -> neither explicit
+    // bit may flip!
+    {
+        let forged_explicit = (1u32 << InheritedPacked::ALIGN.explicit_bit)
+            | (1u32 << InheritedPacked::WEIGHT.explicit_bit)
+            | (1u32 << InheritedPacked::OPT_TINT.explicit_bit);
+        let partial_weight_mask = 0x00FFu32 << InheritedPacked::WEIGHT.shift;
+        let opt_presence_mask = 1u32 << InheritedPacked::OPT_TINT.shift;
+        let word1_mask = InheritedPacked::ALIGN.mask | partial_weight_mask | opt_presence_mask;
+        let word1_set = ((PatchAlign::Center as u32) << InheritedPacked::ALIGN.shift)
+            | (0x42u32 << InheritedPacked::WEIGHT.shift)
+            | opt_presence_mask;
+        let words = build_wire_patch(&[
+            (0, crate::WORD_OP_SCALAR, forged_explicit, forged_explicit),
+            (InheritedPacked::ALIGN.word, crate::WORD_OP_SCALAR, word1_mask, word1_set),
+            (
+                InheritedPacked::OPT_TINT.val_word,
+                crate::WORD_OP_SCALAR,
+                0x0000_FFFF, // partial val_word mask instead of u32::MAX
+                0x0000_1234,
+            ),
+        ]);
+        let view = RowPatchView::from_words(&words).expect("valid crafted partial-mask patch");
+        let mut tx = store.tx();
+        tx.apply_row_patch(child_partial, view);
+        commit_tx(tx);
+    }
+    let row_part = store.row::<InheritedPacked>(child_partial);
+    assert!(row_part.is_align_explicit());
+    assert!(
+        !row_part.is_weight_explicit(),
+        "partial clear_mask on multi-bit packed field must NOT set explicit bit"
+    );
+    assert!(
+        !row_part.is_opt_tint_explicit(),
+        "partial val_word clear_mask on wide Option<T> must NOT set explicit bit"
+    );
+    {
+        let root_r = ResolvedRow::<InheritedPacked>::root(&store);
+        let parent_r = ResolvedRow::<InheritedPacked>::resolve(&store, parent, &root_r);
+        let part_r = ResolvedRow::<InheritedPacked>::resolve(&store, child_partial, &parent_r);
+        assert_eq!(part_r.get().align(), PatchAlign::Center);
+        assert_eq!(part_r.get().weight(), 700, "parent weight must stay inherited");
+        assert_eq!(part_r.get().opt_tint(), Some(Rgba::rgb(12, 34, 56)));
+    }
+
+    // Control: genuine full `RowPatch::set` on `wrap`, `weight`, and `opt_tint` sets all bits.
+    {
+        let mut patch = RowPatch::new();
+        patch
+            .set(InheritedPacked::WRAP, false)
+            .set(InheritedPacked::WEIGHT, 300)
+            .set(InheritedPacked::OPT_TINT, Some(Rgba::WHITE));
+        let mut words = Vec::new();
+        assert!(patch.write_words(&mut words));
+        let mut tx = store.tx();
+        tx.apply_row_patch(child_partial, RowPatchView::from_words(&words).unwrap());
+        commit_tx(tx);
+    }
+    let row_after = store.row::<InheritedPacked>(child_partial);
+    assert!(row_after.is_wrap_explicit());
+    assert!(row_after.is_weight_explicit());
+    assert!(row_after.is_opt_tint_explicit());
+    assert!(!row_after.wrap());
+    assert_eq!(row_after.weight(), 300);
+    assert_eq!(row_after.opt_tint(), Some(Rgba::WHITE));
+}

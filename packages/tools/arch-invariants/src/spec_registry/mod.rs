@@ -41,7 +41,7 @@ pub enum GuardStrength {
 pub struct SpecCoverageReport {
     /// Distinct valid `[INV:<id>]` tags discovered in spec docs.
     pub spec_count: usize,
-    /// Strongest backing guard strength (`Enforced` vs `Ratcheted`) for every covered spec ID.
+    /// Weakest-link backing guard strength (`Enforced` vs `Ratcheted`) for every covered spec ID.
     pub covered: BTreeMap<String, GuardStrength>,
     /// Uncovered or malformed `[INV:...]` violations.
     pub violations: Vec<Violation>,
@@ -139,12 +139,15 @@ pub fn check_spec_invariant_coverage(
         for (id, strength) in extract_test_invariant_guards(src) {
             all_guards
                 .entry(id)
-                .and_modify(|cur| *cur = (*cur).max(strength))
+                .and_modify(|cur| *cur = (*cur).min(strength))
                 .or_insert(strength);
         }
     }
     for id in extract_tested_ast_grep_invariant_ids(ast_grep_rules, ast_grep_tests) {
-        all_guards.insert(id, GuardStrength::Enforced);
+        all_guards
+            .entry(id)
+            .and_modify(|cur| *cur = (*cur).min(GuardStrength::Enforced))
+            .or_insert(GuardStrength::Enforced);
     }
 
     let mut covered = BTreeMap::new();

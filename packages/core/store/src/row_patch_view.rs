@@ -297,6 +297,64 @@ pub fn prop_written<T: NveTable, V: ScalarField>(written_masks: &[u32], prop: Pr
     true
 }
 
+/// Computes the safe word-0 explicit-mask `clear_mask` for an `#[nve_table(inherited)]` patch op,
+/// masking out undeclared bits, any field with a skipped word, and any set bit whose field's
+/// complete bit/word mask was not written in `applied_masks` (mirroring [`prop_written`]).
+pub(crate) fn effective_inherited_explicit_clear(
+    desc: &nve_abi::table::TableDesc,
+    op: WordOp,
+    skipped_words_mask: u32,
+    applied_masks: &[u32; MAX_TABLE_WORDS],
+) -> u32 {
+    let words_len = desc.words().min(MAX_TABLE_WORDS);
+    let set_bits = op.set_bits();
+    let field_count = desc.fields.len().min(32);
+    let valid_field_bits = if field_count == 32 {
+        u32::MAX
+    } else {
+        (1u32 << field_count) - 1
+    };
+    let mut masked_explicit_bits = 0u32;
+    for (b, f) in desc.fields.iter().take(32).enumerate() {
+        let fw = usize::from(f.word);
+        let mut field_words = if fw < words_len { 1u32 << fw } else { 0 };
+        if f.val_word != nve_abi::table::NO_VAL_WORD {
+            let vw = usize::from(f.val_word);
+            if vw < words_len {
+                field_words |= 1u32 << vw;
+            }
+        }
+        if f.bits == 64 && fw + 1 < words_len {
+            field_words |= 1u32 << (fw + 1);
+        }
+        let explicit_bit = 1u32 << b;
+        let any_skipped = (skipped_words_mask & field_words) != 0;
+        let fully_applied = if f.bits == 64 {
+            fw + 1 < words_len && applied_masks[fw] == u32::MAX && applied_masks[fw + 1] == u32::MAX
+        } else if f.val_word != nve_abi::table::NO_VAL_WORD {
+            let vw = usize::from(f.val_word);
+            fw < words_len
+                && vw < words_len
+                && f.shift < 32
+                && (applied_masks[fw] & (1u32 << f.shift)) != 0
+                && applied_masks[vw] == u32::MAX
+        } else if f.bits > 0 && f.bits <= 32 && usize::from(f.shift) + usize::from(f.bits) <= 32 {
+            let field_mask = if f.bits == 32 {
+                u32::MAX
+            } else {
+                ((1u32 << f.bits) - 1) << f.shift
+            };
+            fw < words_len && (applied_masks[fw] & field_mask) == field_mask
+        } else {
+            false
+        };
+        if any_skipped || ((set_bits & explicit_bit) != 0 && !fully_applied) {
+            masked_explicit_bits |= explicit_bit;
+        }
+    }
+    op.clear_mask().raw() & valid_field_bits & !masked_explicit_bits
+}
+
 impl FlatResource for RowPatch {
     const KIND: Key64 = Key64::of("nve.res.row_patch");
     type View<'a> = RowPatchView<'a>;

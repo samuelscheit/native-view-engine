@@ -17,7 +17,8 @@ enum BodyGuardKind {
 
 /// Extracts `[INV:<id>]` tags attached to active, non-ignored, non-`#[should_panic]` `#[test]`
 /// functions parsed via `syn::parse_file` whose body contains a reachable, non-tautological
-/// enforcing assertion, recording the strongest backing guard per ID.
+/// enforcing assertion, combining multiple guards per ID with weakest-link `.min(strength)`
+/// (`Ratcheted` dominates `Enforced`).
 pub fn extract_test_invariant_guards(src: &str) -> BTreeMap<String, GuardStrength> {
     let Ok(file) = syn::parse_file(src) else {
         return BTreeMap::new();
@@ -73,7 +74,7 @@ fn collect_item_guards(
                 for id in tags {
                     guards
                         .entry(id)
-                        .and_modify(|cur| *cur = (*cur).max(strength))
+                        .and_modify(|cur| *cur = (*cur).min(strength))
                         .or_insert(strength);
                 }
             }
@@ -221,67 +222,87 @@ fn classify_test_block(block: &syn::Block) -> BodyGuardKind {
 fn is_active_test_fn(item_fn: &syn::ItemFn) -> bool {
     let mut has_test = false;
     for attr in &item_fn.attrs {
-        if !matches!(attr.style, syn::AttrStyle::Outer) {
-            continue;
-        }
-        let path = attr.path();
-        if path_is_any(
-            path,
-            &[
-                &["test"],
-                &["core", "prelude", "v1", "test"],
-                &["std", "prelude", "v1", "test"],
-            ],
-        ) && matches!(attr.meta, syn::Meta::Path(_))
-        {
-            has_test = true;
-        }
         if is_disqualifying_test_attr(attr) {
             return false;
         }
+        if matches!(attr.style, syn::AttrStyle::Outer)
+            && path_is_any(
+                attr.path(),
+                &[
+                    &["test"],
+                    &["core", "prelude", "v1", "test"],
+                    &["std", "prelude", "v1", "test"],
+                ],
+            )
+            && matches!(attr.meta, syn::Meta::Path(_))
+        {
+            has_test = true;
+        }
     }
-    has_test && !has_disqualifying_cfg(&item_fn.attrs)
+    has_test
 }
 
-fn is_disqualifying_test_attr(attr: &syn::Attribute) -> bool {
-    let path = attr.path();
-    if path_is_any(
-        path,
-        &[
-            &["ignore"],
-            &["core", "prelude", "v1", "ignore"],
-            &["std", "prelude", "v1", "ignore"],
-            &["should_panic"],
-            &["core", "prelude", "v1", "should_panic"],
-            &["std", "prelude", "v1", "should_panic"],
-        ],
-    ) {
+/// Recursively inspects `meta` through any nested `cfg_attr(pred, inner...)` wrappers, returning
+/// `true` if `check` matches `meta` (or any nested inner meta), or if `cfg_attr` fails to parse.
+fn meta_matches_through_cfg_attr(meta: &syn::Meta, check: &dyn Fn(&syn::Meta) -> bool) -> bool {
+    if check(meta) {
         return true;
     }
-    if path.is_ident("cfg_attr") {
-        let Ok(metas) = attr.parse_args_with(
+    if meta.path().is_ident("cfg_attr") {
+        let syn::Meta::List(list) = meta else {
+            return true;
+        };
+        let Ok(metas) = list.parse_args_with(
             syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
         ) else {
             return true;
         };
-        return metas.iter().skip(1).any(|meta| {
-            let p = meta.path();
-            p.is_ident("ignore") || p.is_ident("should_panic") || p.is_ident("cfg")
-        });
+        return metas
+            .iter()
+            .skip(1)
+            .any(|inner| meta_matches_through_cfg_attr(inner, check));
     }
     false
 }
 
-/// Returns `true` if any `#[cfg(...)]` attribute is anything other than pure `#[cfg(test)]`
-/// (rejecting `#[cfg(any())]`, `#[cfg(not(test))]`, `#[cfg(feature = "...")]`, platform cfgs,
-/// and `#[cfg(all(test, ...))]` with extra conditions).
+fn is_disqualifying_cfg_meta(meta: &syn::Meta) -> bool {
+    if !meta.path().is_ident("cfg") {
+        return false;
+    }
+    let syn::Meta::List(list) = meta else {
+        return true;
+    };
+    !list
+        .parse_args::<syn::Meta>()
+        .is_ok_and(|inner| is_pure_cfg_test(&inner))
+}
+
+fn is_disqualifying_test_meta(meta: &syn::Meta) -> bool {
+    is_disqualifying_cfg_meta(meta)
+        || path_is_any(
+            meta.path(),
+            &[
+                &["ignore"],
+                &["core", "prelude", "v1", "ignore"],
+                &["std", "prelude", "v1", "ignore"],
+                &["should_panic"],
+                &["core", "prelude", "v1", "should_panic"],
+                &["std", "prelude", "v1", "should_panic"],
+            ],
+        )
+}
+
+fn is_disqualifying_test_attr(attr: &syn::Attribute) -> bool {
+    meta_matches_through_cfg_attr(&attr.meta, &is_disqualifying_test_meta)
+}
+
+/// Returns `true` if any `#[cfg(...)]` (including inside recursive `#[cfg_attr(..., ...)]`) is
+/// anything other than pure `#[cfg(test)]` (rejecting `#[cfg(any())]`, `#[cfg(not(test))]`,
+/// `#[cfg(feature = "...")]`, platform cfgs, and `#[cfg(all(test, ...))]` with extra conditions).
 fn has_disqualifying_cfg(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|attr| {
-        attr.path().is_ident("cfg")
-            && !attr
-                .parse_args::<syn::Meta>()
-                .is_ok_and(|meta| is_pure_cfg_test(&meta))
-    })
+    attrs
+        .iter()
+        .any(|attr| meta_matches_through_cfg_attr(&attr.meta, &is_disqualifying_cfg_meta))
 }
 
 fn is_pure_cfg_test(meta: &syn::Meta) -> bool {
@@ -422,14 +443,18 @@ fn compare_const_exprs(lhs: &syn::Expr, rhs: &syn::Expr) -> Option<bool> {
     None
 }
 
+fn suffix_compatible(a: &str, b: &str) -> bool {
+    a.is_empty() || b.is_empty() || a == b
+}
+
 fn lit_eq(a: &syn::Lit, b: &syn::Lit) -> bool {
     match (a, b) {
         (syn::Lit::Bool(x), syn::Lit::Bool(y)) => x.value == y.value,
         (syn::Lit::Int(x), syn::Lit::Int(y)) => {
-            x.base10_digits() == y.base10_digits() && x.suffix() == y.suffix()
+            x.base10_digits() == y.base10_digits() && suffix_compatible(x.suffix(), y.suffix())
         }
         (syn::Lit::Float(x), syn::Lit::Float(y)) => {
-            x.base10_digits() == y.base10_digits() && x.suffix() == y.suffix()
+            x.base10_digits() == y.base10_digits() && suffix_compatible(x.suffix(), y.suffix())
         }
         (syn::Lit::Str(x), syn::Lit::Str(y)) => x.value() == y.value(),
         (syn::Lit::ByteStr(x), syn::Lit::ByteStr(y)) => x.value() == y.value(),

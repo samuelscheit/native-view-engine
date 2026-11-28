@@ -550,4 +550,72 @@ fn background_fill_and_grid_tracks_reject_non_finite_and_negative_domain_floats(
     let mut valid_buf = Vec::new();
     assert!(valid_tracks.write_words(&mut valid_buf));
     assert!(GridTracks::validate(&valid_buf));
+
+    // 3. BoxShadows: NaN/+inf/-inf geometry, negative blur_radius, invalid wire inset > 1,
+    //    and zero-reserve pre-validation on invalid producer inputs.
+    let black = Rgba::BLACK;
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        for field_idx in 0..4usize {
+            let mut raw = [1u32, 0, 0, 0, 0, black.0, 0];
+            raw[1 + field_idx] = bad.to_bits();
+            assert!(!BoxShadows::validate(&raw));
+        }
+        for bad_shadow in [
+            BoxShadow { offset_x: bad, offset_y: 0.0, blur_radius: 0.0, spread_radius: 0.0, color: black, inset: false },
+            BoxShadow { offset_x: 0.0, offset_y: bad, blur_radius: 0.0, spread_radius: 0.0, color: black, inset: false },
+            BoxShadow { offset_x: 0.0, offset_y: 0.0, blur_radius: bad, spread_radius: 0.0, color: black, inset: false },
+            BoxShadow { offset_x: 0.0, offset_y: 0.0, blur_radius: 0.0, spread_radius: bad, color: black, inset: false },
+        ] {
+            let mut empty_out = Vec::new();
+            assert!(!BoxShadows::new(vec![bad_shadow]).write_words(&mut empty_out));
+            assert_eq!(empty_out.capacity(), 0, "BoxShadows::write_words must not reserve on invalid float");
+            let mut out = vec![0xCAFEu32];
+            assert!(!BoxShadows::new(vec![bad_shadow]).write_words(&mut out));
+            assert_eq!(out, vec![0xCAFE]);
+        }
+    }
+    // Negative blur_radius rejected on wire validate and producer write_words without reserving.
+    assert!(!BoxShadows::validate(&[
+        1,
+        0,
+        0,
+        (-0.5f32).to_bits(),
+        0,
+        black.0,
+        0,
+    ]));
+    let neg_blur = BoxShadow {
+        offset_x: 1.0,
+        offset_y: 2.0,
+        blur_radius: -0.5,
+        spread_radius: 0.0,
+        color: black,
+        inset: false,
+    };
+    let mut empty_sh = Vec::new();
+    assert!(!BoxShadows::new(vec![neg_blur]).write_words(&mut empty_sh));
+    assert_eq!(empty_sh.capacity(), 0, "BoxShadows::write_words must not reserve on negative blur");
+    let mut non_empty_sh = vec![123u32];
+    assert!(!BoxShadows::new(vec![neg_blur]).write_words(&mut non_empty_sh));
+    assert_eq!(non_empty_sh, vec![123]);
+
+    // Invalid wire inset flag (> 1) rejected by BoxShadows::validate.
+    assert!(!BoxShadows::validate(&[1, 0, 0, 0, 0, black.0, 2]));
+    assert!(!BoxShadows::validate(&[1, 0, 0, 0, 0, black.0, u32::MAX]));
+
+    // Valid BoxShadows including 0 blur, negative offsets/spread, and inset=true pass.
+    let valid_shadows = BoxShadows::new(vec![
+        BoxShadow {
+            offset_x: -4.0,
+            offset_y: -2.0,
+            blur_radius: 0.0,
+            spread_radius: -1.5,
+            color: Rgba::new(10, 20, 30, 128),
+            inset: true,
+        },
+        BoxShadow::new(0.0, 4.0, 12.0, Rgba::BLACK),
+    ]);
+    let mut valid_sh_buf = Vec::new();
+    assert!(valid_shadows.write_words(&mut valid_sh_buf));
+    assert!(BoxShadows::validate(&valid_sh_buf));
 }

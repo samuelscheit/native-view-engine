@@ -480,6 +480,25 @@ fn spec_invariant_ids_have_mechanical_guards() {
         report.spec_count,
         "every covered spec invariant must be classified honestly as Enforced or Ratcheted",
     );
+    let ratcheted_violations: Vec<Violation> = report
+        .covered
+        .iter()
+        .filter(|(_, strength)| **strength == spec_registry::GuardStrength::Ratcheted)
+        .map(|(id, _)| {
+            Violation::new(
+                "AGENTS.md",
+                0,
+                format!("[INV:{id}]"),
+                format!("Spec invariant `[INV:{id}]` is backed by a staged ratchet rather than zero-tolerance Enforced"),
+            )
+        })
+        .collect();
+    assert_staged_ratchet(
+        Stage::Post1B1D,
+        "Spec invariants backed by a staged ratchet instead of zero-tolerance Enforced",
+        4,
+        &ratcheted_violations,
+    );
 }
 
 /// The static host runtimes (`packages/core/host-*`) mirror status codes, `FieldKind`, value tags,
