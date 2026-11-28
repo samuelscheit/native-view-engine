@@ -182,10 +182,16 @@ impl WebBackend {
                     // A fallback move (removes/reinserts subtree -> top layer exits) or attaching
                     // a previously unparented subtree into a connected parent needs Step-6 sync
                     // across the whole subtree so unchanged open overlays enter the top layer.
+                    // Childless newly created leaves already committed in Step 4 and are skipped.
                     if !crate::dom_move::place_child(&parent_el, child_el, ref_node)
                         && parent_el.is_connected()
+                        && crate::table_system::needs_connected_sync_on_place(
+                            &self.created_scratch,
+                            store,
+                            cid,
+                        )
                     {
-                        self.renderer.queue_connected_sync_subtree(store, cid);
+                        let _ = self.renderer.queue_connected_sync_subtree(store, cid);
                     }
                 }
             }
@@ -218,7 +224,7 @@ impl WebBackend {
     fn retag_live(&mut self, store: &NodeStore, id: NodeId, old: &web_sys::Element, fresh: &web_sys::Element) {
         if !crate::dom_move::retag_element(old, fresh) {
             for &child in store.children(id) {
-                self.renderer.queue_connected_sync_subtree(store, child);
+                let _ = self.renderer.queue_connected_sync_subtree(store, child);
             }
         }
         self.live_elements.insert(id, fresh.clone());

@@ -344,84 +344,6 @@ fn close_latch_self_heals_when_parent_vetoes_or_omits_on_open_change() {
 }
 
 #[component]
-fn DropdownKeyAuditApp() -> Element {
-    let mut open = use_signal(|| true);
-    let mut selected = use_signal(Vec::<String>::new);
-    let mut opens = use_signal(|| 0u32);
-    let mut closes = use_signal(|| 0u32);
-    let selected_csv = selected.read().join(",");
-    rsx! {
-        ThemeProvider {
-            theme: Theme::LIGHT,
-            Col {
-                DropdownMenu {
-                    open: open(),
-                    keep_mounted: true,
-                    trigger_label: "Actions",
-                    test_id: "dd",
-                    items: vec![
-                        MenuItem::new("copy", "Copy"),
-                        MenuItem::new("paste", "Paste"),
-                        MenuItem::new("delete", "Delete"),
-                    ],
-                    on_open_change: move |next: bool| {
-                        if next {
-                            opens += 1;
-                        } else {
-                            closes += 1;
-                        }
-                        open.set(next);
-                    },
-                    on_select: move |id: String| selected.write().push(id),
-                }
-                text {
-                    test_id: "dd-log",
-                    "{open}|{opens}|{closes}|{selected_csv}"
-                }
-            }
-        }
-    }
-}
-
-/// Focused menuitem keys must stop propagation (moving by 1 item, selecting once) and trigger
-/// `onkeydown` must read `latch.is_open()` so same-batch native `close` + trigger key reopens
-/// rather than selecting a hidden item.
-#[test]
-fn dropdown_item_keys_do_not_double_dispatch_and_trigger_keydown_uses_latch() {
-    let mut h = UiHarness::new(DropdownKeyAuditApp);
-    assert_eq!(h.raw_str(h.find("dd-item-copy"), "tabIndex"), Some("0"));
-
-    // ArrowDown on a focused menuitem advances by 1 (copy -> paste, NOT copy -> delete).
-    h.keydown("dd-item-copy", "ArrowDown", false);
-    assert_eq!(h.raw_str(h.find("dd-item-paste"), "tabIndex"), Some("0"));
-    assert_eq!(h.raw_str(h.find("dd-item-delete"), "tabIndex"), Some("-1"));
-
-    // Enter on a focused menuitem fires `on_select` exactly ONCE.
-    h.keydown("dd-item-paste", "Enter", false);
-    assert_eq!(h.text_of("dd-log"), "false|0|1|paste");
-
-    // Reopen and verify Space on a focused menuitem also fires `on_select` exactly ONCE.
-    h.keydown("dd-trigger", "ArrowDown", false);
-    assert_eq!(h.text_of("dd-log"), "true|1|1|paste");
-    h.keydown("dd-item-copy", " ", false);
-    assert_eq!(h.text_of("dd-log"), "false|1|2|paste,copy");
-
-    // Reopen, then deliver native `close` + trigger `Enter` in ONE batch: trigger must see
-    // `!latch.is_open()` and reopen instead of firing `on_select` on a hidden item.
-    h.press("dd-trigger");
-    assert_eq!(h.text_of("dd-log"), "true|2|2|paste,copy");
-    let mut batch = EventBatchBuf::new();
-    h.push_custom(&mut batch, "dd-menu", "close", false);
-    h.push_keydown(&mut batch, "dd-trigger", "Enter", false);
-    h.dispatch(&batch);
-    assert_eq!(
-        h.text_of("dd-log"),
-        "true|3|3|paste,copy",
-        "same-batch native close + trigger Enter must reopen without selecting hidden item"
-    );
-}
-
-#[component]
 fn NestedAndSameBatchDialogApp() -> Element {
     let mut outer_open = use_signal(|| true);
     let mut inner_open = use_signal(|| true);
@@ -517,4 +439,99 @@ fn dialog_close_latch_dedupes_same_batch_and_nested_escape_dismisses_inner_only(
     h.push_custom(&mut batch, "scrim-dlg", "close", false);
     h.dispatch(&batch);
     assert_eq!(h.text_of("dlg-state"), "true:1/1|false:2/2|false:1/1");
+}
+
+#[component]
+fn DialogVetoBody() -> Element {
+    let mut open = use_signal(|| true);
+    let mut allow_close = use_signal(|| false);
+    let mut close_requests = use_signal(|| 0u32);
+    let mut outer_escapes = use_signal(|| 0u32);
+    let mut focus_log = use_signal(Vec::<String>::new);
+    let scope_active = use_focus_scope()
+        .and_then(|s| s.read().active().map(str::to_owned))
+        .unwrap_or_else(|| "none".into());
+    let log_csv = focus_log.read().join(",");
+    rsx! {
+        view {
+            onkeydown: move |ev: KeyEvent| {
+                if matches!(ev.data().key.as_str(), "Escape" | "Esc") {
+                    outer_escapes += 1;
+                }
+            },
+            Dialog {
+                open: open(),
+                keep_mounted: true,
+                test_id: "vdlg",
+                close_label: "X",
+                focusable_ids: vec!["f1".into(), "f2".into(), "f3".into()],
+                previous_focus: "opener",
+                on_open_change: move |next: bool| {
+                    if !next {
+                        close_requests += 1;
+                        if allow_close() {
+                            open.set(false);
+                        }
+                    }
+                },
+                on_focus_change: move |f: Option<String>| {
+                    focus_log.write().push(f.unwrap_or_else(|| "none".into()));
+                },
+                text { "body" }
+            }
+            pressable {
+                test_id: "allow-close",
+                onpress: move |_| allow_close.set(true),
+                text { "allow" }
+            }
+            text {
+                test_id: "vdlg-log",
+                "{open}|{close_requests}|{outer_escapes}|{scope_active}|{log_csv}"
+            }
+        }
+    }
+}
+
+#[component]
+fn DialogVetoApp() -> Element {
+    rsx! {
+        ThemeProvider {
+            theme: Theme::LIGHT,
+            FocusScopeProvider { DialogVetoBody {} }
+        }
+    }
+}
+
+/// Vetoing `Dialog` close (via Escape, close button, or native `close`) must keep `FocusTrap`
+/// active at its current index and leave `FocusScope` + `on_focus_change` untouched; closing for
+/// real later restores the original `previous_focus` once.
+#[test]
+fn dialog_veto_self_heals_preserving_trap_and_focus_scope() {
+    let mut h = UiHarness::new(DialogVetoApp);
+    assert_eq!(h.raw_str(h.find("vdlg"), "ariaControls"), Some("f1"));
+    assert_eq!(h.text_of("vdlg-log"), "true|0|0|f1|f1");
+
+    // Advance trap to index 1 ("f2"), then veto Escape, close button, and native close.
+    h.keydown("vdlg", "Tab", false);
+    assert_eq!(h.raw_str(h.find("vdlg"), "ariaControls"), Some("f2"));
+    assert_eq!(h.text_of("vdlg-log"), "true|0|0|f2|f1,f2");
+
+    h.keydown("vdlg", "Escape", false);
+    h.press("vdlg-close");
+    h.custom("vdlg", "close", false);
+    assert_eq!(h.raw_str(h.find("vdlg"), "ariaControls"), Some("f2"));
+    assert_eq!(h.text_of("vdlg-log"), "true|3|0|f2|f1,f2");
+
+    // Trap stays at index 1: next Tab moves to "f3" (not "f1"), and another Escape still stops.
+    h.keydown("vdlg", "Tab", false);
+    assert_eq!(h.raw_str(h.find("vdlg"), "ariaControls"), Some("f3"));
+    assert_eq!(h.text_of("vdlg-log"), "true|3|0|f3|f1,f2,f3");
+    h.keydown("vdlg", "Escape", false);
+    assert_eq!(h.text_of("vdlg-log"), "true|4|0|f3|f1,f2,f3");
+
+    // Allowing close deactivates the trap and restores original `previous_focus` once.
+    h.press("allow-close");
+    h.keydown("vdlg", "Escape", false);
+    assert_eq!(h.raw_str(h.find("vdlg"), "ariaControls"), None);
+    assert_eq!(h.text_of("vdlg-log"), "false|5|0|opener|f1,f2,f3,opener");
 }

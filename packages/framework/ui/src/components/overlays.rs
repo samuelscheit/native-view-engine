@@ -87,25 +87,17 @@ pub fn Dialog(
         if let Some(handler) = on_focus_change {
             handler.call(initial_focus);
         }
-    } else if latch.closed {
-        if trap.peek().is_open() {
-            let restored = {
-                let mut t = trap.write_unchecked();
-                t.deactivate()
-            };
-            if let Some(ref fid) = restored {
-                notify_focus_scope(fid);
-            }
-            if let Some(handler) = on_focus_change {
-                handler.call(restored);
-            }
+    } else if latch.closed && trap.peek().is_open() {
+        let restored = {
+            let mut t = trap.write_unchecked();
+            t.deactivate()
+        };
+        if let Some(ref fid) = restored {
+            notify_focus_scope(fid);
         }
-    } else if open && !trap.peek().is_open() {
-        // Parent vetoed a dismiss (or omitted callbacks): re-arm the trap silently for the next
-        // `Tab`/`Escape` without firing a spurious `on_focus_change`.
-        let prev = previous_focus.clone().or_else(current_focused_id);
-        let mut t = trap.write_unchecked();
-        let _ = t.activate(prev);
+        if let Some(handler) = on_focus_change {
+            handler.call(restored);
+        }
     }
 
     let has_invoker = trigger_label.is_some();
@@ -205,16 +197,11 @@ pub fn Dialog(
 
     // Every dismissal path (close button, scrim, `Escape`, native `close`) funnels through here,
     // gated by `CloseLatch` so same-batch app + native closes fire at most once per open period.
-    let mut dismiss = move |pre_restored: Option<Option<String>>| -> bool {
+    // `FocusTrap` deactivation and focus restoration run on `latch.closed` (actual `open: true ->
+    // false`) so a parent that vetoes close preserves active trap focus and `FocusScope` intact.
+    let dismiss = move || -> bool {
         if !latch.is_open() {
             return false;
-        }
-        let restored = pre_restored.unwrap_or_else(|| trap.write().deactivate());
-        if let Some(ref fid) = restored {
-            notify_focus_scope(fid);
-        }
-        if let Some(handler) = on_focus_change {
-            handler.call(restored);
         }
         let _ = latch.close(on_open_change);
         if let Some(handler) = on_close {
@@ -264,28 +251,31 @@ pub fn Dialog(
             // delivered target-only like the DOM `close`; gated by `CloseLatch` against same-batch
             // app-driven closes.
             onclose: move |_: CustomEvent| {
-                let _ = dismiss(None);
+                let _ = dismiss();
             },
             onkeydown: move |ev: KeyEvent| {
                 if !latch.is_open() {
                     return;
                 }
                 let data = ev.data();
-                let action = trap.write().handle_key(&data.key, data.shift);
-                match action {
-                    FocusTrapAction::FocusChanged(next_id) => {
-                        ev.stop_propagation();
-                        notify_focus_scope(&next_id);
-                        if let Some(handler) = on_focus_change {
-                            handler.call(Some(next_id));
-                        }
-                    }
-                    FocusTrapAction::Dismiss { restore_focus } => {
-                        if dismiss(Some(restore_focus)) {
+                match data.key.as_str() {
+                    "Escape" | "Esc" if close_on_escape => {
+                        if dismiss() {
                             ev.stop_propagation();
                         }
                     }
-                    FocusTrapAction::Ignored => {}
+                    "Tab" => {
+                        if let FocusTrapAction::FocusChanged(next_id) =
+                            trap.write().handle_key(&data.key, data.shift)
+                        {
+                            ev.stop_propagation();
+                            notify_focus_scope(&next_id);
+                            if let Some(handler) = on_focus_change {
+                                handler.call(Some(next_id));
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             },
             if let Some(ref heading) = title {
@@ -311,7 +301,7 @@ pub fn Dialog(
                     tab_index: 0,
                     nve_style: trigger_style.clone(),
                     onpress: move |_| {
-                        let _ = dismiss(None);
+                        let _ = dismiss();
                     },
                     text {
                         nve_style: trigger_text_style.clone(),
@@ -356,7 +346,7 @@ pub fn Dialog(
             nve_style: backdrop_style,
             onpress: move |_| {
                 if close_on_backdrop {
-                    let _ = dismiss(None);
+                    let _ = dismiss();
                 }
             },
             {dialog_el}
@@ -523,7 +513,10 @@ pub fn Popover(
                         "Escape" | "Esc" if close_on_escape => {
                             latch.close_on_escape(&ev, on_open_change);
                         }
-                        "Enter" | " " | "Space" => latch.toggle(on_open_change),
+                        "Enter" | " " | "Space" => {
+                            ev.stop_propagation();
+                            latch.toggle(on_open_change);
+                        }
                         _ => {}
                     }
                 },

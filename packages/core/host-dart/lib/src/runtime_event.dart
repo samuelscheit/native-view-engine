@@ -56,7 +56,7 @@ final class RuntimeEvent {
           nodeId: nodeId,
           timestampUs: timestampUs,
           timestamp: timestamp,
-          flags: (flags & ~_internalFramingMask) | nveEventFlagCustomNamed,
+          flags: ((flags & ~_internalFramingMask) | nveEventFlagCustomNamed) & 0xFFFFFFFF,
           name: name,
           data: data,
           value: value,
