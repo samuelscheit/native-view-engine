@@ -28,6 +28,8 @@ mod registry;
 #[path = "table_system_ssr.rs"]
 mod ssr;
 
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) use ctx::needs_connected_sync_on_place;
 #[cfg(test)]
 pub(crate) use ctx::RetagElementSink;
 #[cfg(target_arch = "wasm32")]
@@ -70,15 +72,19 @@ pub struct WebStoreRenderer {
     /// `retagged` is non-empty) so Step 2b skips already-committed slots in O(1).
     #[cfg(any(target_arch = "wasm32", test))]
     retag_committed_scratch: nve_abi::hash::HashSet<(TableSlot, NodeId)>,
-    /// `(slot, node)` pairs queued by [`WebSystemCommitCtx::request_connected_sync`].
-    #[cfg(target_arch = "wasm32")]
+    /// `(slot, node)` pairs queued by [`WebSystemCommitCtx::request_connected_sync`] or subtree sync.
+    #[cfg(any(target_arch = "wasm32", test))]
     connected_sync: Vec<(TableSlot, NodeId)>,
     /// Reusable drain-time dedupe set for `connected_sync`.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", test))]
     connected_seen: nve_abi::hash::HashSet<(TableSlot, NodeId)>,
     /// Reusable DFS scratch stack for `queue_connected_sync_subtree`.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", test))]
     connected_stack: Vec<NodeId>,
+    /// Reusable per-commit visited guard for `queue_connected_sync_subtree` (keeps top-down mounts
+    /// $O(N)$ instead of $O(N \cdot D)$; cleared once per commit in `drain_connected_sync`).
+    #[cfg(any(target_arch = "wasm32", test))]
+    connected_visited: nve_abi::hash::HashSet<NodeId>,
     pub events: EventBatchBuf,
     pub composite_fast_lane_hits: u64,
     pub full_style_rebuilds: u64,
@@ -275,7 +281,7 @@ impl WebStoreRenderer {
             write_seq: &mut self.write_seq,
             #[cfg(target_arch = "wasm32")]
             live_element,
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(any(target_arch = "wasm32", test))]
             connected_sync: &mut self.connected_sync,
         }
     }
@@ -524,12 +530,14 @@ impl StoreBackend for WebStoreRenderer {
         self.write_seq = 0;
         #[cfg(any(target_arch = "wasm32", test))]
         self.retag_committed_scratch.clear();
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(any(target_arch = "wasm32", test))]
         self.connected_sync.clear();
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(any(target_arch = "wasm32", test))]
         self.connected_seen.clear();
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(any(target_arch = "wasm32", test))]
         self.connected_stack.clear();
+        #[cfg(any(target_arch = "wasm32", test))]
+        self.connected_visited.clear();
         self.events.clear();
     }
 }

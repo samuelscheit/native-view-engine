@@ -345,34 +345,7 @@ impl StoreMutationTx<'_, '_> {
             "ariaControls" | "aria-controls" | "aria_controls" | "ariaLabelledBy"
             | "aria-labelledby" | "aria_labelledby" | "ariaDescribedBy" | "aria-describedby"
             | "aria_describedby" | "ariaActiveDescendant" | "aria-activedescendant"
-            | "aria_activedescendant" => {
-                let mut rel = self
-                    .tx
-                    .store()
-                    .try_row::<Accessibility>(node)
-                    .and_then(|a| {
-                        let r = a.relations();
-                        (!r.is_none())
-                            .then(|| self.tx.store().resource::<AriaRelations>(r).map(|v| v.to_owned()))
-                            .flatten()
-                    })
-                    .unwrap_or_default();
-                match name {
-                    "ariaControls" | "aria-controls" | "aria_controls" => {
-                        rel.controls = value.to_owned();
-                    }
-                    "ariaLabelledBy" | "aria-labelledby" | "aria_labelledby" => {
-                        rel.labelled_by = value.to_owned();
-                    }
-                    "ariaDescribedBy" | "aria-describedby" | "aria_describedby" => {
-                        rel.described_by = value.to_owned();
-                    }
-                    _ => {
-                        rel.active_descendant = value.to_owned();
-                    }
-                }
-                self.tx.edit::<Accessibility>(node).relations(Some(rel));
-            }
+            | "aria_activedescendant" => self.set_aria_relation(node, name, value),
             "ariaModal" | "aria-modal" | "aria_modal" | "ariaInvalid" | "aria-invalid"
             | "aria_invalid" | "ariaDisabled" | "aria-disabled" | "aria_disabled"
             | "ariaMultiSelectable" | "aria-multiselectable" | "aria_multiselectable" => {
@@ -513,8 +486,46 @@ impl StoreMutationTx<'_, '_> {
             {
                 self.tx.edit::<Accessibility>(node).invalid(false);
             }
+            "ariaControls" | "aria-controls" | "aria_controls" | "ariaLabelledBy"
+            | "aria-labelledby" | "aria_labelledby" | "ariaDescribedBy" | "aria-describedby"
+            | "aria_describedby" | "ariaActiveDescendant" | "aria-activedescendant"
+            | "aria_activedescendant"
+                if self.tx.store().has::<Accessibility>(node) =>
+            {
+                self.set_aria_relation(node, name, "");
+            }
             _ => {}
         }
+    }
+
+    fn set_aria_relation(&mut self, node: NodeId, name: &str, value: &str) {
+        let mut rel = self
+            .tx
+            .store()
+            .try_row::<Accessibility>(node)
+            .and_then(|a| {
+                let r = a.relations();
+                (!r.is_none())
+                    .then(|| self.tx.store().resource::<AriaRelations>(r).map(|v| v.to_owned()))
+                    .flatten()
+            })
+            .unwrap_or_default();
+        match name {
+            "ariaControls" | "aria-controls" | "aria_controls" => rel.controls = value.to_owned(),
+            "ariaLabelledBy" | "aria-labelledby" | "aria_labelledby" => {
+                rel.labelled_by = value.to_owned();
+            }
+            "ariaDescribedBy" | "aria-describedby" | "aria_describedby" => {
+                rel.described_by = value.to_owned();
+            }
+            _ => rel.active_descendant = value.to_owned(),
+        }
+        let next = (!rel.controls.is_empty()
+            || !rel.labelled_by.is_empty()
+            || !rel.described_by.is_empty()
+            || !rel.active_descendant.is_empty())
+            .then_some(rel);
+        self.tx.edit::<Accessibility>(node).relations(next);
     }
 }
 

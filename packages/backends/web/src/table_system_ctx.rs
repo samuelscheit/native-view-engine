@@ -3,7 +3,7 @@
 use nve_abi::hash::HashMap;
 use nve_store::{EventBatchBuf, NodeId, TableSlot};
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 use crate::table_system::WebStoreRenderer;
 use crate::table_system::WebTableRegistry;
 
@@ -54,7 +54,20 @@ impl ClickInterceptors {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+/// Whether placing `cid` via a non-state-preserving insert into a connected parent needs a
+/// connected-sync subtree walk. Childless newly created leaves already committed in Step 4 (where
+/// plugins call `request_connected_sync` when needed) and have no pre-existing descendants.
+#[cfg(any(target_arch = "wasm32", test))]
+#[inline]
+pub(crate) fn needs_connected_sync_on_place(
+    created: &nve_abi::hash::HashSet<NodeId>,
+    store: &nve_store::NodeStore,
+    cid: NodeId,
+) -> bool {
+    !(created.contains(&cid) && store.children(cid).is_empty())
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
 impl WebStoreRenderer {
     /// Queues [`super::WebTableSystem::sync_connected`] for every plugin table on `node` (its
     /// element was retagged, so imperative state such as the top layer must be re-applied).
@@ -66,41 +79,74 @@ impl WebStoreRenderer {
         }
     }
 
-    /// [`Self::queue_connected_sync_node`] for `root` and every descendant: a fallback DOM move
-    /// of `root` ran the removing steps on its whole subtree (a `Dialog`'s scrim wrapper moving
-    /// evicts the `<dialog>` inside it from the top layer).
-    pub(crate) fn queue_connected_sync_subtree(&mut self, store: &nve_store::NodeStore, root: NodeId) {
-        if self.registry.iter().is_empty() {
-            return;
+    /// [`Self::queue_connected_sync_node`] for `root` and every descendant not yet visited during
+    /// this commit: a fallback DOM move of `root` ran the removing steps on its whole subtree (a
+    /// `Dialog`'s scrim wrapper moving evicts the `<dialog>` inside it from the top layer). The
+    /// reusable per-commit `connected_visited` set ensures $O(N)$ worst-case traversal even on
+    /// top-down `NVE2` child lists, with zero steady-state allocations. Returns newly visited count.
+    pub(crate) fn queue_connected_sync_subtree(
+        &mut self,
+        store: &nve_store::NodeStore,
+        root: NodeId,
+    ) -> usize {
+        if self.registry.iter().is_empty() || !self.connected_visited.insert(root) {
+            return 0;
         }
         let mut stack = std::mem::take(&mut self.connected_stack);
         stack.clear();
         stack.push(root);
+        let mut visited = 0usize;
         while let Some(node) = stack.pop() {
+            visited += 1;
             self.queue_connected_sync_node(store, node);
-            stack.extend(store.children(node).iter().rev());
+            for &child in store.children(node).iter().rev() {
+                if self.connected_visited.insert(child) {
+                    stack.push(child);
+                }
+            }
         }
         self.connected_stack = stack;
+        visited
+    }
+
+    /// Target-neutral connected-sync drainer shared by `wasm32` Step 6 and native unit tests.
+    /// Clears the per-commit `connected_visited` guard and invokes `on_sync` once per `(slot, node)`
+    /// (first-queued order, so top-layer stacking follows request order) for still-live nodes.
+    pub(crate) fn drain_connected_sync<E>(
+        &mut self,
+        store: &nve_store::NodeStore,
+        live: &HashMap<NodeId, E>,
+        mut on_sync: impl FnMut(&dyn crate::table_system::WebTableSystem, NodeId, &E),
+    ) {
+        if !self.connected_visited.is_empty() {
+            self.connected_visited.clear();
+        }
+        if !self.connected_seen.is_empty() {
+            self.connected_seen.clear();
+        }
+        for entry @ (slot, node) in self.connected_sync.drain(..) {
+            if self.connected_seen.insert(entry)
+                && store.is_live(node)
+                && let (Some(sys), Some(el)) = (self.registry.get(slot), live.get(&node))
+            {
+                on_sync(sys.as_ref(), node, el);
+            }
+        }
     }
 
     /// Drains the queued connected syncs once the commit has connected and placed every element,
     /// calling [`super::WebTableSystem::sync_connected`] once per `(slot, node)` (first-queued
     /// order, so top-layer stacking follows request order) for still-live nodes. Pushes never
     /// scan; duplicates coalesce here in O(1) each.
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn sync_connected_plugins(
         &mut self,
         store: &nve_store::NodeStore,
         live: &HashMap<NodeId, web_sys::Element>,
     ) {
-        self.connected_seen.clear();
-        for entry @ (slot, node) in self.connected_sync.drain(..) {
-            if self.connected_seen.insert(entry)
-                && store.is_live(node)
-                && let (Some(sys), Some(el)) = (self.registry.get(slot), live.get(&node))
-            {
-                sys.sync_connected(store, node, el);
-            }
-        }
+        self.drain_connected_sync(store, live, |sys, node, el| {
+            sys.sync_connected(store, node, el);
+        });
     }
 }
 
@@ -131,7 +177,7 @@ pub struct WebSystemCommitCtx<'a> {
     pub(crate) write_seq: &'a mut u64,
     #[cfg(target_arch = "wasm32")]
     pub live_element: Option<&'a web_sys::Element>,
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", test))]
     pub(crate) connected_sync: &'a mut Vec<(TableSlot, NodeId)>,
 }
 
@@ -351,7 +397,7 @@ impl WebSystemCommitCtx<'_> {
     /// once child reconciliation has connected and placed every element (a Step-5 move would
     /// otherwise evict state applied earlier, e.g. `:modal`). Duplicate requests coalesce at
     /// drain time.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", test))]
     pub fn request_connected_sync(&mut self, node: NodeId) {
         self.connected_sync.push((self.current_slot, node));
     }

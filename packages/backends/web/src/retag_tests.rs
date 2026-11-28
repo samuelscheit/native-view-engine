@@ -4,11 +4,11 @@
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use nve_abi::hash::HashMap;
+use nve_abi::hash::{HashMap, HashSet};
 use nve_engine::StoreBackend;
 use nve_store::{ChangeSet, NodeId, NodeStore, NveTable, TableSlot};
 
-use crate::table_system::RetagElementSink;
+use crate::table_system::{needs_connected_sync_on_place, RetagElementSink};
 use crate::{WebStoreRenderer, WebSystemCommitCtx, WebTableSystem};
 
 #[derive(Default)]
@@ -429,4 +429,110 @@ fn retag_replay_gates_inline_css_and_inner_html_by_write_seq() {
         "same-commit inner_html must not replay twice: {:?}",
         live[&b].inner_html.borrow()
     );
+}
+
+/// Top-down `NVE2` mounts call `queue_connected_sync_subtree` at every parent->child level along a
+/// deep chain: the per-commit `connected_visited` set must cap total visits at $O(N)$ (each node
+/// visited once, never $O(N^2)$), childless newly created leaves are skipped at placement, and
+/// previously detached subtrees (and subsequent commits after drain) still sync every plugin node.
+#[test]
+fn connected_sync_subtree_top_down_chain_is_linear_and_resyncs_detached_attach() {
+    static WATCHED: AtomicU32 = AtomicU32::new(0);
+    const DEPTH: usize = 200;
+    let mut store = NodeStore::new();
+    let mut renderer = WebStoreRenderer::new().with_table_system(DisclosureSys {
+        watched_commits: &WATCHED,
+    });
+    let mut chain = Vec::with_capacity(DEPTH);
+    let changes = frame(&mut store, |tx| {
+        let mut parent = NodeId::ROOT;
+        for i in 0..DEPTH {
+            let n = tx.create();
+            tx.set_children(parent, &[n]);
+            if i == 0 || i == DEPTH / 2 || i == DEPTH - 1 {
+                tx.edit::<Disclosure>(n).imperative(true).open(true);
+            }
+            chain.push(n);
+            parent = n;
+        }
+    });
+    renderer.commit(&store, &changes).unwrap();
+
+    let created: HashSet<NodeId> = changes.created.iter().copied().collect();
+    let mut live: HashMap<NodeId, MockEl> = HashMap::default();
+    for &n in &chain {
+        live.insert(n, MockEl::default());
+    }
+    // Newly created childless leaf is skipped at placement (Step 4 already committed it), while
+    // newly created internal nodes are still walked in case they adopt pre-existing descendants.
+    assert!(!needs_connected_sync_on_place(&created, &store, chain[DEPTH - 1]));
+    assert!(needs_connected_sync_on_place(&created, &store, chain[0]));
+
+    // Simulate top-down `changes.children` order: ROOT -> chain[0] -> chain[1] -> ... -> chain[N-1].
+    let mut total_visits = 0usize;
+    for &cid in &chain {
+        if needs_connected_sync_on_place(&created, &store, cid) {
+            total_visits += renderer.queue_connected_sync_subtree(&store, cid);
+        }
+    }
+    assert_eq!(
+        total_visits, DEPTH,
+        "top-down chain of {DEPTH} nodes must visit each node at most once (not O(N^2))"
+    );
+
+    let mut synced = Vec::new();
+    renderer.drain_connected_sync(&store, &live, |sys, nid, _| synced.push((sys.slot(), nid)));
+    assert_eq!(
+        synced,
+        vec![
+            (Disclosure::slot(), chain[0]),
+            (Disclosure::slot(), chain[DEPTH / 2]),
+            (Disclosure::slot(), chain[DEPTH - 1]),
+        ],
+        "every plugin node along the chain syncs once in top-down order"
+    );
+
+    // Commit A: build an unparented wrapper subtree AND a standalone detached leaf.
+    let (mut wrapper, mut detached_dlg, mut solo_dlg) = (NodeId::ROOT, NodeId::ROOT, NodeId::ROOT);
+    let changes = frame(&mut store, |tx| {
+        wrapper = tx.create();
+        detached_dlg = tx.create();
+        solo_dlg = tx.create();
+        tx.edit::<Disclosure>(detached_dlg).imperative(true).open(true);
+        tx.edit::<Disclosure>(solo_dlg).imperative(true).open(true);
+        tx.set_children(wrapper, &[detached_dlg]);
+    });
+    renderer.commit(&store, &changes).unwrap();
+    for n in [wrapper, detached_dlg, solo_dlg] {
+        live.insert(n, MockEl::default());
+    }
+    renderer.drain_connected_sync(&store, &live, |_, _, _| {});
+
+    // Commit B: attach both previously detached subtrees with ZERO edits to them (`created` empty).
+    let changes = frame(&mut store, |tx| {
+        tx.set_children(NodeId::ROOT, &[chain[0], wrapper, solo_dlg]);
+    });
+    renderer.commit(&store, &changes).unwrap();
+    let empty_created: HashSet<NodeId> = HashSet::default();
+    assert!(needs_connected_sync_on_place(&empty_created, &store, wrapper));
+    assert!(needs_connected_sync_on_place(&empty_created, &store, solo_dlg));
+    assert_eq!(renderer.queue_connected_sync_subtree(&store, wrapper), 2);
+    assert_eq!(renderer.queue_connected_sync_subtree(&store, solo_dlg), 1);
+    synced.clear();
+    renderer.drain_connected_sync(&store, &live, |sys, nid, _| synced.push((sys.slot(), nid)));
+    assert_eq!(
+        synced,
+        vec![
+            (Disclosure::slot(), detached_dlg),
+            (Disclosure::slot(), solo_dlg),
+        ],
+        "attaching previously detached subtrees (and leaves) syncs every plugin node"
+    );
+
+    // Commit C: `connected_visited` was cleared by `drain_connected_sync`, so a subsequent fallback
+    // move of `wrapper` re-walks and re-syncs `detached_dlg` again.
+    assert_eq!(renderer.queue_connected_sync_subtree(&store, wrapper), 2);
+    synced.clear();
+    renderer.drain_connected_sync(&store, &live, |sys, nid, _| synced.push((sys.slot(), nid)));
+    assert_eq!(synced, vec![(Disclosure::slot(), detached_dlg)]);
 }

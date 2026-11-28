@@ -259,7 +259,7 @@ pub fn DropdownMenu(
                 tab_index: item_tab_index,
                 nve_style: item_style,
                 onpress: move |_| {
-                    if !item_disabled {
+                    if !item_disabled && latch.is_open() {
                         let _ = roving.write().set_active_index(idx);
                         if let Some(handler) = on_select {
                             handler.call(item_id.clone());

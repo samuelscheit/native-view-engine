@@ -228,4 +228,25 @@ void runEventBatch(Check c) {
   c.eq((canonEv.text, canonEv.name), ('', 'ping'), 'CUSTOM_NAMED | UTF8_BYTES never leaks into text');
   final encCanon = EventBatch.encode([const RuntimeEvent.press(0x01000000, 0, 0, surfaceId: 0x01000000)]).decodeEvents().single;
   c.eq((encCanon.surfaceId, encCanon.nodeId), (0, 0), 'encode canonicalizes index-0 handles');
+
+  // `RuntimeEvent.custom` clamps `flags` to unsigned 32-bit (matching wire u32 & TS `>>> 0`)
+  // even when callers pass negative / `~0` or >32-bit values.
+  const expectedAll32 =
+      (0xFFFFFFFF & ~(nveEventFlagUtf8Bytes | nveEventFlagInlineKeyUtf8 | nveEventFlagKeySplitBytes)) |
+          nveEventFlagCustomNamed;
+  for (final (label, ev, expected) in [
+    ('~0', const RuntimeEvent.custom(1, 'clamped', flags: ~0), expectedAll32),
+    ('-1', const RuntimeEvent.custom(1, 'clamped', flags: -1), expectedAll32),
+    (
+      'high-bits',
+      const RuntimeEvent.custom(1, 'clamped', flags: 0x100000000 | nveEventFlagNoBubble | nveEventFlagUtf8Bytes),
+      nveEventFlagNoBubble | nveEventFlagCustomNamed,
+    ),
+  ]) {
+    c.that(ev.flags >= 0 && ev.flags <= 0xFFFFFFFF, 'custom flags ($label) stays unsigned 32-bit');
+    c.eq(ev.flags, expected, 'custom flags ($label) clamped and internal framing stripped');
+    c.that(ev.isCustom && !ev.bubbles, 'custom flags ($label) keeps CUSTOM_NAMED and NO_BUBBLE');
+    final rt = EventBatch.fromWireBytes(EventBatch.encode([ev]).toWireBytes()).decodeEvents().single;
+    c.eq(rt.flags, ev.flags, 'custom flags ($label) matches wire-decoded u32 flags');
+  }
 }
