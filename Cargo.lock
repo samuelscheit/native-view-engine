@@ -3006,6 +3006,7 @@ dependencies = [
 name = "nve-canvas-web"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-abi",
  "nve-backend-web",
  "nve-canvas",
@@ -3691,6 +3692,7 @@ dependencies = [
 name = "nve-svg"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-abi",
  "nve-hash",
  "nve-store",
@@ -3700,6 +3702,7 @@ dependencies = [
 name = "nve-svg-skia"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-abi",
  "nve-backend-skia",
  "nve-engine",
@@ -3711,6 +3714,7 @@ dependencies = [
 name = "nve-svg-web"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-backend-web",
  "nve-store",
  "nve-svg",

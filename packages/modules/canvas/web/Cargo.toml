@@ -18,5 +18,12 @@ web-sys = { workspace = true, features = ["CanvasRenderingContext2d", "HtmlCanva
 [dev-dependencies]
 nve-engine = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "canvas_web_bench"
+harness = false
+
 [lints]
 workspace = true
