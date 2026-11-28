@@ -30,12 +30,12 @@ const MAGIC_SENTINEL_DEFAULTS: &[&str] = &[
 
 /// Retired legacy 4-letter format acronyms enforced at hard zero-tolerance (`0` occurrences).
 const RETIRED_ZERO_TOLERANCE_ACRONYMS: &[&str] = &[
-    "NVT1", "NVD1", "NVC1", "NVERELOC", "NVE_MET1",
+    "NVT1", "NVD1", "NVC1", "NVERELOC", "NVE_MET1", "NVH1", "NVW1", "NK1", "NVE1",
 ];
 
 /// Remaining legacy 4-letter format acronyms tracked under a shrink-only monotonic ratchet.
 const BANNED_4_LETTER_ACRONYMS: &[&str] = &[
-    "NVH1", "NVW1", "NVWS1", "NVB1", "NVNP", "NVNC", "NWS1", "NVE1", "NVP1", "NK1",
+    "NVWS1", "NVB1", "NVNP", "NVNC", "NWS1", "NVP1",
 ];
 
 const BANNED_CORE_CSS_FN_PREFIXES: &[&str] = &[

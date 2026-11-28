@@ -446,13 +446,13 @@ fn table_hygiene_platform_purity_and_codegen_53bit() {
 fn no_banned_legacy_4_letter_acronyms_ratchet() {
     let idx = repo_index();
     assert_no_violations(
-        "Zero retired legacy 4-letter format acronyms (NVT1/NVD1/NVC1/NVERELOC/NVE_MET1) outside DOC_EXCLUDES",
+        "Zero retired legacy 4-letter format acronyms (NVT1/NVD1/NVC1/NVERELOC/NVE_MET1/NVH1/NVW1/NK1/NVE1) outside DOC_EXCLUDES",
         &purity::check_retired_zero_tolerance_acronyms(idx),
     );
     assert_staged_ratchet(
         Stage::Post1B1D,
         "Zero remaining banned legacy 4-letter format acronyms outside DOC_EXCLUDES",
-        266,
+        221,
         &purity::check_banned_4_letter_acronyms(idx),
     );
 }
@@ -477,7 +477,7 @@ fn benchmarks_and_counting_alloc_coverage() {
     assert_staged_ratchet(
         Stage::Post1B1D,
         "All non-proc-macro packages/* crates ship colocated benchmarks",
-        7,
+        6,
         &report.all_crate_benches,
     );
     assert_no_violations(

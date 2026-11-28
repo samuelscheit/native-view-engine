@@ -97,7 +97,7 @@ pub fn BentoArchitectureGrid() -> Element {
                     metric: "21.17 µs",
                     title: "CommandBuffer + 32B NveNodeRow",
                     body: "Stack-packed 1,000-node frame encode (18.05 µs streaming decode at ~4.7 GiB/s) paired with a zero-copy NveSceneView over 32-byte NveNodeRow slabs (17.09 ns direct FFI value read).",
-                    tags: vec!["NVE1 Frame", "32-byte rows", "0 JSON"],
+                    tags: vec!["NVE2 Frame", "32-byte rows", "0 JSON"],
                 }
 
                 BentoMetricCard {

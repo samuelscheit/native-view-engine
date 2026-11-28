@@ -1,123 +1,59 @@
 ---
-title: "CommandBuffer & EventRing"
-description: "Binary wire specification of NVE1 CommandBuffers, all 10 mutation opcodes, direct NveEventBatch FFI, and typed keyboard/pointer events."
+title: "NodeStore, NVE2 & EventRing"
+description: "Binary wire specification of NVE2 v2 NodeStore frames, bit-packed word tables, uniform 64-byte NveEvent records, and NVEV v2 EventRing batches."
 order: 1
 ---
 
-# CommandBuffer & EventRing
+# `NodeStore`, `NVE2` Frames & `EventRing`
 
-Every UI mutation in Native View Engine travels across the Rust-to-host boundary inside a single contiguous, little-endian binary **`CommandBuffer`** (`NVE1`), and native host inputs return in a single batched **`EventRing`** (or zero-copy `NveEventBatch`). No per-property FFI calls, no `folly::dynamic`, and no JSON parsing ever touch the render loop.
+In-process UI mutations in Native View Engine write directly into a single-owner **`NodeStore`** via zero-alloc `Transaction` / `RowPatch` word tables — zero mirror trees and zero in-process serialization. Across C ABI (`cdylib`), network pairing (`nve-wire`), and Frame-0 persistence (`frame0.nve2`), deltas and keyframes travel in the compact **`NVE2`** v2 binary wire format, while native host inputs return in uniform, pointer-free 64-byte **`NveEvent`** records packed in **`NVEV`** v2 `EventRing` batches. No per-property FFI calls, no `folly::dynamic`, and no JSON parsing ever touch the render loop.
 
-## `NVE1` CommandBuffer Binary Layout
+## `NVE2` v2 Wire Frame Layout
 
-Defined in `packages/core/abi/src/codec/` (`NVE_ABI_MAGIC = *b"NVE1"`, `NVE_ABI_VERSION = 1`, `HEADER_SIZE = 24`):
+Defined in `packages/core/store/src/wire/` (`NVE2` v2):
 
-| Byte Offset | Size | Field | Type / Value |
-| :--- | :--- | :--- | :--- |
-| `0..4` | 4 B | `magic` | `0x3145564E` (`b"NVE1"` little-endian) |
-| `4..6` | 2 B | `version` | `u16 = 1` |
-| `6..8` | 2 B | `flags` | `u16` (reserved, `0`) |
-| `8..12` | 4 B | `surface_id` | `u32` (`SurfaceId`) |
-| `12..20` | 8 B | `frame_id` | `u64` (`FrameId`) |
-| `20..24` | 4 B | `op_count` | `u32` (exact number of encoded ops following header) |
-| `24..` | var | `commands` | Tightly packed TLV command records |
+- **Header**: `magic = b"NVE2"`, `version: u16 = 2`, `flags: u16`, `surface_id: u32`, `frame_id: u64`, `schema_hash: u64` (`XXH64`), followed by compact little-endian table-delta and structural opcodes.
+- **Bit-packed word tables (`#[derive(NveTable)]`)**: Every UI domain (`Layout`, `Visual`, `Typography`, `TextContent`, `Interaction`, `Scroll`, `TextInput`, `Image`, `Accessibility`, `Transform2D`, plus opt-in module tables such as `nve.canvas`, `nve.svg`, `nve.blur`, `nve.motion`) packs into dense `u32` word rows with compile-time first-fit bit packing and per-table `EventSet<E>` subscriptions.
+- **Flat resources (`FlatResource` / `ResourceStore`)**: Variable-length structured payloads (`ImageSrc`, `DrawList`, `BoxShadows`, `BackgroundFill`, `SvgPicture`, `AriaRelations`) live in flat 4-byte-aligned arenas indexed by generational `ResourceId` (`24-bit slot | 8-bit gen`).
 
-### Opcodes (`Opcode` `u8`)
+```rust title="Direct Transaction write + NVE2 v2 wire encode/decode" highlight="4-14,17-19"
+use nve_store::{ChangeSet, NodeId, NodeStore};
+use nve_store::wire::{WireDecoder, WireEncoder};
+use nve_tables::tables::{Layout, TextContent, Typography};
 
-Every command starts with a 1-byte `Opcode` discriminant followed by fixed-width little-endian fields:
+let mut store = NodeStore::new();
+let mut tx = store.tx();
+let label = tx.create();
+tx.edit::<Layout>(label).width(240.0).height(32.0);
+tx.edit::<Typography>(label).font_size(18.0);
+tx.edit::<TextContent>(label).text("Zero-copy NVE2");
+tx.set_children(NodeId::ROOT, &[label]);
+let mut changes = ChangeSet::default();
+tx.commit_into(&mut changes);
 
-| Value | Opcode | Payload Summary |
-| :--- | :--- | :--- |
-| `1` | `CreateNode` | `node_id: u32`, `kind: ComponentKind (u16)`, optional custom tag UTF-8 string |
-| `2` | `RemoveNode` | `node_id: u32` |
-| `3` | `SetChildren` | `parent: u32`, `count: u32`, `[child_id: u32; count]` |
-| `4` | `SetText` | `node_id: u32`, `len: u32`, UTF-8 bytes |
-| `5` | `SetLayout` | `node_id: u32` + fixed `LayoutProps` (6 `Dimension`s, flex enums, grow/shrink/gap, padding/margin `EdgeInsets`) |
-| `6` | `SetStyle` | `node_id: u32` + fixed `StyleProps` (`background`, `text_color`, `border_color`, `border_width`, `border_radius`, `opacity`, `font_size`, `z_index`) |
-| `7` | `SetRawProp` | `node_id: u32`, `key` string, tagged `RawPropValue` (`Null`, `Bool`, `I64`, `F64`, `String`, `Bytes`) |
-| `8` | `SetEventMask` | `node_id: u32`, `mask: u64` (`EventMask` bitflags) |
-| `9` | `DispatchCommand` | `node_id: u32`, `command_name` string, `arg_count` + `RawPropValue` args |
-| `10` | `Commit` | `frame_id: u64` (atomic frame commit barrier) |
-
-### Typed `ComponentKind` (`u16`)
-
-`CreateNode` identifies built-in cross-platform primitives with a 2-byte enum so backends never hash tag strings:
-
-- `0` = `Root`
-- `1` = `View`
-- `2` = `Text`
-- `3` = `ScrollView`
-- `4` = `Image`
-- `5` = `TextInput`
-- `6` = `Pressable`
-- `7` = `SkiaCanvas`
-- `0xFFFF` = `Custom` (carries a custom component name, e.g. imported React Native Fabric components)
-
-### Zero-Allocation Streaming Decode (`CommandRef<'a>`)
-
-`CommandBufferBuilder` packs fixed structs directly onto the stack before writing into the output `Vec<u8>`. On the receiver side, `CommandDecoder::iter_refs()` yields zero-copy `CommandRef<'a>` views — borrowing `&'a str`, `&'a [u8]`, and `ChildIdIter<'a>` straight out of the incoming byte slice without heap allocations.
-
-```rust title="Encoding and zero-copy streaming decode" highlight="4-12,15-21"
-use nve_abi::{
-    ColorRgba, CommandBufferBuilder, CommandDecoder, CommandRef,
-    ComponentKind, Dimension, LayoutProps, StyleProps,
-};
-
-let mut builder = CommandBufferBuilder::new(1, 1);
-builder.create_node(1, ComponentKind::Root, None);
-builder.create_node(2, ComponentKind::Text, None);
-builder.set_text(2, "Zero-copy NVE1");
-builder.set_layout(2, &LayoutProps {
-    width: Dimension::Points(240.0),
-    height: Dimension::Points(32.0),
-    ..LayoutProps::default()
-});
-builder.set_style(2, &StyleProps {
-    text_color: ColorRgba::WHITE,
-    font_size: 18.0,
-    ..StyleProps::default()
-});
-builder.set_children(1, &[2]);
-builder.commit();
-let bytes = builder.finish();
-
-let mut decoder = CommandDecoder::new(&bytes)?;
-for cmd in decoder.iter_refs() {
-    if let CommandRef::SetText { node_id, text } = cmd? {
-        assert_eq!((node_id, text), (2, "Zero-copy NVE1"));
-    }
-}
+let wire = WireEncoder::encode_full(&store);
+let mut replica = NodeStore::new();
+WireDecoder::apply(&wire, &mut replica)?;
 ```
-
-On Apple Silicon (`benchmarks/baseline.json`), encoding 1,000 nodes takes **21.17 µs** and streaming `CommandRef` decoding takes **18.05 µs** (~4.7 GiB/s).
 
 <Callout kind="warning" title="Yoga scalar sanitization invariant">
 The Yoga layout engine (`packages/modules/layout-yoga`) maps non-finite layout results to `0.0f` (`sanitize_finite` in `yoga_shim.cpp`) and only forwards finite, non-negative sizes into Yoga setters. Huge style scalars (`|v| >= 2^31`) can still trigger float-cast-overflow UB inside Yoga's `StyleValuePool` until the upstream fix ships; see [Upstream Notes](/reference/upstream-notes).
 </Callout>
 
-## Direct `NveEventBatch` FFI & `EventRing` Transport
+## Uniform 64-Byte `NveEvent` & `NVEV` v2 `EventRing`
 
-Host input events (`NativeEvent`) cross the in-process C ABI directly via `NveSurfaceApi::dispatch_events(handle, NveEventBatch)` using 96-byte `#[repr(C)]` `NveDirectEvent` records (zero serialization). For network/wire transport (`nve-wire`), `encode_events` / `decode_events` (`packages/core/abi/src/events.rs`) pack the same `NativeEvent` slice into a length-prefixed binary buffer.
+Every host input event (`NveEvent`, `#[repr(C)]`, locked at exactly **64 bytes** with zero embedded pointers) carries its target `NodeId`, `NveEventKind`, `TimestampUs`, packed scalar fields (`a..d`, `modifiers`, `flags`, `key_code`), and slice offsets (`text_off`/`text_len`, `name_off`/`name_len`) into one shared UTF-8/byte blob inside `NveEventBatch` (`NVEV` v2 `EventRing`).
 
-### Subscription Bitmask (`EventMask`) & Event Kinds (`NativeEventKind`)
+### Per-Table Event Subscriptions (`EventSet<E>`) & `NveEventKind`
 
-| Bit / Enum | Name | Payload Variant | Payload Tag |
-| :--- | :--- | :--- | :--- |
-| `1 << 0` / `1` | `Press` | `EventPayload::Point { x, y }` | `1` |
-| `1 << 1` / `2` | `LongPress` | `EventPayload::Point { x, y }` | `1` |
-| `1 << 2` / `3` | `Scroll` | `EventPayload::Scroll { x, y, content_width, content_height }` | `2` |
-| `1 << 3` / `4` | `TextChange` | `EventPayload::Text(String)` | `3` |
-| `1 << 4` / `5` | `Focus` | `EventPayload::Empty` | `0` |
-| `1 << 5` / `6` | `Blur` | `EventPayload::Empty` | `0` |
-| `1 << 6` / `7` | `Layout` | `EventPayload::Layout { x, y, width, height }` | `4` |
-| `1 << 7` / `8` | `Custom` | `EventPayload::Custom { name, data }` | `5` |
-| `1 << 9`..`1 << 11` / `12`..`14` | `KeyDown`, `KeyUp`, `Submit` | `EventPayload::Key` / `Text` | `6` / `3` |
-| `1 << 12`..`1 << 16` / `15`..`19` | `PointerDown`, `PointerMove`, `PointerUp`, `PointerEnter`, `PointerLeave` | `EventPayload::Pointer` | `7` |
-| `1 << 17` / `20` | `Wheel` | `EventPayload::Wheel` | `8` |
+| Table / Domain | Event Kinds | Payload Fields |
+| :--- | :--- | :--- |
+| `Interaction` | `Press`, `LongPress`, `PointerDown`, `PointerMove`, `PointerUp`, `PointerCancel`, `PointerEnter`, `PointerLeave`, `Wheel`, `KeyDown`, `KeyUp`, `Focus`, `Blur` | Local/viewport coordinates, pointer ID/buttons, wheel deltas, W3C key + physical code + modifiers |
+| `Scroll` | `Scroll` | `x`, `y`, `content_width`, `content_height` |
+| `TextInput` | `TextChange`, `Submit`, `CompositionStart`, `CompositionUpdate`, `CompositionEnd`, `SelectionChange` | UTF-8 text span in shared `EventRing` blob + selection/composition offsets |
+| `Layout` / `Custom` | `Layout`, `Custom` | `x`, `y`, `width`, `height` or custom event name + binary payload slice |
 
-## Direct Typed Keyboard & Pointer Events
-
-Keyboard (`KeyDown`, `KeyUp`), pointer (`PointerDown`..`PointerLeave`), and `Wheel` events are carried directly in `NveDirectEvent`'s packed header fields (`modifiers: u8`, `event_flags: u8`, `key_code: u32`) alongside `text` (W3C key), `name` (physical key code), and `x`/`y`/`width`/`height` (pointer coordinates or wheel deltas) — with zero size growth (`96 B` on 64-bit) and zero sideband byte encoding.
+Because `NveEvent` is pointer-free and exactly 64 bytes on both 32-bit and 64-bit targets, C++, Swift, Java/JNI, Dart, TypeScript, and Rust all read and write the exact same `EventRing` layout (`ValidatedEvents` validates all offsets and UTF-8 once at ingress).
 
 Modifier bits in `modifiers: u8`:
 

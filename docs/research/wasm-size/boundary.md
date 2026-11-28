@@ -8,7 +8,7 @@ binaryen 133, Chrome headless (macOS).
 
 - **The boundary can cost essentially zero bytes.** The prototype ships with **0 imports and
   5 exports** (`memory`, `nve_init`, `nve_events`, `nve_dispatch`, `nve_frame_len`). A
-  hand-written 17 KB (9 KB minified, **3.5 KB brotli**) `nve_dom.js` decodes the `NVE1`
+  hand-written 17 KB (9 KB minified, **3.5 KB brotli**) `nve_dom.js` decodes the binary
   `CommandBuffer` straight out of linear memory and writes DOM events back as an EventRing.
 - Measured on the same app and profile, compared with wasm-bindgen + `nve-backend-web`:
   - **Counter:** 105,304 B vs 124,443 B total brotli: **−19.1 KB (−15.4 %)**.
@@ -100,12 +100,12 @@ JS gets number→string for free.
 
 ```
 Rust (wasm, 0 imports)                         nve_dom.js (≈3.5 KB br)
-nve_init(surface)  → frame_ptr  ────────────▶  decode NVE1 in place (DataView, one TextDecoder)
+nve_init(surface)  → frame_ptr  ────────────▶  decode frame in place (DataView, one TextDecoder)
                                                apply: createElement / replaceChildren / textContent /
                                                style.cssText (layout+style → CSS in JS) / attrs /
-                                               ARIA map / object-fit / canvas NVE_DRAW1
+                                               ARIA map / object-fit / canvas draw_list
 DOM event (1 delegated listener per type)  ◀── click, input, composition*, focusin/out,
-nve_events(cap) → ptr                           scroll(capture), keydown (submit + NK1 global)
+nve_events(cap) → ptr                           scroll(capture), keydown (submit + global key)
   JS writes EventRing (encode_events format)   straight into linear memory (TextEncoder.encodeInto)
 nve_dispatch(len)  → frame_ptr | 0  ───────▶   apply next frame (re-entrancy queued)
 ```
@@ -208,7 +208,7 @@ builds.
 | CommandBuffer decode | `CommandDecoder` + `Vec<Command>` alloc | JS DataView, in place | included |
 | CSS translation (layout/style → cssText) | `css.rs` + core float fmt | JS (native number→string; shortest-f32 helper keeps Rust `{}` output) | included |
 | ARIA / input attr mapping, object-fit | `dom.rs` | JS tables | included |
-| Event listeners, IME guard, submit, NK1 keydown | `events.rs` (8 Closures per input node) | JS delegated listeners; NK1 bytes built in JS | included |
+| Event listeners, IME guard, submit, global keydown | `events.rs` (8 Closures per input node) | JS delegated listeners; `EventRing` bytes built in JS | included |
 | `<canvas>` NVE_DRAW1 paint | `canvas.rs` + `DrawListDecoder` + base64 (Rust) | JS (`atob`, DataView, 2D context) | included (~1 KB br) |
 | Scroll / virtual lists | Rust app logic, scroll events | unchanged: JS only reports scroll offsets | included |
 | `WebDomMirror` (native) | test oracle + SSR `render_html` | **stays in Rust** as the semantic spec and SSR | 0 |

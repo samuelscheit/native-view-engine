@@ -13,6 +13,13 @@ nve-tv = { workspace = true }
 [dev-dependencies]
 nve-abi = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "tv_web_bench"
+harness = false
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = { workspace = true }
 wasm-bindgen = { workspace = true }

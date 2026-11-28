@@ -9,7 +9,7 @@ order: 0
 
 **Native View Engine (`nve`)** is a native-speed, multi-backend UI engine written in Rust and C++20. You author declarative UI once using Rust `rsx!` and fine-grained signals (`nve-dioxus`) — or any custom frontend implementing `NveApp` — and render to **real platform-native views**, **hardware GPU Skia canvases**, and **Web WASM DOM** across 10 host targets from a single zero-copy binary ABI.
 
-There is no embedded JavaScript VM, no JSON bridge serialization, and no per-property FFI chatter. Every frame crosses the Rust-to-host boundary as one contiguous `NVE1` binary `CommandBuffer`, and `libnve_runtime` publishes the laid-out scene back to native hosts as one zero-copy `NveSceneView` (32-byte `NveNodeRow` rows + 16-byte `NveLayoutRect` rects).
+There is no embedded JavaScript VM, no JSON bridge serialization, and no per-property FFI chatter. Every frame crosses the Rust-to-host boundary as one contiguous `NVE2` binary delta frame, and `libnve_runtime` publishes the laid-out scene back to native hosts as one zero-copy `NveSceneView` (32-byte `NveNodeRow` rows + 16-byte `NveLayoutRect` rects).
 
 ## Architectural Pillars
 
@@ -38,7 +38,7 @@ Measured on Apple Silicon (`arm64`, `Darwin`, 20 cores) from `benchmarks/baselin
 :::cards
 ::card{title="Quickstart" href="/getting-started/quickstart" description="Run NVE Studio on Skia, Web, macOS, or Windows and compile your first NveApp cdylib in under 5 minutes."}
 ::card{title="Why NVE?" href="/getting-started/why-nve" description="Deep comparison against React Native, Flutter, and Electron with verified latency, binary size, and memory numbers."}
-::card{title="CommandBuffer & Direct Events" href="/architecture/command-buffer-and-events" description="Binary wire layout of NVE1 frames, 10 opcodes, direct NveDirectEvent / NveEventBatch FFI, and typed keyboard/pointer events."}
+::card{title="NodeStore, NVE2 & EventRing" href="/architecture/command-buffer-and-events" description="Binary wire layout of NVE2 v2 frames, bit-packed word tables, uniform 64-byte NveEvent records, and NVEV v2 EventRing batches."}
 ::card{title="Scene ABI" href="/architecture/scene-abi" description="The single NveSceneView: 32-byte NveNodeRow rows, 16-byte NveLayoutRect rects, zero-copy text_slab, dirty/moved/removed indices, and per-language SceneReader."}
 ::card{title="Accessible UI Components" href="/guides/ui-components" description="15 zero-CSS nve-ui components, OKLCH Theme, FocusTrap, and 100k-row Fenwick VirtualList with live playgrounds."}
 ::card{title="Platform Hosts Matrix" href="/hosts/overview" description="Compare rendering pipelines, text shaping, accessibility, IME, and multi-window support across all 10 targets."}

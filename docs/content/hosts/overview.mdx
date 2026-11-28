@@ -6,7 +6,7 @@ order: 1
 
 # Platform Hosts Overview
 
-Every platform host in `native-view-engine` consumes the exact same `NVE1` binary `CommandBuffer` and `nve_get_interface(1..=5)` C ABI. Every native host runs on `libnve_runtime` and reads its single `NveSceneView` through the per-language `SceneReader` in `packages/core/host-*` (C++ shells share `nve::host::HostSession` + `RetainedTree`), while Apple hosts share `hosts/apple-common/` so zero layout, hot-swap, or image-cache logic is duplicated.
+Every platform host in `native-view-engine` consumes the exact same `NVE2` binary frame ABI and `nve_get_interface(1..=5)` C ABI. Every native host runs on `libnve_runtime` and reads its single `NveSceneView` through the per-language `SceneReader` in `packages/core/host-*` (C++ shells share `nve::host::HostSession` + `RetainedTree`), while Apple hosts share `hosts/apple-common/` so zero layout, hot-swap, or image-cache logic is duplicated.
 
 ## All 10 Host Targets at a Glance
 

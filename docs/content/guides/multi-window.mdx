@@ -1,12 +1,12 @@
 ---
 title: "Multi-Window Lifecycle"
-description: "WindowManager state machine, SurfacePresentation modes, modal parent blocking, cancelable close veto, NVW1 binary codec, and native host managers across 7 platforms."
+description: "WindowManager state machine, SurfacePresentation modes, modal parent blocking, cancelable close veto, direct typed WindowCommand APIs, and native host managers across 7 platforms."
 order: 5
 ---
 
 # Multi-Window Lifecycle
 
-Desktop, tablet, and browser applications frequently open inspectors, detached editors, modal sheets, and popovers alongside a primary window. `packages/core/interop/src/window.rs` implements a deterministic multi-window state machine (**`WindowManager`**) and binary wire codec (**`NVW1`**) shared across every host platform.
+Desktop, tablet, and browser applications frequently open inspectors, detached editors, modal sheets, and popovers alongside a primary window. `packages/core/interop/src/window/` implements a deterministic multi-window state machine (**`WindowManager`**) with direct typed **`WindowCommand`** / **`WindowLifecycleEvent`** APIs shared across every host platform.
 
 ## `SurfacePresentation` Modes
 
@@ -32,20 +32,14 @@ Every NVE surface declares how it should be presented (`SurfacePresentation`):
 3. **Cancelable `CloseRequested` veto** — When a user clicks the OS close button, the host emits `WindowLifecycleEvent::CloseRequested { handle }`. The app can inspect unsaved documents and either confirm closure (`WindowCommand::Close`) or veto it (`WindowCommand::VetoClose`) to show a save-changes sheet.
 4. **Strict validation** — Non-finite coordinates, zero/negative dimensions, `min_size > max_size`, and titles exceeding `16,384` bytes are rejected before touching OS windowing APIs.
 
-## Binary `NVW1` Wire Protocol
+## Direct Typed `WindowCommand` & `WindowLifecycleEvent` Dispatch
 
-Commands (`WindowCommand`) and OS lifecycle events (`WindowLifecycleEvent`) cross `NVE_IFACE_HOST = 5` (`SERVICE_WINDOW = 0x0002`) in the little-endian **`NVW1`** container (`NVW1_HEADER_SIZE = 12`):
+`WindowManager` applies typed `WindowCommand` slices and processes OS `WindowLifecycleEvent`s directly in FIFO order with zero intermediate wire serialization:
 
-- `0..4`: `magic = b"NVW1"`
-- `4..6`: `version: u16 = 1`
-- `6`: `kind: u8` (`1 = Commands`, `2 = Events`)
-- `7`: `reserved: u8 = 0`
-- `8..12`: `record_count: u32` (capped at `65,536`)
-
-```rust title="Opening a modal sheet and encoding NVW1 commands" highlight="4-12,15-17"
+```rust title="Opening a modal sheet with WindowManager" highlight="4-12,15-16"
+use nve_abi::SurfaceId;
 use nve_interop::{
-    encode_window_commands, SurfacePresentation, WindowCommand, WindowDescriptor, WindowFlags,
-    WindowManager,
+    SurfacePresentation, WindowCommand, WindowDescriptor, WindowFlags, WindowManager,
 };
 
 let mut wm = WindowManager::new();
@@ -54,13 +48,11 @@ let sheet_desc = WindowDescriptor::new("Export Settings", 480.0, 320.0)
     .with_flags(WindowFlags::standard().with(WindowFlags::MODAL));
 
 let (sheet_handle, cmds) = wm.open_window(
-    2, // child SurfaceId
-    SurfacePresentation::Sheet { parent: 1, descriptor: sheet_desc },
+    SurfaceId::from_raw(2),
+    SurfacePresentation::Sheet { parent: SurfaceId::from_raw(1), descriptor: sheet_desc },
 )?;
-assert!(wm.is_input_blocked(1));
-
-let wire: Vec<u8> = encode_window_commands(&cmds)?;
-// Deliver `wire` to host via SERVICE_WINDOW (0x0002)
+assert!(wm.is_input_blocked(SurfaceId::from_raw(1)));
+wm.apply_commands(&cmds)?;
 ```
 
 ## Native Host Window Managers Across All 7 Platforms

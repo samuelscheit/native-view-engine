@@ -41,7 +41,7 @@ issues-probes = ["app-issues", "dep:nve-ui", "dep:dioxus-core-macro", "dep:nve-t
 # `nve dev` Tier-1/2 hot-reload WebSocket (binary NVP1), the `NveWebHost` NveWireFrame pairing client
 # and the semantic-style hydration probe used by the E2E suite.
 dev = ["dep:nve-canvas", "dep:nve-canvas-web", "web-host-services"]
-# Popup windows + `NVW1` `BroadcastChannel` window sync (`nve-interop` WindowManager).
+# Popup windows + `BroadcastChannel` window sync (`nve-interop` WindowManager).
 multi-window = []
 
 [dependencies]

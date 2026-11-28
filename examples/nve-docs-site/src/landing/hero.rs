@@ -349,7 +349,7 @@ fn HeroInteractiveCard() -> Element {
                         nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(10.0),
                         view {
                             nve_style: TypedStyle::new().flex_row().justify_content(FlexJustify::SpaceBetween).align_items(FlexAlign::Center).flex_wrap(FlexWrap::Wrap).gap(8.0),
-                            PillBadge { label: format!("NVE1 Frame #{seq_val}"), accent: true }
+                            PillBadge { label: format!("NVE2 Frame #{seq_val}"), accent: true }
                             text {
                                 nve_style: TypedStyle::new().font_size(11.0).font_family("monospace").color(theme.status.success.text),
                                 "{frame_bytes} B · 0 JSON bytes"
@@ -357,7 +357,7 @@ fn HeroInteractiveCard() -> Element {
                         }
                         view {
                             nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(6.0).padding(12.0).radius(10.0).bg(theme.surface.base).border(1.0, theme.border.default),
-                            text { nve_style: mono_12(theme.text.link), "HDR   4E 56 45 31 00 01 {seq_hex}   ; magic='NVE1' ver=1" }
+                            text { nve_style: mono_12(theme.text.link), "HDR   4E 56 45 32 00 02 {seq_hex}   ; magic='NVE2' ver=2" }
                             text { nve_style: mono_12(theme.syntax.keyword), "OP_01 CREATE_NODE   id=1 kind=View  style=flex-col" }
                             text { nve_style: mono_12(theme.syntax.string), "OP_02 SET_TEXT      id=2 utf8=\"{payload_text}\"" }
                             text { nve_style: mono_12(theme.syntax.number), "OP_03 SET_PROP_I32  id=3 key=count  val=0x{count_hex}" }
@@ -490,7 +490,7 @@ fn HeroInteractiveCard() -> Element {
                             text {
                                 test_id: "hero-live-frame",
                                 nve_style: TypedStyle::new().font_size(11.0).font_family("monospace").color(theme.text.secondary),
-                                "Frame #{seq_val} · {frame_bytes} B NVE1 · 32B NveNodeRow"
+                                "Frame #{seq_val} · {frame_bytes} B NVE2 · 32B NveNodeRow"
                             }
                             text {
                                 nve_style: TypedStyle::new().font_size(11.0).font_family("monospace").font_weight(700).color(theme.status.success.text),

@@ -168,7 +168,7 @@ fn draw_ops_hybrid_spec() -> HybridFileSpec {
     }
 }
 
-/// Option 2 typed `#[repr(C)]` POD structs & vtables replacing `NVT2`/`NVL1`/`NVH1`/`BinWriter`
+/// Option 2 typed `#[repr(C)]` POD structs & vtables replacing legacy wire codecs / `BinWriter`
 /// across `NVE_IFACE_HOST = 5`, constructed directly via Rust `HybridFileSpec`.
 fn host_services_hybrid_spec() -> HybridFileSpec {
     HybridFileSpec {

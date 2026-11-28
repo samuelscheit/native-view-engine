@@ -6,7 +6,7 @@ order: 2
 
 # Desktop Skia & `winit` (`nve-backend-skia` + `nve-skia-shell`)
 
-`packages/backends/skia` is a pure rendering backend consuming `NVE1` `CommandBuffer`s, computing Flexbox layout via any pluggable `LayoutEngine` (defaulting to Taffy), shaping text with `cosmic-text 0.19`, and emitting a retained `DisplayList`. `hosts/skia-shell` wraps it in a runnable cross-platform `winit 0.30` desktop window host (`nve-skia-shell`).
+`packages/backends/skia` is a pure rendering backend reading `NodeStore` / `NVE2` scenes, computing Flexbox/Grid layout via any pluggable `StoreLayoutEngine` (defaulting to Taffy), shaping text with `cosmic-text 0.19`, and rendering through a retained `CompositorScene`. `hosts/skia-shell` wraps it in a runnable cross-platform `winit 0.30` desktop window host (`nve-skia-shell`).
 
 ## GPU Swapchains & Zero-C++ Default
 

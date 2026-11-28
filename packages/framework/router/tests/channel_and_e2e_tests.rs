@@ -1,4 +1,4 @@
-//! Binary `NVN1` fuzz tests, `NveChannelBus` bidirectional sync tests, and live Dioxus + `NVE1`
+//! Binary `NVN1` fuzz tests, `NveChannelBus` bidirectional sync tests, and live Dioxus + `NVE2`
 //! wire scene E2E tests for `nve-router`.
 
 use nve_abi::{EventBatchBuf, FrameId, SurfaceId, TimestampUs};

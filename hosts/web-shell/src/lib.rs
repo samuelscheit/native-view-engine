@@ -1,7 +1,7 @@
 //! Web WASM shell mounting NVE apps onto browser DOM with live interactive events and SSR
 //! hydration. Cargo features select what a bundle contains (see `Cargo.toml`): one app per
 //! production bundle (`app-studio` / `app-kitchen-sink`), plus `dev` (binary `NVP1` hot reload,
-//! `NveWireFrame` pairing) and `multi-window` (popups + `NVW1` window sync).
+//! `NveWireFrame` pairing) and `multi-window` (popups + `WindowManager` window sync).
 
 #[cfg(not(any(feature = "app-studio", feature = "app-kitchen-sink", feature = "app-issues")))]
 compile_error!(

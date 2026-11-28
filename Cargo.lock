@@ -3782,6 +3782,7 @@ dependencies = [
 name = "nve-tv-web"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "js-sys",
  "nve-abi",
  "nve-backend-web",

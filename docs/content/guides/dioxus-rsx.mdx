@@ -6,7 +6,7 @@ order: 1
 
 # Dioxus RSX & Signals (`nve-dioxus`)
 
-`packages/core/dioxus` bridges Dioxus `0.7.10` (`dioxus-core` + `dioxus-signals`) onto `nve-abi` without pulling in `dioxus-html` or any web-specific bloat. A custom `WriteMutations` writer translates VirtualDOM diffs straight into batched `NVE1` `CommandBuffer` frames — measuring **6.83 µs** for initial frame render and **931 ns** for an incremental signal update (`benchmarks/baseline.json`).
+`packages/core/dioxus` bridges Dioxus `0.7.10` (`dioxus-core` + `dioxus-signals`) onto `nve-store` without pulling in `dioxus-html` or any web-specific bloat. A custom `WriteMutations` writer translates VirtualDOM diffs straight into single-owner `NodeStore` word-table transactions (and `NVE2` frames across FFI) — measuring **6.83 µs** for initial frame render and **931 ns** for an incremental signal update (`benchmarks/baseline.json`).
 
 ## Native Elements & HTML Aliases
 

@@ -63,7 +63,7 @@ const WAVE_MILESTONES: [WaveMilestone; 8] = [
         commit: "0aeee16",
         hosts: "10 hosts",
         title: "NVE_IFACE_HOST=5 SDK, nve-ui & nve-router",
-        summary: "Binary NVH1 Tier-1/2/3 native capabilities, 15 accessible nve-ui components + 100k Fenwick VirtualList, type-safe nve-router, and 7-host multi-window.",
+        summary: "Binary NveHostEventBatch Tier-1/2/3 native capabilities, 15 accessible nve-ui components + 100k Fenwick VirtualList, type-safe nve-router, and 7-host multi-window.",
     },
     WaveMilestone {
         wave: "Wave 14",

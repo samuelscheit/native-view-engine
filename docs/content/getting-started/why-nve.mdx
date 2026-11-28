@@ -19,7 +19,7 @@ NVE deletes the JavaScript VM entirely and runs one Rust runtime (`libnve_runtim
 - No Hermes, no JSI: **0 ms** JS startup, **0 MB** JS heap.
 - Native events are written directly into a compact binary `EventRing` (or zero-copy `NveEventBatch`) and dispatched straight into the Rust app.
 - Existing RN components embed through `nve codegen export --target rn`, which emits a TS spec plus thin iOS / Android / Windows views over the same runtime host.
-- Mutations cross once per frame as a flat `NVE1` `CommandBuffer` instead of thousands of per-prop JSI calls.
+- Mutations cross once per frame as a flat `NVE2` binary frame instead of thousands of per-prop JSI calls.
 
 ### 2. Pixel-Owned Canvas vs. Real Native Views (Flutter)
 
@@ -38,7 +38,7 @@ NVE compiles native apps directly to platform machine code (`~15 MB` class binar
 | Capability | Native View Engine (`nve`) | React Native (Fabric + Hermes) | Flutter (Impeller) | Electron (Chromium) |
 | :--- | :--- | :--- | :--- | :--- |
 | **App Logic Runtime** | Ahead-of-time Rust (zero GC, zero VM) | Hermes JS VM (GC heap) | Dart AOT / JIT (GC heap) | V8 JS + Chromium Blink |
-| **Host Bridge Transport** | 1 batched binary `NVE1` buffer / frame + one zero-copy `NveSceneView` | JSI + `RawProps` + `folly::dynamic` | Dart FFI / MethodChannel | IPC + DOM serialization |
+| **Host Bridge Transport** | 1 batched binary `NVE2` frame + one zero-copy `NveSceneView` | JSI + `RawProps` + `folly::dynamic` | Dart FFI / MethodChannel | IPC + DOM serialization |
 | **Real Native OS Views** | Yes (AppKit, UIKit, Win32/RNW, GTK4, Qt, Android, DOM) | Yes (iOS/Android/macOS/Windows) | No (canvas-drawn; `PlatformView` for native) | No (HTML/CSS only) |
 | **GPU Canvas Option** | Yes (Skia Metal/Vulkan/D3D12, Qt Quick, `NVE_DRAW1`) | Separate library (`react-native-skia`) | Always Impeller/Skia | WebGL / Canvas2D |
 | **Cold Start (Frame 0)** | **< 2 ms** (1k-node `frame0.nve2` + live Taffy layout) | ~150–400 ms (Hermes + JS bundle eval) | ~100–300 ms (Dart VM + engine init) | ~400–1,200 ms (multi-process) |

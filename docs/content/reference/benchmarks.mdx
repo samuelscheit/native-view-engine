@@ -43,8 +43,8 @@ All numbers below are real measured medians from `benchmarks/baseline.json` reco
 
 | Benchmark / Metric | Measured Value | Context |
 | :--- | ---: | :--- |
-| `dioxus/initial_frame_render` | **6.83 µs** | Full `VirtualDom` mount → `NVE1` |
-| `dioxus/incremental_state_update_diff` | **931 ns** | Fine-grained signal mutation → `NVE1` |
+| `dioxus/initial_frame_render` | **6.83 µs** | Full `VirtualDom` mount → `NodeStore` / `NVE2` |
+| `dioxus/incremental_state_update_diff` | **931 ns** | Fine-grained signal mutation → `NodeStore` / `NVE2` |
 | `dioxus/tier1_hot_patch_apply` | **1.33 µs** | In-place `NVP1` template patch |
 | `backend_skia/display_list_card` / `rasterize_card_393x852` | **6.42 µs** / **136.6 µs** | Software `PixelBuffer` + `CosmicText` |
 | `backend_skia/display_list_1000_nodes` / `rasterize_1000_nodes_393x852` | **961.7 µs** / **982.0 µs** | Full 1,000-node frame |

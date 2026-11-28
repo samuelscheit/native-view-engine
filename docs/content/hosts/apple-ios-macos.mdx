@@ -21,7 +21,7 @@ To enforce strict DRY between UIKit and AppKit, all cross-Apple plumbing lives o
 
 - **Flipped top-left coordinates** — `RCTNveMacComponentView` uses `isFlipped = YES` so AppKit frames match the runtime's `NveLayoutRect` coordinates 1:1.
 - **Standalone & `react-native-macos` component** — Subclasses `RCTViewComponentView` under `-DNVE_WITH_RN_FABRIC=1` or `NSView` in standalone builds.
-- **Multi-window (`NveMacWindowManager.{h,mm}`)** — Manages `NSWindow`, `NSPanel`, native sheets (`beginSheet:completionHandler:`), `NSPopover`, and `NSWindowDelegate` close veto (`NVW1`).
+- **Multi-window (`NveMacWindowManager.{h,mm}`)** — Manages `NSWindow`, `NSPanel`, native sheets (`beginSheet:completionHandler:`), `NSPopover`, and `NSWindowDelegate` close veto.
 - **Live thin-client pairing** — Supports `--pair-connect <host:port> --pair-transport <udp|tcp|ws> --pair-token <secret>` via the runtime's pairing client.
 
 ```bash title="Build, test, and run the macOS AppKit host"
