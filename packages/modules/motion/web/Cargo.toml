@@ -13,5 +13,12 @@ nve-store = { workspace = true }
 [dev-dependencies]
 nve-engine = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "motion_web_bench"
+harness = false
+
 [lints]
 workspace = true

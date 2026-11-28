@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use nve_arch_invariants::{
-    assert_no_violations, assert_staged_violations, ast_enums, ast_layout, bench, dag,
+    assert_no_violations, assert_staged_ratchet, ast_enums, ast_layout, bench, dag,
     find_files_named, host_runtimes, hot_path, hygiene, is_self_invariant_file, is_test_or_bench_rs, native_build, purity,
     rel_path, repo_index, rpc_dag, scene_abi_guard, spec_registry, theme_hygiene, inline_style_keys, Stage, Violation,
 };
@@ -109,9 +109,10 @@ fn no_duplicate_enum_match_arms_workspace_wide() {
         "Zero new duplicated enum match/assignment tables (same-file & cross-file, same-direction & mirrored) and zero stale baseline entries",
         &report.active_violations,
     );
-    assert_staged_violations(
+    assert_staged_ratchet(
         Stage::Post1B1D,
         "Pre-existing allowlisted duplicate enum match/assignment tables",
+        22,
         &report.allowlisted_violations,
     );
 }
@@ -135,9 +136,10 @@ fn cross_file_enums_converters_and_match_tables() {
     assert!(!all_refs.is_empty());
     ast_enums::scan_duplicate_enums_and_converters(&all_refs, &mut violations);
 
-    assert_staged_violations(
+    assert_staged_ratchet(
         Stage::Post1B1D,
         "Cross-file duplicate enums, redundant NVE->NVE converters, discriminant matches, core str tables",
+        104,
         &violations,
     );
 }
@@ -265,9 +267,10 @@ fn bare_primitive_domain_fields_in_core_and_module_roots() {
     }
 
     assert_no_violations("Zero bare primitive domain fields in packages/core/store", &v_store);
-    assert_staged_violations(
+    assert_staged_ratchet(
         Stage::Post1B1D,
         "Zero bare primitive domain fields in core/{abi,engine,tables,codec} & modules/<cap>",
+        61,
         &v_1b1d,
     );
 }
@@ -381,9 +384,8 @@ fn active_hot_path_utf8_alloc_guards_and_zero_fnv1a_repo_wide() {
     );
 }
 
-/// Enforces [INV:no-legacy-acronyms].
 #[test]
-fn staged_table_hygiene_platform_purity_acronyms_and_codegen_53bit() {
+fn table_hygiene_platform_purity_and_codegen_53bit() {
     let idx = repo_index();
     let mut v_table = Vec::new();
     let mut v_purity = Vec::new();
@@ -409,14 +411,21 @@ fn staged_table_hygiene_platform_purity_acronyms_and_codegen_53bit() {
         "Platform purity: zero CSS/HTML formatters in packages/core/* and zero motion/MotionClock in core",
         &v_purity,
     );
-    assert_staged_violations(
-        Stage::Post1B1D,
-        "Zero banned legacy 4-letter format acronyms outside DOC_EXCLUDES",
-        &purity::check_banned_4_letter_acronyms(idx),
-    );
     assert_no_violations(
         "Codegen Dart/TypeScript 53-bit integer safety & legacy wire/reloc/hybrid_rust/scene_abi path bans",
         &purity::check_codegen_hygiene_and_dart_53bit(idx),
+    );
+}
+
+/// Enforces [INV:no-legacy-acronyms] (shrink-only monotonic ratchet; zero-tolerance under `NVE_STRICT_INVARIANTS=1b1d`).
+#[test]
+fn no_banned_legacy_4_letter_acronyms_ratchet() {
+    let idx = repo_index();
+    assert_staged_ratchet(
+        Stage::Post1B1D,
+        "Zero banned legacy 4-letter format acronyms outside DOC_EXCLUDES",
+        429,
+        &purity::check_banned_4_letter_acronyms(idx),
     );
 }
 
@@ -437,14 +446,16 @@ fn benchmarks_and_counting_alloc_coverage() {
         "Core & backend crates ship colocated benchmarks",
         &report.core_backend_benches,
     );
-    assert_staged_violations(
+    assert_staged_ratchet(
         Stage::Post1B1D,
         "All non-proc-macro packages/* crates ship colocated benchmarks",
+        32,
         &report.all_crate_benches,
     );
-    assert_staged_violations(
+    assert_staged_ratchet(
         Stage::Post1B1D,
         "All packages/{core,backends,framework}/* crates ship GlobalAlloc/CountingAlloc guards",
+        10,
         &report.alloc_guards,
     );
 }

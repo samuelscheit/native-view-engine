@@ -37,10 +37,14 @@ fn unpack_unit(tag: u32, w: u32) -> GridTrackUnit {
 }
 
 #[inline]
-const fn valid_unit(tag: u32, w: u32) -> bool {
+fn valid_unit(tag: u32, w: u32) -> bool {
     match tag {
         0 | 4 | 5 => w == 0,
-        1..=3 => true,
+        1 | 2 => f32::from_bits(w).is_finite(),
+        3 => {
+            let v = f32::from_bits(w);
+            v.is_finite() && v >= 0.0
+        }
         _ => false,
     }
 }
@@ -101,7 +105,7 @@ fn unpack_track(hdr: u32, w1: u32, w2: u32) -> GridTrack {
 }
 
 #[inline]
-const fn validate_track(hdr: u32, w1: u32, w2: u32) -> bool {
+fn validate_track(hdr: u32, w1: u32, w2: u32) -> bool {
     if (hdr & 0xE000) != 0 {
         return false;
     }
@@ -112,11 +116,18 @@ const fn validate_track(hdr: u32, w1: u32, w2: u32) -> bool {
     let rep = hdr >> 16;
     match tag {
         0 => single_tag == 0 && u1 == 0 && u2 == 0 && rep == 0 && w1 == 0 && w2 == 0,
-        1..=3 => single_tag == 0 && u1 == 0 && u2 == 0 && rep == 0 && w2 == 0,
+        1..=3 => {
+            single_tag == 0
+                && u1 == 0
+                && u2 == 0
+                && rep == 0
+                && w2 == 0
+                && valid_unit(tag, w1)
+        }
         4 => single_tag == 0 && rep == 0 && valid_unit(u1, w1) && valid_unit(u2, w2),
         5 => match single_tag {
             0 => u1 == 0 && u2 == 0 && w1 == 0 && w2 == 0,
-            1..=3 => u1 == 0 && u2 == 0 && w2 == 0,
+            1..=3 => u1 == 0 && u2 == 0 && w2 == 0 && valid_unit(single_tag, w1),
             4 => valid_unit(u1, w1) && valid_unit(u2, w2),
             _ => false,
         },
@@ -225,10 +236,16 @@ impl FlatResource for GridTracks {
         if self.0.len() > MAX_ITEMS {
             return false;
         }
+        let start = out.len();
         out.reserve(1 + self.0.len() * TRACK_STRIDE);
         out.push(self.0.len() as u32);
         for &track in self.0.iter() {
             out.extend_from_slice(&pack_track(track));
+        }
+        // Producers intern exactly what replicas accept.
+        if !Self::validate(&out[start..]) {
+            out.truncate(start);
+            return false;
         }
         true
     }

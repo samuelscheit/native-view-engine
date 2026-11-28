@@ -235,6 +235,123 @@ fn schema_hash_discriminates_t_vs_option_t_and_table_field_name_boundaries() {
 }
 
 #[test]
+fn schema_hash_and_static_desc_matches_discriminate_resource_kinds() {
+    use crate::table::{static_desc_matches, TableDescSpec};
+    use crate::{FlatResource, Res, ValidatedWords};
+
+    struct ResKindA;
+    impl FlatResource for ResKindA {
+        const KIND: nve_abi::Key64 = nve_abi::Key64::of("test.schema.res_a");
+        type View<'a> = &'a [u32];
+        fn write_words(&self, out: &mut Vec<u32>) -> bool {
+            out.push(1);
+            true
+        }
+        fn validate(w: &[u32]) -> bool {
+            w.len() == 1
+        }
+        fn view(w: ValidatedWords<'_, Self>) -> &[u32] {
+            w.as_slice()
+        }
+    }
+
+    struct ResKindB;
+    impl FlatResource for ResKindB {
+        const KIND: nve_abi::Key64 = nve_abi::Key64::of("test.schema.res_b");
+        type View<'a> = &'a [u32];
+        fn write_words(&self, out: &mut Vec<u32>) -> bool {
+            out.push(2);
+            true
+        }
+        fn validate(w: &[u32]) -> bool {
+            w.len() == 1
+        }
+        fn view(w: ValidatedWords<'_, Self>) -> &[u32] {
+            w.as_slice()
+        }
+    }
+
+    #[allow(dead_code)]
+    #[derive(crate::NveTable)]
+    #[nve_table(name = "test.schema.res_table", storage = "sparse")]
+    struct TableWithA {
+        #[effect(paint)]
+        res: Res<ResKindA>,
+    }
+
+    #[allow(dead_code)]
+    #[derive(crate::NveTable)]
+    #[nve_table(name = "test.schema.res_table", storage = "sparse")]
+    struct TableWithB {
+        #[effect(paint)]
+        res: Res<ResKindB>,
+    }
+
+    assert_ne!(
+        TableWithA::DESC.schema_hash,
+        TableWithB::DESC.schema_hash,
+        "schema_hash must differ when Res<A> changes to Res<B>"
+    );
+    assert_ne!(
+        crate::tables_schema_hash(&[&TableWithA::DESC]),
+        crate::tables_schema_hash(&[&TableWithB::DESC]),
+        "aggregate tables_schema_hash must differ when resource kind changes"
+    );
+
+    // Order-independent deterministic hashing of `(word, kind)` pairs in `compute_table_schema_hash`.
+    let h_ab = nve_abi::table::compute_table_schema_hash(
+        TableWithA::DESC.name,
+        TableWithA::DESC.storage,
+        TableWithA::DESC.flags,
+        TableWithA::DESC.defaults,
+        TableWithA::DESC.word_effects,
+        TableWithA::DESC.str_words,
+        TableWithA::DESC.resource_words,
+        TableWithA::DESC.events_word,
+        TableWithA::DESC.inherited,
+        TableWithA::DESC.fields,
+        &[(0, ResKindA::KIND), (2, ResKindB::KIND)],
+    );
+    let h_ba = nve_abi::table::compute_table_schema_hash(
+        TableWithA::DESC.name,
+        TableWithA::DESC.storage,
+        TableWithA::DESC.flags,
+        TableWithA::DESC.defaults,
+        TableWithA::DESC.word_effects,
+        TableWithA::DESC.str_words,
+        TableWithA::DESC.resource_words,
+        TableWithA::DESC.events_word,
+        TableWithA::DESC.inherited,
+        TableWithA::DESC.fields,
+        &[(2, ResKindB::KIND), (0, ResKindA::KIND)],
+    );
+    assert_eq!(h_ab, h_ba, "compute_table_schema_hash must be deterministic by word order");
+
+    // `static_desc_matches` rejects both real schema_hash mismatch AND even a spoofed equal
+    // schema_hash with differing `resource_kinds`.
+    let spec_b = TableDescSpec {
+        schema_hash: TableWithB::DESC.schema_hash,
+        storage: TableWithB::DESC.storage,
+        flags: TableWithB::DESC.flags,
+        defaults: TableWithB::DESC.defaults,
+        word_effects: TableWithB::DESC.word_effects,
+        str_words: TableWithB::DESC.str_words,
+        resource_words: TableWithB::DESC.resource_words,
+        resource_kinds: Some(TableWithB::DESC.resource_kinds),
+    };
+    assert!(!static_desc_matches(&TableWithA::DESC, &spec_b));
+
+    let spoofed_spec_b = TableDescSpec {
+        schema_hash: TableWithA::DESC.schema_hash,
+        ..spec_b
+    };
+    assert!(
+        !static_desc_matches(&TableWithA::DESC, &spoofed_spec_b),
+        "static_desc_matches must compare resource_kinds even if schema_hash were spoofed"
+    );
+}
+
+#[test]
 fn narrowed_signed_and_unsigned_bits_sign_extend_and_pack_cleanly() {
     #[allow(dead_code)]
     #[derive(crate::NveTable)]

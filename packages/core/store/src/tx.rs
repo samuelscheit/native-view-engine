@@ -12,7 +12,7 @@ use crate::id::{NodeId, NodeIndex, ResourceId};
 use crate::node_mut::{NodeMut, TempResources};
 use crate::resource::FlatResource;
 use crate::row::{DirtyList, RowWriter};
-use crate::row_patch::RowPatchView;
+use crate::row_patch::{RowPatchView, WordMask, WordOp};
 use crate::span_pool::StrSpan;
 use crate::store::{NodeRow, NodeStore, CREATED, IN_FREE, LIVE, PENDING_FREE};
 use crate::table::{NveTable, Prop, ResProp, ScalarField, StrProp, TableSlot};
@@ -445,7 +445,9 @@ impl TxCore<'_> {
     }
 
     /// Applies every valid table operation in `patch` onto live node `id`, attaching a touched
-    /// table only when at least one op passes word, liveness, and resource-kind checks.
+    /// table only when at least one non-metadata op passes word, liveness, and resource-kind
+    /// checks. On `#[nve_table(inherited)]` tables, explicit bits belonging to skipped ops are
+    /// masked out before updating word 0 so rejected resource ops never override inherited values.
     pub fn apply_row_patch(&mut self, id: NodeId, patch: RowPatchView<'_>) {
         assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
         for table in patch.tables() {
@@ -456,10 +458,14 @@ impl TxCore<'_> {
             let words_len = desc.words();
             let str_mask = desc.str_words | (desc.str_words << 1);
             let res_mask = desc.resource_words;
+            let inherited = desc.inherited;
             let has_valid = table.ops().any(|op| {
                 let wi = op.word() as usize;
                 let bit = 1u32 << (wi & 31);
                 if wi >= words_len || (str_mask & bit) != 0 || op.is_resource() != ((res_mask & bit) != 0) {
+                    return false;
+                }
+                if inherited && wi == 0 {
                     return false;
                 }
                 if !op.is_resource() {
@@ -475,14 +481,20 @@ impl TxCore<'_> {
                 continue;
             }
             let mut w = writer_at(self.store, id.node_index(), slot);
-            let inherited = desc.inherited;
+            let mut explicit_op: Option<WordOp> = None;
+            let mut skipped_words_mask = 0u32;
             for op in table.ops() {
                 let wi = op.word() as usize;
                 let bit = 1u32 << (wi & 31);
                 if wi >= words_len || (str_mask & bit) != 0 || op.is_resource() != ((res_mask & bit) != 0) {
+                    if wi < words_len {
+                        skipped_words_mask |= bit;
+                    }
                     continue;
                 }
-                if op.is_resource() {
+                if inherited && wi == 0 {
+                    explicit_op = Some(op);
+                } else if op.is_resource() {
                     let rid = ResourceId(op.set_bits());
                     if rid.is_none()
                         || desc
@@ -490,12 +502,30 @@ impl TxCore<'_> {
                             .is_some_and(|k| w.resources.is_live_with_kind(rid, k))
                     {
                         w.put_resource_id_wire(wi, rid);
+                    } else {
+                        skipped_words_mask |= bit;
                     }
-                } else if wi == 0 && inherited {
-                    let merged = op.clear_mask().apply(w.words()[0], op.set_bits());
-                    w.put_explicit_word(merged);
                 } else {
                     w.put(wi, 0, op.clear_mask().raw(), op.set_bits());
+                }
+            }
+            if let Some(op) = explicit_op {
+                let mut skipped_explicit_bits = 0u32;
+                if skipped_words_mask != 0 {
+                    for (b, f) in desc.fields.iter().enumerate() {
+                        if b < 32
+                            && ((skipped_words_mask & (1u32 << f.word)) != 0
+                                || (f.val_word != nve_abi::table::NO_VAL_WORD
+                                    && (skipped_words_mask & (1u32 << f.val_word)) != 0))
+                        {
+                            skipped_explicit_bits |= 1u32 << b;
+                        }
+                    }
+                }
+                let effective_clear = op.clear_mask().raw() & !skipped_explicit_bits;
+                if effective_clear != 0 {
+                    let merged = WordMask(effective_clear).apply(w.words()[0], op.set_bits());
+                    w.put_explicit_word(merged);
                 }
             }
         }

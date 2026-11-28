@@ -317,3 +317,195 @@ fn resource_validators_reject_truncated_and_corrupt_inputs() {
     assert_eq!(merged.table_count(), 40);
     let _ = RowPatchView::from_words(&p1).unwrap();
 }
+
+#[test]
+fn background_fill_and_grid_tracks_reject_non_finite_and_negative_domain_floats() {
+    use crate::layout_ext::{GridSingleTrack, GridTrackUnit};
+    use crate::paint::{LinearGradient, RadialGradient};
+
+    let red = nve_abi::ColorRgba::rgb(255, 0, 0);
+    let blue = nve_abi::ColorRgba::rgb(0, 0, 255);
+    let ok_stops = Arc::from([GradientStop::new(0.0, red), GradientStop::new(1.0, blue)]);
+
+    // 1. BackgroundFillRes: NaN, +inf, -inf in angle / center / radius / stop offset, and negative radius.
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        // Wire validation rejects non-finite linear angle and stop offset.
+        assert!(!BackgroundFillRes::validate(&[1, bad.to_bits(), 0]));
+        assert!(!BackgroundFillRes::validate(&[
+            1,
+            90.0f32.to_bits(),
+            1,
+            bad.to_bits(),
+            red.to_u32(),
+        ]));
+        // Wire validation rejects non-finite radial center_x, center_y, radius, and stop offset.
+        assert!(!BackgroundFillRes::validate(&[
+            2,
+            bad.to_bits(),
+            0.5f32.to_bits(),
+            1.0f32.to_bits(),
+            0,
+        ]));
+        assert!(!BackgroundFillRes::validate(&[
+            2,
+            0.5f32.to_bits(),
+            bad.to_bits(),
+            1.0f32.to_bits(),
+            0,
+        ]));
+        assert!(!BackgroundFillRes::validate(&[
+            2,
+            0.5f32.to_bits(),
+            0.5f32.to_bits(),
+            bad.to_bits(),
+            0,
+        ]));
+        assert!(!BackgroundFillRes::validate(&[
+            2,
+            0.5f32.to_bits(),
+            0.5f32.to_bits(),
+            1.0f32.to_bits(),
+            1,
+            bad.to_bits(),
+            red.to_u32(),
+        ]));
+
+        // Producer `write_words` rejects directly-constructed invalid fills and leaves `out` untouched.
+        let mut out = vec![0xDEAD_BEEFu32];
+        let bad_lin = BackgroundFillRes(BackgroundFill::Linear(LinearGradient {
+            angle_deg: bad,
+            stops: Arc::clone(&ok_stops),
+        }));
+        assert!(!bad_lin.write_words(&mut out));
+        assert_eq!(out, vec![0xDEAD_BEEF]);
+
+        let bad_stop = BackgroundFillRes(BackgroundFill::Linear(LinearGradient {
+            angle_deg: 45.0,
+            stops: Arc::from([GradientStop { offset: bad, color: red }]),
+        }));
+        assert!(!bad_stop.write_words(&mut out));
+        assert_eq!(out, vec![0xDEAD_BEEF]);
+
+        let bad_rad = BackgroundFillRes(BackgroundFill::Radial(RadialGradient {
+            center_x: 0.5,
+            center_y: 0.5,
+            radius: bad,
+            stops: Arc::clone(&ok_stops),
+        }));
+        assert!(!bad_rad.write_words(&mut out));
+        assert_eq!(out, vec![0xDEAD_BEEF]);
+    }
+
+    // Negative radial radius rejected on both wire validate and producer write_words.
+    assert!(!BackgroundFillRes::validate(&[
+        2,
+        0.5f32.to_bits(),
+        0.5f32.to_bits(),
+        (-0.01f32).to_bits(),
+        0,
+    ]));
+    let mut out = vec![7u32];
+    let neg_rad = BackgroundFillRes(BackgroundFill::Radial(RadialGradient {
+        center_x: 0.5,
+        center_y: 0.5,
+        radius: -1.0,
+        stops: ok_stops,
+    }));
+    assert!(!neg_rad.write_words(&mut out));
+    assert_eq!(out, vec![7]);
+
+    // Zero radial radius (degenerate point gradient) stays valid.
+    assert!(BackgroundFillRes::validate(&[
+        2,
+        0.5f32.to_bits(),
+        0.5f32.to_bits(),
+        0.0f32.to_bits(),
+        0,
+    ]));
+
+    // 2. GridTracks: NaN, +inf, -inf in Px/Percent/Fr and negative Fr (top-level, MinMax, Repeat).
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        // Raw wire words: tag 1 (Px), tag 2 (Percent), tag 3 (Fr), tag 4 (MinMax), tag 5 (Repeat).
+        for tag in 1u32..=3 {
+            assert!(!GridTracks::validate(&[1, tag, bad.to_bits(), 0]));
+            assert!(!GridTracks::validate(&[
+                1,
+                5 | (tag << 4) | (2u32 << 16),
+                bad.to_bits(),
+                0,
+            ]));
+            assert!(!GridTracks::validate(&[
+                1,
+                4 | (tag << 7) | (1u32 << 10),
+                bad.to_bits(),
+                10.0f32.to_bits(),
+            ]));
+            assert!(!GridTracks::validate(&[
+                1,
+                4 | (1u32 << 7) | (tag << 10),
+                10.0f32.to_bits(),
+                bad.to_bits(),
+            ]));
+        }
+
+        // Producer `write_words` rejects non-finite tracks and truncates back cleanly.
+        for track in [
+            GridTrack::Px(bad),
+            GridTrack::Percent(bad),
+            GridTrack::Fr(bad),
+            GridTrack::MinMax(GridTrackUnit::Px(bad), GridTrackUnit::Fr(1.0)),
+            GridTrack::MinMax(GridTrackUnit::Px(0.0), GridTrackUnit::Fr(bad)),
+            GridTrack::Repeat(2, GridSingleTrack::Px(bad)),
+            GridTrack::Repeat(2, GridSingleTrack::Fr(bad)),
+            GridTrack::Repeat(
+                2,
+                GridSingleTrack::MinMax(GridTrackUnit::Percent(bad), GridTrackUnit::Auto),
+            ),
+        ] {
+            let mut buf = vec![42u32];
+            assert!(!GridTracks::new(vec![track]).write_words(&mut buf));
+            assert_eq!(buf, vec![42]);
+        }
+    }
+
+    // Negative Fr weights rejected everywhere (raw wire & producer write_words).
+    assert!(!GridTracks::validate(&[1, 3, (-1.0f32).to_bits(), 0]));
+    assert!(!GridTracks::validate(&[
+        1,
+        5 | (3u32 << 4) | (3u32 << 16),
+        (-0.5f32).to_bits(),
+        0,
+    ]));
+    assert!(!GridTracks::validate(&[
+        1,
+        4 | (1u32 << 7) | (3u32 << 10),
+        0.0f32.to_bits(),
+        (-2.0f32).to_bits(),
+    ]));
+    for neg_fr in [
+        GridTrack::Fr(-1.0),
+        GridTrack::MinMax(GridTrackUnit::Px(0.0), GridTrackUnit::Fr(-0.25)),
+        GridTrack::Repeat(3, GridSingleTrack::Fr(-1.0)),
+        GridTrack::Repeat(
+            3,
+            GridSingleTrack::MinMax(GridTrackUnit::Fr(-0.1), GridTrackUnit::Auto),
+        ),
+    ] {
+        let mut buf = vec![99u32];
+        assert!(!GridTracks::new(vec![neg_fr]).write_words(&mut buf));
+        assert_eq!(buf, vec![99]);
+    }
+
+    // Valid finite tracks including 0fr pass both write_words and validate.
+    let valid_tracks = GridTracks::new(vec![
+        GridTrack::Px(100.0),
+        GridTrack::Percent(25.0),
+        GridTrack::Fr(0.0),
+        GridTrack::Fr(1.5),
+        GridTrack::MinMax(GridTrackUnit::Px(0.0), GridTrackUnit::Fr(1.0)),
+        GridTrack::Repeat(3, GridSingleTrack::Fr(1.0)),
+    ]);
+    let mut valid_buf = Vec::new();
+    assert!(valid_tracks.write_words(&mut valid_buf));
+    assert!(GridTracks::validate(&valid_buf));
+}

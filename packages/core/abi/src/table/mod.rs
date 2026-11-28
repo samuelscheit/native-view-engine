@@ -247,7 +247,8 @@ impl TableDesc {
 
 /// Computes the canonical compile-time XXH64 `schema_hash` of a word table from its
 /// canonical layout, storage, flags, default words, word effects, string/resource masks,
-/// events/inheritance metadata, and per-field `FieldKind`/offsets (independent of Rust spelling).
+/// events/inheritance metadata, per-field `FieldKind`/offsets, and `resource_kinds` in
+/// deterministic ascending word order (independent of Rust spelling).
 #[allow(clippy::too_many_arguments)]
 pub const fn compute_table_schema_hash(
     name: &str,
@@ -260,9 +261,10 @@ pub const fn compute_table_schema_hash(
     events_word: u8,
     inherited: bool,
     fields: &[FieldDesc],
+    resource_kinds: &[(u8, Key64)],
 ) -> u64 {
     let mut h = Xxh64Hasher::new(0);
-    h.update(b"NVE_TABLE_V4;");
+    h.update(b"NVE_TABLE_V5;");
     h.update(name.as_bytes());
     h.update(&[0xFF, storage as u8, flags, events_word, inherited as u8]);
     h.update_u64(defaults.len() as u64);
@@ -291,6 +293,22 @@ pub const fn compute_table_schema_hash(
             f.no_inherit as u8,
         ]);
         j += 1;
+    }
+    // Hash `(word, FlatResource::KIND)` pairs in deterministic ascending `word` order.
+    h.update_u64(resource_kinds.len() as u64);
+    if !resource_kinds.is_empty() {
+        let mut w = 0u16;
+        while w < 256 {
+            let mut k = 0usize;
+            while k < resource_kinds.len() {
+                if resource_kinds[k].0 as u16 == w {
+                    h.update(&[resource_kinds[k].0]);
+                    h.update_u64(resource_kinds[k].1.0);
+                }
+                k += 1;
+            }
+            w += 1;
+        }
     }
     h.digest()
 }

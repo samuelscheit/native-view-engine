@@ -109,6 +109,9 @@ pub(crate) struct TableDescSpec<'a> {
     pub(crate) word_effects: &'a [u8],
     pub(crate) str_words: u32,
     pub(crate) resource_words: u32,
+    /// Resource kind bindings for static descriptors (`None` on wire `DeclareTables`, which
+    /// validates `resource_kinds` via `schema_hash`).
+    pub(crate) resource_kinds: Option<&'a [(u8, nve_abi::Key64)]>,
 }
 
 impl OwnedTableDesc {
@@ -277,6 +280,9 @@ pub enum RegistryError {
 }
 
 pub(crate) fn static_desc_matches(existing: &TableDesc, spec: &TableDescSpec<'_>) -> bool {
+    let resource_kinds_ok = spec
+        .resource_kinds
+        .is_none_or(|rk| existing.resource_kinds == rk);
     existing.schema_hash == spec.schema_hash
         && existing.storage == spec.storage
         && (existing.flags & !table_flags::HOST_SLOT) == (spec.flags & !table_flags::HOST_SLOT)
@@ -284,6 +290,7 @@ pub(crate) fn static_desc_matches(existing: &TableDesc, spec: &TableDescSpec<'_>
         && existing.word_effects == spec.word_effects
         && existing.str_words == spec.str_words
         && existing.resource_words == spec.resource_words
+        && resource_kinds_ok
 }
 
 fn register_locked(desc: &'static TableDesc) -> Result<TableSlot, RegistryError> {
@@ -319,6 +326,7 @@ fn register_locked(desc: &'static TableDesc) -> Result<TableSlot, RegistryError>
             word_effects: desc.word_effects,
             str_words: desc.str_words,
             resource_words: desc.resource_words,
+            resource_kinds: Some(desc.resource_kinds),
         };
         if !static_desc_matches(reg[i], &spec) {
             return Err(RegistryError::SchemaMismatch {

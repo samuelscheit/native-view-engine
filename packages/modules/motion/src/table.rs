@@ -4,14 +4,14 @@
 use std::sync::Arc;
 
 use nve_abi::Key64;
-use nve_store::{FlatResource, NodeId, NveTable, Res, TxCore, ValidatedWords};
+use nve_store::{FlatResource, NodeId, NveTable, Res, TxCore, ValidatedWords, WordEnum};
 
 use crate::easing::EasingCurve;
 use crate::spring::SpringSpec;
 
 /// Strictly typed animatable style property (`#[repr(u8)]`, zero arbitrary strings).
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, WordEnum)]
 pub enum TransitionProperty {
     #[default]
     All = 0,
@@ -28,24 +28,6 @@ pub enum TransitionProperty {
 }
 
 impl TransitionProperty {
-    /// Decodes a wire discriminant (`None` for unknown values).
-    pub const fn from_u8(v: u8) -> Option<Self> {
-        Some(match v {
-            0 => Self::All,
-            1 => Self::BackgroundColor,
-            2 => Self::Color,
-            3 => Self::BorderColor,
-            4 => Self::Opacity,
-            5 => Self::BorderRadius,
-            6 => Self::Transform,
-            7 => Self::Width,
-            8 => Self::Height,
-            9 => Self::Padding,
-            10 => Self::Gap,
-            _ => return None,
-        })
-    }
-
     /// Returns `true` when `self` governs `target` (`All` matches every property).
     #[inline]
     pub const fn matches(self, target: Self) -> bool {
@@ -158,6 +140,13 @@ const TRANSITION_STRIDE: usize = 7;
 const MAX_TRANSITIONS: usize = 4096;
 const EASING_CUBIC: u32 = 5;
 const EASING_SPRING: u32 = 6;
+const PRESET_EASINGS: [EasingCurve; 5] = [
+    EasingCurve::Linear,
+    EasingCurve::Ease,
+    EasingCurve::EaseIn,
+    EasingCurve::EaseOut,
+    EasingCurve::EaseInOut,
+];
 
 /// Owned transition list (`nve.res.transitions`).
 #[derive(Debug, Clone, PartialEq)]
@@ -196,18 +185,18 @@ impl<'a> TransitionsView<'a> {
         let w = self.0.get(b..b + TRANSITION_STRIDE)?;
         let hdr = w[0];
         let c = |i: usize| f32::from_bits(w[3 + i]);
-        let easing = match (hdr >> 8) & 0xFF {
-            0 => EasingCurve::Linear,
-            1 => EasingCurve::Ease,
-            2 => EasingCurve::EaseIn,
-            3 => EasingCurve::EaseOut,
-            4 => EasingCurve::EaseInOut,
-            EASING_CUBIC => EasingCurve::CubicBezier(c(0), c(1), c(2), c(3)),
-            EASING_SPRING => EasingCurve::Spring(SpringSpec::new(c(0), c(1), c(2))),
-            _ => return None,
+        let tag = (hdr >> 8) & 0xFF;
+        let easing = if let Some(&preset) = PRESET_EASINGS.get(tag as usize) {
+            preset
+        } else if tag == EASING_CUBIC {
+            EasingCurve::CubicBezier(c(0), c(1), c(2), c(3))
+        } else if tag == EASING_SPRING {
+            EasingCurve::Spring(SpringSpec::new(c(0), c(1), c(2)))
+        } else {
+            return None;
         };
         Some(TransitionSpec {
-            property: TransitionProperty::from_u8(hdr as u8)?,
+            property: TransitionProperty::try_from_word(u32::from(hdr as u8))?,
             duration_ms: w[1],
             delay_ms: w[2],
             easing,
@@ -278,7 +267,7 @@ impl FlatResource for Transitions {
                 _ => false,
             };
             params_ok
-                && TransitionProperty::from_u8(hdr as u8).is_some()
+                && TransitionProperty::try_from_word(u32::from(hdr as u8)).is_some()
                 && ((hdr >> 16) & 0xFF) <= 1
                 && (hdr >> 24) == 0
         })

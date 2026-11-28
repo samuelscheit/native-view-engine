@@ -263,6 +263,45 @@ impl WordValue for SurfaceId {
     }
 }
 
+macro_rules! impl_abi_word_enum {
+    ($ty:path, opt_bits = $opt_bits:expr) => {
+        impl WordValue for $ty {
+            const BITS: u8 = Self::BITS;
+            const KIND: FieldKind = FieldKind::Enum;
+            const VALUES: Option<&'static ValueSetDesc> = Some(&Self::VALUE_SET);
+
+            #[inline(always)]
+            fn to_bits(self) -> u32 {
+                self.to_word()
+            }
+
+            #[inline(always)]
+            fn from_bits(bits: u32) -> Self {
+                Self::try_from_word(bits).unwrap_or_default()
+            }
+        }
+
+        impl OptWord for $ty {
+            const OPT_BITS: u8 = $opt_bits;
+            const OPT_KIND: FieldKind = FieldKind::Enum;
+            const OPT_ENCODING: OptEncoding = OptEncoding::PlusOne;
+            const VALUES: Option<&'static ValueSetDesc> = Some(&Self::VALUE_SET);
+
+            #[inline(always)]
+            fn opt_to_bits(v: Option<Self>) -> u32 {
+                Self::opt_to_word(v)
+            }
+
+            #[inline(always)]
+            fn opt_from_bits(bits: u32) -> Option<Self> {
+                Self::try_from_word(bits.wrapping_sub(1))
+            }
+        }
+    };
+}
+
+impl_abi_word_enum!(nve_abi::FlexDirection, opt_bits = 3);
+
 impl<E: nve_abi::EventEnum> WordValue for nve_abi::EventSet<E> {
     const BITS: u8 = 32;
     const KIND: FieldKind = FieldKind::U32;

@@ -554,6 +554,7 @@ const _: () = {{
     const __NVE_EFFECTS_ARR: [u8; __NVE_WORD_COUNT] = {S}::__private::trim_bytes::<__NVE_WORD_COUNT>(&__NVE_LAYOUT.word_effects);
     const __NVE_FINAL_FLAGS: u8 = {S}::__private::finalize_table_flags({base_flags}, &__NVE_EFFECTS_ARR);
     const __NVE_FIELDS_ARR: [{S}::FieldDesc; {field_count}] = __NVE_LAYOUT.fields;
+    const __NVE_RESOURCE_KINDS: &[(u8, {S}::__private::Key64)] = &[{res_kinds}];
 
     unsafe impl {S}::NveTable for {id} {{
         const DESC: {S}::TableDesc = {S}::TableDesc {{
@@ -570,6 +571,7 @@ const _: () = {{
                 __NVE_LAYOUT.events_word,
                 {inherited},
                 &__NVE_FIELDS_ARR,
+                __NVE_RESOURCE_KINDS,
             ),
             storage: {S}::Storage::{storage},
             flags: __NVE_FINAL_FLAGS,
@@ -581,7 +583,7 @@ const _: () = {{
             events: {events_set},
             inherited: {inherited},
             fields: &__NVE_FIELDS_ARR,
-            resource_kinds: &[{res_kinds}],
+            resource_kinds: __NVE_RESOURCE_KINDS,
         }};
         type Ref<'a> = {id}Ref<'a>;
         type Mut<'a> = {id}Mut<'a>;

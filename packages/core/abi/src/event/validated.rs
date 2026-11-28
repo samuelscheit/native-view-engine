@@ -311,19 +311,29 @@ impl<'a> ValidatedEvents<'a> {
             EventSlice::Aligned(s) => (s.as_ptr(), s.len()),
             EventSlice::Foreign(s) => (s.as_ptr().cast::<NveEvent>(), s.len()),
         };
+        let event_count = if count > u32::MAX as usize {
+            u32::MAX
+        } else {
+            count as u32
+        };
+        let bytes_len = if self.bytes.len() > u32::MAX as usize {
+            u32::MAX
+        } else {
+            self.bytes.len() as u32
+        };
         NveEventBatch {
-            events: ptr,
-            bytes: self.bytes.as_ptr(),
-            event_count: if count > u32::MAX as usize {
-                u32::MAX
+            events: if event_count == 0 {
+                core::ptr::null()
             } else {
-                count as u32
+                ptr
             },
-            bytes_len: ByteLen(if self.bytes.len() > u32::MAX as usize {
-                u32::MAX
+            bytes: if bytes_len == 0 {
+                core::ptr::null()
             } else {
-                self.bytes.len() as u32
-            }),
+                self.bytes.as_ptr()
+            },
+            event_count,
+            bytes_len: ByteLen(bytes_len),
         }
     }
 
@@ -463,12 +473,10 @@ impl<'a> ValidatedEvent<'a> {
     /// `false` when the event targets its node only ([`EventFlags::NO_BUBBLE`]).
     #[inline(always)] pub const fn bubbles(&self) -> bool { self.raw.flags.bubbles() }
 
-    /// Zero-alloc pre-validated UTF-8 text payload.
+    /// Zero-alloc pre-validated UTF-8 text payload (`""` for keyboard code/split and custom events).
     #[inline(always)]
     pub fn text(&self) -> &'a str {
-        if self.raw.flags.contains(EventFlags::UTF8_BYTES)
-            && !self.raw.flags.contains(EventFlags::KEY_SPLIT_BYTES)
-        {
+        if self.raw.flags.has_utf8_text() {
             // SAFETY: `EventFlags::UTF8_BYTES` was validated on `self.bytes` at ingress.
             unsafe { core::str::from_utf8_unchecked(self.bytes) }
         } else {

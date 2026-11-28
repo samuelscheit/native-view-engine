@@ -58,8 +58,8 @@ pub struct CompositionEventData {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TableEventData {
-    pub table_key: u64,
-    pub event_id: u32,
+    pub table_key: TableKey,
+    pub event_id: EventId,
     pub payload: Vec<u8>,
 }
 
@@ -83,9 +83,7 @@ impl NveEventData {
     #[inline(always)] pub const fn height(&self) -> f32 { self.raw.payload_f32(3) }
     #[inline(always)] pub fn bytes(&self) -> &[u8] { &self.bytes }
     #[inline(always)] pub fn text(&self) -> &str {
-        if self.raw.flags.contains(EventFlags::UTF8_BYTES)
-            && !self.raw.flags.contains(EventFlags::KEY_SPLIT_BYTES)
-        {
+        if self.raw.flags.has_utf8_text() {
             core::str::from_utf8(&self.bytes).unwrap_or("")
         } else {
             ""

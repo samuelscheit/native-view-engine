@@ -160,6 +160,9 @@ impl ResourceStore {
             if self.entries[i].generation != g {
                 return Ok(false);
             }
+            if self.entries[i].refs > 0 && self.entries[i].kind != kind {
+                return Ok(false);
+            }
             if self.reaches_child_scratch_budgeted(i, cycle_budget) {
                 return Ok(false);
             }

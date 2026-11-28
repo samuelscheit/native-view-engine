@@ -29,7 +29,7 @@ pub fn layout_snapshot_of(store: &NodeStore, id: NodeId) -> LayoutSnapshot {
         min_height: length_to_dim(l.min_height()),
         max_width: length_to_dim(l.max_width()),
         max_height: length_to_dim(l.max_height()),
-        flex_direction: l.flex_direction().into(),
+        flex_direction: l.flex_direction(),
         justify_content: l.justify_content().into(),
         align_items: l.align_items().into(),
         align_self: l.align_self(),

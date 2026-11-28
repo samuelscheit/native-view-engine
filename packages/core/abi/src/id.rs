@@ -383,6 +383,11 @@ impl EventFlags {
     }
 
     #[inline(always)]
+    pub const fn intersects(self, other: Self) -> bool {
+        (self.0 & other.0) != 0
+    }
+
+    #[inline(always)]
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
