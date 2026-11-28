@@ -47,19 +47,59 @@ NSString *label_text(RCTNveMacComponentView *view, uint32_t node) {
 
 bool near(CGFloat a, CGFloat b) { return std::fabs(a - b) < 0.5; }
 
-std::vector<uint8_t> image_src(std::string_view url) {
-  std::vector<uint8_t> out{0u};
-  const auto n = static_cast<uint32_t>(url.size());
+/// `nve.res.image_src` bytes: `tag` (0: URL, 1: encoded image), little-endian length, payload.
+std::vector<uint8_t> image_src(std::string_view payload, uint8_t tag = 0u) {
+  std::vector<uint8_t> out{tag};
+  const auto n = static_cast<uint32_t>(payload.size());
   for (uint32_t s = 0; s < 32u; s += 8u) out.push_back(static_cast<uint8_t>((n >> s) & 0xFFu));
-  out.insert(out.end(), url.begin(), url.end());
+  out.insert(out.end(), payload.begin(), payload.end());
   return out;
 }
 
-std::string png_data_uri(NSInteger pixels = 4) {
+NSData *png(NSInteger pixels) {
   NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:nullptr pixelsWide:pixels pixelsHigh:pixels
       bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:0 bitsPerPixel:0];
-  NSData *png = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
-  return std::string("data:image/png;base64,") + [png base64EncodedStringWithOptions:0].UTF8String;
+  return [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+}
+
+std::string png_data_uri(NSInteger pixels = 4) {
+  return std::string("data:image/png;base64,") + [png(pixels) base64EncodedStringWithOptions:0].UTF8String;
+}
+
+/// Revision 1: ROOT(1) -> [image(2), image(3), scroll(4, 100pt) -> [row(5, 400pt), row(6, 200pt)]];
+/// both images read inline-PNG resource 9. Revision 2 detaches the still-live image 3 and shrinks
+/// row 5 to 100pt (row 6 only moves).
+NSData *detach_scene(uint64_t revision) {
+  auto slot = [](uint64_t key) { return Nve2FrameBuilder::core_slot(Key64{key}); };
+  auto height = [&](Nve2FrameBuilder &b, uint32_t node, uint32_t bits) {
+    std::array<uint32_t, NVE_TABLE_LAYOUT_WORDS> lay{};
+    std::copy(std::begin(NVE_TABLE_LAYOUT_DEFAULTS), std::end(NVE_TABLE_LAYOUT_DEFAULTS), lay.begin());
+    b.patch(slot(NVE_TABLE_LAYOUT_KEY), node,
+            set_field(lay, NVE_TABLE_LAYOUT_HEIGHT, bits) | set_field(lay, NVE_TABLE_LAYOUT_FLEX_SHRINK, 0u), lay);
+  };
+  Nve2FrameBuilder b(revision);
+  if (revision == 1u) {
+    b.declare_core_tables().create_nodes({1u, 2u, 3u, 4u, 5u, 6u});
+    NSData *bytes = png(4);
+    b.define_resource(9u, Key64::of("nve.res.image_src"),
+                      image_src(std::string_view(static_cast<const char *>(bytes.bytes), bytes.length), 1u));
+    std::array<uint32_t, NVE_TABLE_IMAGE_WORDS> img{};
+    std::copy(std::begin(NVE_TABLE_IMAGE_DEFAULTS), std::end(NVE_TABLE_IMAGE_DEFAULTS), img.begin());
+    for (const uint32_t node : {2u, 3u}) b.patch(slot(NVE_TABLE_IMAGE_KEY), node, set_field(img, NVE_TABLE_IMAGE_SRC, 9u), img);
+    std::array<uint32_t, NVE_TABLE_SCROLL_WORDS> scroll{};
+    std::copy(std::begin(NVE_TABLE_SCROLL_DEFAULTS), std::end(NVE_TABLE_SCROLL_DEFAULTS), scroll.begin());
+    b.patch(slot(NVE_TABLE_SCROLL_KEY), 4u, 0u, scroll);
+    height(b, 4u, 0x42C80000u);  // 100pt
+    height(b, 5u, 0x43C80000u);  // 400pt
+    height(b, 6u, 0x43480000u);  // 200pt
+    b.set_children(1u, {2u, 3u, 4u});
+    b.set_children(4u, {5u, 6u});
+  } else {
+    b.set_children(1u, {2u, 4u});
+    height(b, 5u, 0x42C80000u);
+  }
+  const std::vector<uint8_t> frame = b.finish();
+  return [NSData dataWithBytes:frame.data() length:frame.size()];
 }
 
 /// ROOT(1) -> [input(2): secure text input, image(3): data-URI src + a11y label, scroll(4) -> row(5)].
@@ -269,6 +309,27 @@ int main() {
     CHECK([scene.nveHost replayFrame0:rewritten_image_scene()]);
     CHECK([scene nativeViewForNodeId:3u] == image && near(((NveAppleImageView *)image).image.size.width, 8.0));
     CHECK(scene.nveLastReconciledDirtyCount == 1u && scene.nveLastReconciledRemovedCount == 0u);
+
+    // 7'. Inline images decode once per resource; a still-live detached child leaves its parent;
+    //     scroll content follows a resized child and its moved sibling.
+    {
+      RCTNveMacComponentView *det = make_view();
+      CHECK([det.nveHost replayFrame0:detach_scene(1u)]);
+      NveAppleImageView *a = (NveAppleImageView *)[det nativeViewForNodeId:2u];
+      NveAppleImageView *b = (NveAppleImageView *)[det nativeViewForNodeId:3u];
+      CHECK([a isKindOfClass:[NveAppleImageView class]] && [b isKindOfClass:[NveAppleImageView class]]);
+      CHECK(a.image != nil && a.image == b.image);  // one decode shared by both nodes
+      NSScrollView *sv = (NSScrollView *)[det nativeViewForNodeId:4u];
+      CHECK([sv isKindOfClass:[NSScrollView class]] && near(sv.documentView.frame.size.height, 600.0));
+      NSView *parent = b.superview;
+      CHECK(parent != nil && [parent.subviews containsObject:b]);
+      CHECK([det.nveHost replayFrame0:detach_scene(2u)]);
+      CHECK([det nativeViewForNodeId:3u] == b);  // still live, so still realized ...
+      CHECK(b.superview == nil && ![parent.subviews containsObject:b]);  // ... but detached
+      CHECK(a.superview == parent && sv.superview == parent);
+      CHECK(near([det nativeViewForNodeId:6u].frame.origin.y, 100.0));
+      CHECK(near(sv.documentView.frame.size.height, 300.0));
+    }
 
     // 7a. `max_width == 0` measures min-content: the widest word, wrapped onto more lines.
     {

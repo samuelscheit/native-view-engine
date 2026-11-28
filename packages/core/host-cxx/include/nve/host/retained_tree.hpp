@@ -13,6 +13,10 @@
 //                     std::span<Handle* const> kids);           // in scene child order
 //   uint32_t module_resource(const NodeData&);                 // optional: resource id a module
 //                                                              // table attaches (canvas draw list)
+//   void begin_sync(const SceneReader&, bool incremental);     // optional: before the first
+//                                                              // adapter call of a non-empty sync
+//   void finish_sync();                                        // optional: after its last call
+//                                                              // (flush batched container work)
 //
 // The first sync, any `frame_id` that is not the next one (a regression, or a skipped frame whose
 // change sets were never seen), and any new `scene_epoch` (the runtime discarded its scene: app
@@ -57,6 +61,14 @@ concept ModuleResourceAdapter = requires(Adapter& a, const NodeData& n) {
   { a.module_resource(n) } -> std::convertible_to<uint32_t>;
 };
 
+/// `Adapter` brackets every sync that reaches it (e.g. evicts per-resource caches when not
+/// `incremental`, flushes deduplicated container work once in `finish_sync`).
+template <class Adapter>
+concept SyncHooksAdapter = requires(Adapter& a, const SceneReader& scene, bool incremental) {
+  a.begin_sync(scene, incremental);
+  a.finish_sync();
+};
+
 /// Resource ids live node `n`'s views read: image source, box shadows, background fill, and the
 /// adapter's `module_resource`.
 template <class Adapter>
@@ -94,6 +106,7 @@ class RetainedTree {
     updated_ = 0u;
     moved_ = 0u;
     work_.clear();
+    if constexpr (SyncHooksAdapter<Adapter>) adapter.begin_sync(scene, incremental_);
 
     if (full) {
       users_.reset();  // every live view re-registers below; stale epochs' ids are dropped
@@ -148,6 +161,7 @@ class RetainedTree {
       }
     }
     relink_.clear();
+    if constexpr (SyncHooksAdapter<Adapter>) adapter.finish_sync();
     return updated_;
   }
 

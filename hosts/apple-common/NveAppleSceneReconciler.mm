@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 using nve::apple::NodeKind;
@@ -13,21 +14,9 @@ using nve::host::NodeGeometry;
 
 namespace {
 
-/// Decodes `nve.res.image_src` (tag 0: URL, tag 1: encoded bytes) into a platform image.
-id image_from_source(NSData *bytes) {
-  if (bytes.length < 5u) return nil;
-  const uint8_t *p = static_cast<const uint8_t *>(bytes.bytes);
-  const uint32_t len = uint32_t{p[1]} | (uint32_t{p[2]} << 8u) | (uint32_t{p[3]} << 16u) | (uint32_t{p[4]} << 24u);
-  if (static_cast<NSUInteger>(len) + 5u != bytes.length) return nil;
-  if (p[0] == 0u) {
-    return nve::apple::shared_image_cache().image_for_source(
-        std::string_view(reinterpret_cast<const char *>(p + 5), len));
-  }
-  if (p[0] == 1u) {
-    return nve::apple::decode_image_data([bytes subdataWithRange:NSMakeRange(5, len)]);
-  }
-  return nil;
-}
+/// Decoded inline (tag 1) images kept across syncs; past this many distinct resources the cache
+/// restarts instead of growing without bound.
+constexpr size_t kInlineImageCacheLimit = 256u;
 
 CGRect cg_rect(const NveLayoutRect &r) { return CGRectMake(r.x, r.y, r.width, r.height); }
 
@@ -35,16 +24,22 @@ CGRect cg_rect(const NveLayoutRect &r) { return CGRectMake(r.x, r.y, r.width, r.
 struct AppleView {
   NvePlatformView *view = nil;
   NodeKind kind = NodeKind::Container;
+  uint32_t node_id = 0u;
   int32_t z_index = 0;
   /// Decoded `nve.image` source and the resource id it came from.
   id image = nil;
   uint32_t image_resource = 0u;
+  /// Queued for one content-size pass in `finish_sync` (scroll views only).
+  bool scroll_queued = false;
 };
 
 /// `RetainedTree` adapter over the UIKit / AppKit view adapter: frames are parent-relative
-/// (`NodeGeometry::local`), children follow scene order stably sorted by `z_index`, scroll content
-/// spans the container and its children, and images are re-decoded only when their resource id or
-/// bytes changed (`resource_unchanged`).
+/// (`NodeGeometry::local`), children follow scene order stably sorted by `z_index` (children the
+/// scene no longer lists leave their container), scroll content spans the container and its
+/// children, and images are re-decoded only when their resource id or bytes changed
+/// (`resource_unchanged`); inline images are decoded once per resource and shared by every node
+/// reading it. Re-sorts after a `z_index` change and scroll content sizing are deduplicated per
+/// container during a sync and run once in `finish_sync`.
 struct NveAppleAdapter {
   using Handle = AppleView;
 
@@ -55,6 +50,36 @@ struct NveAppleAdapter {
   const nve::host::SceneReader *scene = nullptr;
   /// Node id of every realized view.
   std::unordered_map<const void *, uint32_t> ids;
+  /// Decoded inline image of every resource id read since the last eviction (`begin_sync`).
+  std::unordered_map<uint32_t, id> inline_images;
+  /// Containers whose realized subviews need a z-order pass, and scroll views (node ids) whose
+  /// content size needs re-measuring: collected during a sync, flushed once in `finish_sync`.
+  NSMutableSet<NvePlatformView *> *restack = [NSMutableSet set];
+  std::vector<uint32_t> scroll_queue;
+  /// Scratch: the realized children `set_children` keeps.
+  std::unordered_set<const void *> keep;
+
+  void begin_sync(const nve::host::SceneReader &s, bool incremental) {
+    scene = &s;
+    if (!incremental) {
+      inline_images.clear();  // a new epoch or frame gap: ids may name other bytes now
+      return;
+    }
+    for (const uint32_t id : s.dirty_resources()) inline_images.erase(id);
+  }
+
+  void finish_sync() {
+    for (NvePlatformView *container in restack) restack_managed(container);
+    [restack removeAllObjects];
+    for (const uint32_t id : scroll_queue) {
+      if (AppleView *h = tree->find(id)) {
+        h->scroll_queued = false;
+        size_scroll(*h);
+      }
+    }
+    scroll_queue.clear();
+    scene = nullptr;
+  }
 
   uint32_t tag(const NodeData &n) noexcept {
     // AppKit realizes secure inputs as another class (`NSSecureTextField`): toggling recreates.
@@ -66,6 +91,7 @@ struct NveAppleAdapter {
     AppleView h;
     h.view = [views nveCreateNativeViewForNode:v] ?: [[NvePlatformView alloc] initWithFrame:CGRectZero];
     h.kind = v.kind;
+    h.node_id = n.id;
     ids[(__bridge const void *)h.view] = n.id;
     return h;
   }
@@ -75,14 +101,14 @@ struct NveAppleAdapter {
     if (v.image_resource == 0u) {
       h.image = nil;
     } else if (h.image == nil || !tree->resource_unchanged(*scene, v.image_resource, h.image_resource)) {
-      h.image = resources ? image_from_source(resources(v.image_resource)) : nil;  // nil retries next update
+      h.image = image_for(v.image_resource);  // nil retries next update
     }
     h.image_resource = v.image_resource;
     [views nveUpdateNativeView:h.view forNode:v image:h.image];
-    const bool restack = h.z_index != v.style.z_index;
+    const bool restacked = h.z_index != v.style.z_index;
     h.z_index = v.style.z_index;
     place(h, n);
-    if (restack && h.view.superview != nil) restack_managed(h.view.superview);
+    if (restacked && h.view.superview != nil) [restack addObject:h.view.superview];
   }
 
   void move(Handle &h, const NodeGeometry &g) { place(h, g); }
@@ -110,14 +136,47 @@ struct NveAppleAdapter {
     std::vector<const AppleView *> sorted(kids.begin(), kids.end());
     std::stable_sort(sorted.begin(), sorted.end(),
                      [](const AppleView *a, const AppleView *b) { return a->z_index < b->z_index; });
+    // Still-live children the scene detached (or moved under a parent synced later) leave.
+    keep.clear();
+    for (const AppleView *k : sorted) keep.insert((__bridge const void *)k->view);
+    NSMutableArray<NvePlatformView *> *dropped = nil;
+    for (NvePlatformView *kv in container.subviews) {
+      const void *key = (__bridge const void *)kv;
+      if (ids.count(key) == 0u || keep.count(key) != 0u) continue;
+      if (dropped == nil) dropped = [NSMutableArray array];
+      [dropped addObject:kv];
+    }
+    for (NvePlatformView *kv in dropped) [kv removeFromSuperview];
     for (const AppleView *k : sorted) {
       if (k->view.superview != container) [container addSubview:k->view];
     }
     order(container, sorted);
-    if (parent != nullptr) size_scroll(*parent);
+    if (parent != nullptr) queue_scroll(*parent);
   }
 
  private:
+  /// The platform image of `nve.res.image_src` resource `resource` (tag 0: URL through the shared
+  /// URL cache, tag 1: encoded bytes decoded once per resource id).
+  id image_for(uint32_t resource) {
+    if (const auto hit = inline_images.find(resource); hit != inline_images.end()) return hit->second;
+    if (!resources) return nil;
+    NSData *bytes = resources(resource);
+    if (bytes.length < 5u) return nil;
+    const uint8_t *p = static_cast<const uint8_t *>(bytes.bytes);
+    const uint32_t len = uint32_t{p[1]} | (uint32_t{p[2]} << 8u) | (uint32_t{p[3]} << 16u) | (uint32_t{p[4]} << 24u);
+    if (static_cast<NSUInteger>(len) + 5u != bytes.length) return nil;
+    if (p[0] == 0u) {
+      return nve::apple::shared_image_cache().image_for_source(
+          std::string_view(reinterpret_cast<const char *>(p + 5), len));
+    }
+    if (p[0] != 1u) return nil;
+    id image = nve::apple::decode_image_data([bytes subdataWithRange:NSMakeRange(5, len)]);
+    if (image == nil) return nil;
+    if (inline_images.size() >= kInlineImageCacheLimit) inline_images.clear();
+    inline_images.emplace(resource, image);
+    return image;
+  }
+
   NvePlatformView *container_of(NvePlatformView *view) {
     id<NveAppleComponentViewAdapter> adapter = views;
     if ([adapter respondsToSelector:@selector(nveChildContainerForParentView:)]) {
@@ -130,10 +189,16 @@ struct NveAppleAdapter {
   void place(AppleView &h, const NodeGeometry &g) {
     const CGRect local = cg_rect(g.local);
     if (!CGRectEqualToRect(h.view.frame, local)) h.view.frame = local;
-    size_scroll(h);
+    queue_scroll(h);
     if (g.parent != 0u) {
-      if (AppleView *parent = tree->find(g.parent)) size_scroll(*parent);
+      if (AppleView *parent = tree->find(g.parent)) queue_scroll(*parent);
     }
+  }
+
+  void queue_scroll(AppleView &h) {
+    if (h.kind != NodeKind::Scroll || h.scroll_queued) return;
+    h.scroll_queued = true;
+    scroll_queue.push_back(h.node_id);
   }
 
   void size_scroll(AppleView &h) {
@@ -226,9 +291,7 @@ struct NveAppleAdapter {
 
 - (void)syncFromScene:(const nve::host::SceneReader &)scene {
   if (_adapter.views == nil) return;
-  _adapter.scene = &scene;
   const size_t updated = _tree.sync(scene, _tables, _adapter);
-  _adapter.scene = nullptr;
   _lastReconciledDirtyCount = static_cast<uint32_t>(updated);
   _lastReconciledMovedCount = static_cast<uint32_t>(_tree.moved());
   _lastReconciledRemovedCount = static_cast<uint32_t>(scene.removed_ids().size());
