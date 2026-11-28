@@ -521,6 +521,31 @@ impl NodeStore {
         }
     }
 
+    /// Deterministic 64-bit XXH64 schema digest over `base_descs` unioned with every table
+    /// actually attached to at least one live node in this store (both compiled static and
+    /// wire-declared dynamic tables). Matches [`crate::tables_schema_hash(base_descs)`] when
+    /// only tables in `base_descs` are live.
+    pub fn schema_hash_with_base(&self, base_descs: &[&'static TableDesc]) -> u64 {
+        let mut live_bits = 0u128;
+        for i in 1..self.nodes.len() {
+            let row = self.nodes[NodeIndex(i as u32)];
+            if row.flags & LIVE != 0 {
+                live_bits |= row.tables.0;
+            }
+        }
+        table::hash_table_schema_pairs(
+            base_descs
+                .iter()
+                .map(|d| (d.key.0, d.schema_hash))
+                .chain(
+                    TableSet(live_bits)
+                        .iter_slots()
+                        .filter_map(|slot| self.table_meta(slot))
+                        .map(|meta| (meta.key().0, meta.schema_hash())),
+                ),
+        )
+    }
+
     /// Slots of every table that has a column in this store.
     pub fn table_slots(&self) -> impl Iterator<Item = TableSlot> + '_ {
         self.columns

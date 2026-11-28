@@ -116,47 +116,54 @@ impl SurfaceRuntime {
         Ok(())
     }
 
-    /// Acquires the exclusive write lock, verifies owner-thread affinity and poison state, and
-    /// structurally invalidates `published_view` on any panic, error, or store pointer drift.
+    /// Acquires the exclusive write lock, verifies owner-thread affinity and poison state, defers
+    /// synchronous host wake callbacks until strictly after unlock, and structurally invalidates
+    /// `published_view` on any panic, error, or store pointer drift.
     pub(crate) fn with_write<T>(
         &self,
         f: impl FnOnce(&mut RuntimeInner) -> Result<T, RuntimeError>,
     ) -> Result<T, RuntimeError> {
         self.check_not_poisoned()?;
         self.check_owner_thread()?;
-        let _guard = self.lock.write_guard().ok_or(RuntimeError::SceneBusy)?;
-        // SAFETY: `_guard` grants exclusive access across all threads/FFI callers and releases on unwind.
-        let inner = unsafe { &mut *self.inner.get() };
+        let wake_defer;
+        let res = {
+            let _guard = self.lock.write_guard().ok_or(RuntimeError::SceneBusy)?;
+            wake_defer = self.wake.defer_guard();
+            // SAFETY: `_guard` grants exclusive access across all threads/FFI callers and releases on unwind.
+            let inner = unsafe { &mut *self.inner.get() };
 
-        struct WriteTxnGuard<'a> {
-            inner: &'a mut RuntimeInner,
-            poisoned: &'a AtomicBool,
-            completed: bool,
-        }
-        impl Drop for WriteTxnGuard<'_> {
-            fn drop(&mut self) {
-                if !self.completed {
-                    self.inner.state.invalidate_published_view();
-                    self.poisoned.store(true, Ordering::Release);
+            struct WriteTxnGuard<'a> {
+                inner: &'a mut RuntimeInner,
+                poisoned: &'a AtomicBool,
+                completed: bool,
+            }
+            impl Drop for WriteTxnGuard<'_> {
+                fn drop(&mut self) {
+                    if !self.completed {
+                        self.inner.state.invalidate_published_view();
+                        self.poisoned.store(true, Ordering::Release);
+                    }
                 }
             }
-        }
 
-        let mut txn = WriteTxnGuard {
-            inner,
-            poisoned: &self.poisoned,
-            completed: false,
+            let mut txn = WriteTxnGuard {
+                inner,
+                poisoned: &self.poisoned,
+                completed: false,
+            };
+            let res = f(txn.inner);
+            // Validate every borrowed slab AND every `NveTableView` column pointer/row_count against
+            // the active store unconditionally. Non-mutating errors (e.g. `scroll_by(non_scroll)` or
+            // `submit_nve2` while app attached) keep the live view intact; any pointer/row drift
+            // invalidates `published_view` and schedules republishing so `acquire_scene` never UAFs.
+            if !txn.inner.published_view_is_current() {
+                txn.inner.state.invalidate_published_view();
+                txn.inner.state.needs_publish = true;
+            }
+            txn.completed = true;
+            res
         };
-        let res = f(txn.inner);
-        // Validate every borrowed slab AND every `NveTableView` column pointer/row_count against
-        // the active store unconditionally. Non-mutating errors (e.g. `scroll_by(non_scroll)` or
-        // `submit_nve2` while app attached) keep the live view intact; any pointer/row drift
-        // invalidates `published_view` and schedules republishing so `acquire_scene` never UAFs.
-        if !txn.inner.published_view_is_current() {
-            txn.inner.state.invalidate_published_view();
-            txn.inner.state.needs_publish = true;
-        }
-        txn.completed = true;
+        drop(wake_defer);
         res
     }
 
@@ -184,23 +191,35 @@ impl SurfaceRuntime {
         let new_binding = self.host_router.new_owner_binding();
         let new_tag = new_binding.owner_tag();
         let new_callbacks = new_binding.callbacks();
-        let (had_pending, old_pair, old_app, old_binding) = self.with_write(|inner| {
-            let old_pair = inner.pair.take();
-            if old_pair.is_some() {
-                inner.state.metrics.pair_connected = 0;
-            }
-            inner.reset_for_app_change();
-            app.bind_host(Some(new_callbacks));
-            let pending = app.install_wake_bridge(Arc::clone(&self.wake));
-            let old_app = inner.app.replace(app);
-            let old_binding = inner.host_binding.replace(new_binding);
-            inner.state.active_host_owner_tag = new_tag;
-            inner.state.needs_render = true;
-            inner.state.needs_publish = true;
-            Ok((pending, old_pair, old_app, old_binding))
-        })?;
+        let _attach_defer = self.wake.defer_guard();
+        let (had_pending, app_requested_frame, was_non_empty, old_pair, old_app, old_binding) =
+            self.with_write(|inner| {
+                let was_non_empty = inner.has_non_empty_scene();
+                let old_pair = inner.pair.take();
+                if let Some(ref pair) = old_pair {
+                    pair.disable_wake();
+                    inner.state.metrics.pair_connected = 0;
+                }
+                inner.reset_for_app_change();
+                app.bind_host(Some(new_callbacks));
+                let app_requested_frame = new_binding.take_frame_requested();
+                let pending = app.install_wake_bridge(Arc::clone(&self.wake));
+                let old_app = inner.app.replace(app);
+                let old_binding = inner.host_binding.replace(new_binding);
+                inner.state.active_host_owner_tag = new_tag;
+                inner.state.needs_render = true;
+                inner.state.needs_publish = true;
+                Ok((
+                    pending,
+                    app_requested_frame,
+                    was_non_empty,
+                    old_pair,
+                    old_app,
+                    old_binding,
+                ))
+            })?;
         // Unbind (`active = false`, `bind_host(None)`, `discard_pending_for_owner`) and destroy
-        // the replaced app strictly outside the surface lock before freeing `old_binding`.
+        // the replaced app strictly outside the surface lock before dropping `old_binding`.
         unbind_and_drop_app(old_app, old_binding, &self.host_router);
         // Shut down any replaced pairing worker OUTSIDE the surface write lock to avoid deadlocks.
         if let Some(mut pair) = old_pair {
@@ -208,8 +227,12 @@ impl SurfaceRuntime {
             self.pair_connected.store(false, Ordering::Release);
             let _ = self.wake.take_pending();
         }
-        if had_pending {
+        if had_pending || app_requested_frame {
             self.wake.trigger();
+        }
+        drop(_attach_defer);
+        if was_non_empty {
+            self.intrinsic_size.notify();
         }
         Ok(())
     }
@@ -237,13 +260,15 @@ impl SurfaceRuntime {
         self.check_not_poisoned()?;
         self.check_owner_thread()?;
         let mut validated = Some(PairSession::validate_and_parse(uri, token)?);
-        let (old_pair, old_app, old_binding) = self.with_write(|inner| {
+        let (was_non_empty, old_pair, old_app, old_binding) = self.with_write(|inner| {
+            let was_non_empty = inner.has_non_empty_scene();
             if let Some(existing) = inner.pair.take() {
+                existing.disable_wake();
                 inner.reset_for_app_change();
                 inner.state.needs_render = false;
                 inner.state.needs_publish = false;
                 inner.state.metrics.pair_connected = 0;
-                return Ok((Some(existing), None, None));
+                return Ok((was_non_empty, Some(existing), None, None));
             }
             // Fast path: no prior pair running (a local app at most). Spawn BEFORE touching the
             // app so a failed spawn leaves it running; then swap it out in this same write.
@@ -265,7 +290,7 @@ impl SurfaceRuntime {
             inner.state.needs_publish = false;
             inner.state.metrics.pair_connected = 0;
             inner.pair = Some(session);
-            Ok((None, old_app, old_binding))
+            Ok((was_non_empty, None, old_app, old_binding))
         })?;
         // Unbind and destroy the replaced app outside the surface lock before dropping `old_binding`.
         unbind_and_drop_app(old_app, old_binding, &self.host_router);
@@ -289,6 +314,9 @@ impl SurfaceRuntime {
                 Ok(())
             })?;
         }
+        if was_non_empty {
+            self.intrinsic_size.notify();
+        }
         Ok(())
     }
 
@@ -308,15 +336,20 @@ impl SurfaceRuntime {
                 "nve-runtime built without wire pairing support",
             ));
         }
-        let old_pair = self.with_write(|inner| {
+        let (was_non_empty, old_pair) = self.with_write(|inner| {
             let old_pair = inner.pair.take();
             inner.state.metrics.pair_connected = 0;
-            if old_pair.is_some() {
+            let was_non_empty = if let Some(ref pair) = old_pair {
+                pair.disable_wake();
+                let had_scene = inner.has_non_empty_scene();
                 inner.reset_for_app_change();
                 inner.state.needs_render = false;
                 inner.state.needs_publish = false;
-            }
-            Ok(old_pair)
+                had_scene
+            } else {
+                false
+            };
+            Ok((was_non_empty, old_pair))
         })?;
         if let Some(mut pair) = old_pair {
             pair.shutdown();
@@ -324,6 +357,9 @@ impl SurfaceRuntime {
             // Clear any stale pending wake left by the stopped session so a future `pair_connect`
             // does not have its initial frame wake suppressed by the coalesced wake latch.
             let _ = self.wake.take_pending();
+        }
+        if was_non_empty {
+            self.intrinsic_size.notify();
         }
         Ok(())
     }
@@ -342,9 +378,10 @@ impl SurfaceRuntime {
     }
 
     pub(crate) fn detach_app_shared(&self) -> Result<(), RuntimeError> {
-        let (old_app, old_binding) = self.with_write(|inner| {
+        let (was_non_empty, old_app, old_binding) = self.with_write(|inner| {
             // Only reset when a local app was actually attached so `attach_app_interface(h, NULL)`
             // while paired never wipes the live paired replica.
+            let was_non_empty = inner.app.is_some() && inner.has_non_empty_scene();
             let old_app = inner.app.take();
             let old_binding = inner.host_binding.take();
             if old_app.is_some() {
@@ -353,9 +390,12 @@ impl SurfaceRuntime {
                 inner.state.needs_render = false;
                 inner.state.needs_publish = false;
             }
-            Ok((old_app, old_binding))
+            Ok((was_non_empty, old_app, old_binding))
         })?;
         unbind_and_drop_app(old_app, old_binding, &self.host_router);
+        if was_non_empty {
+            self.intrinsic_size.notify();
+        }
         Ok(())
     }
 

@@ -19,7 +19,7 @@ use nve_store::{ChangeSet, NodeStore, RealizationOrder};
 use crate::app::{FrameTickHook, RuntimeApp};
 use crate::delta::SceneDelta;
 use crate::hooks::IntrinsicSizeNotifier;
-use crate::host_router::RuntimeHostRouter;
+use crate::host_router::{unbind_and_drop_app, OwnerBindingHandle, RuntimeHostRouter};
 use crate::lock::SceneLock;
 use crate::state::{PublishedResources, RuntimeInner, SurfaceState};
 use crate::surface::SurfaceRuntime;
@@ -190,18 +190,39 @@ impl RuntimeBuilder {
 
         let wake = Arc::new(WakeBridge::new());
         let host_router = RuntimeHostRouter::new(Arc::clone(&wake));
-        let mut app = self.app;
-        let mut host_binding = None;
+        // Unwind guard ensures `app` is unbound and dropped BEFORE `host_binding` if either
+        // `bind_host` or `install_wake_bridge` panics during `build()`.
+        struct BuildAppGuard<'a> {
+            host_binding: Option<OwnerBindingHandle>,
+            app: Option<Box<dyn RuntimeApp>>,
+            router: &'a RuntimeHostRouter,
+        }
+        impl Drop for BuildAppGuard<'_> {
+            fn drop(&mut self) {
+                if self.app.is_some() || self.host_binding.is_some() {
+                    unbind_and_drop_app(self.app.take(), self.host_binding.take(), self.router);
+                }
+            }
+        }
+        let mut init_guard = BuildAppGuard {
+            host_binding: None,
+            app: self.app,
+            router: &host_router,
+        };
         let mut active_host_owner_tag = 0u64;
-        if let Some(ref mut a) = app {
+        if let Some(ref mut a) = init_guard.app {
             let binding = host_router.new_owner_binding();
             active_host_owner_tag = binding.owner_tag();
-            a.bind_host(Some(binding.callbacks()));
-            host_binding = Some(binding);
+            let callbacks = binding.callbacks();
+            init_guard.host_binding = Some(binding);
+            a.bind_host(Some(callbacks));
             if a.install_wake_bridge(Arc::clone(&wake)) {
                 wake.trigger();
             }
         }
+        let app = init_guard.app.take();
+        let host_binding = init_guard.host_binding.take();
+        drop(init_guard);
         let layout_engine_name = scene.layout_engine_name();
 
         SurfaceRuntime {

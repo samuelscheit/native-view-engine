@@ -280,17 +280,26 @@ impl RuntimeApp for CAbiAppAdapter {
         flags: u32,
     ) -> Option<NveSurfaceMeasure> {
         let layout = self.layout_api?;
-        let effective = if (flags & NVE_MEASURE_FLAG_IDEAL) != 0 {
+        let ideal = (flags & NVE_MEASURE_FLAG_IDEAL) != 0;
+        let effective = if ideal {
             NveSizeConstraints::loose(f32::INFINITY, f32::INFINITY)
         } else {
             constraints
         };
         // SAFETY: `self.handle` is live; `layout.measure` is a synchronous scalar call.
         let sz = unsafe { (layout.measure)(self.handle, effective) };
-        let non_neg = |v: f32| if v.is_finite() && v >= 0.0 { v } else { 0.0 };
+        let clamp = |v: f32, min_v: f32, max_v: f32| {
+            let finite = if v.is_finite() && v >= 0.0 { v } else { 0.0 };
+            if ideal {
+                finite
+            } else {
+                let capped = if max_v.is_finite() { finite.min(max_v) } else { finite };
+                capped.max(min_v)
+            }
+        };
         Some(NveSurfaceMeasure {
-            width: non_neg(sz.width),
-            height: non_neg(sz.height),
+            width: clamp(sz.width, constraints.min_w, constraints.max_w),
+            height: clamp(sz.height, constraints.min_h, constraints.max_h),
             first_baseline: f32::NAN,
             last_baseline: f32::NAN,
         })

@@ -283,21 +283,15 @@ impl CompletionSink {
             .is_some()
     }
 
-    /// Registers an in-flight request tagged with `owner_tag` (e.g., per-window/per-generation
-    /// `HotAppSlot` ID) so sibling windows' requests are isolated across close and hot reload.
-    ///
-    /// Returns `Some(handler_request_id)` to pass into [`crate::HostServiceHandler::handle`]
-    /// (identical to `caller_request_id` when `owner_tag == 0`, or a collision-free host token
-    /// when `owner_tag != 0` so two independent cdylib generations or windows can both issue
-    /// `caller_request_id == 1` concurrently without colliding). Returns `None` on duplicate
-    /// `(owner_tag, caller_request_id)`.
-    pub fn register_in_flight_for_owner(
-        &self,
-        owner_tag: u64,
-        caller_request_id: u64,
-        service_id: u32,
-        method_id: u32,
-    ) -> Option<u64> {
+    /// Registers an in-flight request tagged with `owner_tag` so sibling windows/generations are
+    /// isolated across close and hot reload; returns `None` on duplicate `(owner_tag, caller_request_id)`.
+    pub fn register_in_flight_for_owner(&self, owner_tag: u64, caller_request_id: u64, service_id: u32, method_id: u32) -> Option<u64> {
+        self.register_in_flight_for_owner_with_id(owner_tag, caller_request_id, None, service_id, method_id)
+    }
+
+    /// Like [`Self::register_in_flight_for_owner`], reusing `preferred_host_id` when provided and
+    /// unused (preserves `host_request_id` across C-callback `BufferTooSmall` retries).
+    pub fn register_in_flight_for_owner_with_id(&self, owner_tag: u64, caller_request_id: u64, preferred_host_id: Option<u64>, service_id: u32, method_id: u32) -> Option<u64> {
         let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if st.has_owner_caller_id(owner_tag, caller_request_id) {
             return None;
@@ -307,6 +301,11 @@ impl CompletionSink {
                 return None;
             }
             caller_request_id
+        } else if let Some(pref) = preferred_host_id
+            && pref != 0
+            && !st.has_host_id(pref)
+        {
+            pref
         } else {
             let mut candidate = next_host_request_id() | SCOPED_HOST_ID_BIT;
             while st.has_host_id(candidate) {
@@ -314,11 +313,7 @@ impl CompletionSink {
             }
             candidate
         };
-        st.insert_in_flight(
-            host_id,
-            PendingMeta { owner_tag, caller_request_id, service_id, method_id },
-        )
-        .then_some(host_id)
+        st.insert_in_flight(host_id, PendingMeta { owner_tag, caller_request_id, service_id, method_id }).then_some(host_id)
     }
 
     /// Returns the `owner_tag` associated with an in-flight `host_request_id`, if present.
