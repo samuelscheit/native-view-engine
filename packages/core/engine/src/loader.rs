@@ -27,8 +27,9 @@ pub enum LoaderError {
     MissingEntry(libloading::Error),
     MissingSurfaceInterface,
     NullHandle,
-    /// Loading in place (no staging root) a file this process already loaded in place: the OS
-    /// loader would hand back the mapped image, silently running the old code.
+    /// Loading in place (no staging root) a file whose bytes changed since this process already
+    /// loaded that inode or canonical path in place: the OS loader would hand back the mapped
+    /// image, silently running the old code.
     AlreadyLoadedInPlace(PathBuf),
 }
 

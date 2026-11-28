@@ -1,11 +1,12 @@
-//! Private-copy dynamic library staging and process-lifetime in-place load tombstones.
+//! Private-copy dynamic library staging and digest-validated in-place load claims.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use libloading::Library;
-use nve_abi::NveGetInterfaceFn;
+use nve_abi::{NveGetInterfaceFn, Xxh64Hasher};
 
 use super::LoaderError;
 
@@ -48,50 +49,118 @@ fn staging_dir_in(root: &Path, subdir: &str) -> PathBuf {
     return root.join(subdir);
 }
 
-/// `(device, inode)` of every file claimed for in-place loading in this process. Once `dlopen`
-/// succeeds, the entry becomes a process-lifetime tombstone: on platforms with `RTLD_NODELETE`
-/// semantics (iOS/macOS dyld, Android Bionic, musl, or images with ObjC/TLS sections), `dlclose`
-/// leaves the image mapped so reloading the same inode would silently execute the old code.
-static IN_PLACE_FILES: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
+/// `(file_len, xxh64)` of a dylib's raw bytes read directly from its open file descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileDigest {
+    len: u64,
+    xxh64: u64,
+}
+
+fn hash_open_file(file: &mut std::fs::File) -> std::io::Result<FileDigest> {
+    let mut hasher = Xxh64Hasher::new(0);
+    let mut buf = [0u8; 16 * 1024];
+    let mut len = 0u64;
+    loop {
+        match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                len = len.saturating_add(n as u64);
+                hasher.update(&buf[..n]);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(FileDigest { len, xxh64: hasher.digest() })
+}
+
+struct InPlaceEntry {
+    /// `(device, inode)` from `fstat` on the open fd on Unix (`None` on non-Unix).
+    inode: Option<(u64, u64)>,
+    /// Canonical path when resolvable (catches atomic-rename replacement at the same path).
+    canonical_path: Option<PathBuf>,
+    digest: FileDigest,
+    /// Unsealed in-flight claims sharing this exact `(inode, canonical_path, digest)` entry.
+    pending: usize,
+    /// `true` once `Library::new` mapped this image (kept for process lifetime).
+    sealed: bool,
+}
+
+/// Files claimed for in-place loading in this process, keyed by `(dev, ino)` and canonical path
+/// together with `(file_len, xxh64)`. Re-opening an unchanged bundled library (Activity recreation,
+/// multi-surface open, `detachApp()` -> `attachApp()`) is allowed; attempting to reload an inode
+/// or canonical path whose bytes changed since an earlier load is rejected because `RTLD_NODELETE`
+/// platforms (iOS/macOS dyld, Android Bionic, musl) would silently execute the old mapped image.
+static IN_PLACE_FILES: Mutex<Vec<InPlaceEntry>> = Mutex::new(Vec::new());
 
 /// Reservation for an in-place load. Dropping before [`Self::seal`] rolls it back (a failed
-/// `dlopen` never mapped the image); after [`Self::seal`] the inode stays tombstoned for the
-/// lifetime of the process.
+/// `dlopen` never mapped the image); after [`Self::seal`] the recorded digest stays sealed for the
+/// lifetime of the process so only unchanged bytes can re-open that inode or canonical path.
 struct InPlaceClaim {
-    id: (u64, u64),
+    inode: Option<(u64, u64)>,
+    canonical_path: Option<PathBuf>,
+    digest: FileDigest,
     sealed: bool,
 }
 
 impl InPlaceClaim {
     fn new(path: &Path) -> Result<Self, LoaderError> {
-        let meta = std::fs::metadata(path).map_err(LoaderError::Io)?;
+        let mut file = std::fs::File::open(path).map_err(LoaderError::Io)?;
+        let meta = file.metadata().map_err(LoaderError::Io)?;
         #[cfg(unix)]
-        let id = {
+        let inode = {
             use std::os::unix::fs::MetadataExt;
-            (meta.dev(), meta.ino())
+            Some((meta.dev(), meta.ino()))
         };
-        // In-place loading only happens on Android / iOS (unix); the claim is moot elsewhere.
         #[cfg(not(unix))]
-        let id = {
+        let inode = {
             let _ = meta;
-            (0, IN_PLACE_FILES_UNIQUE.fetch_add(1, Ordering::Relaxed))
+            None
         };
+        let digest = hash_open_file(&mut file).map_err(LoaderError::Io)?;
+        let canonical_path = std::fs::canonicalize(path).ok();
+
         let mut loaded = IN_PLACE_FILES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if loaded.contains(&id) {
-            return Err(LoaderError::AlreadyLoadedInPlace(path.to_path_buf()));
+        for entry in loaded.iter() {
+            let same_inode = inode.is_some() && entry.inode == inode;
+            let same_path = canonical_path.is_some() && entry.canonical_path == canonical_path;
+            if (same_inode || same_path) && entry.digest != digest {
+                return Err(LoaderError::AlreadyLoadedInPlace(path.to_path_buf()));
+            }
         }
-        loaded.push(id);
-        Ok(Self { id, sealed: false })
+        if let Some(existing) = loaded.iter_mut().find(|e| {
+            e.inode == inode && e.canonical_path == canonical_path && e.digest == digest
+        }) {
+            existing.pending += 1;
+        } else {
+            loaded.push(InPlaceEntry {
+                inode,
+                canonical_path: canonical_path.clone(),
+                digest,
+                pending: 1,
+                sealed: false,
+            });
+        }
+        Ok(Self { inode, canonical_path, digest, sealed: false })
     }
 
-    /// Promotes this claim to a permanent process-lifetime tombstone after `dlopen` mapped the file.
+    /// Seals the recorded digest for the lifetime of the process once `dlopen` mapped the file.
     fn seal(&mut self) {
+        if self.sealed {
+            return;
+        }
         self.sealed = true;
+        let mut loaded = IN_PLACE_FILES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = loaded.iter_mut().find(|e| {
+            e.inode == self.inode
+                && e.canonical_path == self.canonical_path
+                && e.digest == self.digest
+        }) {
+            entry.sealed = true;
+            entry.pending = entry.pending.saturating_sub(1);
+        }
     }
 }
-
-#[cfg(not(unix))]
-static IN_PLACE_FILES_UNIQUE: AtomicU64 = AtomicU64::new(0);
 
 impl Drop for InPlaceClaim {
     fn drop(&mut self) {
@@ -99,8 +168,15 @@ impl Drop for InPlaceClaim {
             return;
         }
         let mut loaded = IN_PLACE_FILES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(at) = loaded.iter().position(|&id| id == self.id) {
-            loaded.swap_remove(at);
+        if let Some(at) = loaded.iter().position(|e| {
+            e.inode == self.inode
+                && e.canonical_path == self.canonical_path
+                && e.digest == self.digest
+        }) {
+            loaded[at].pending = loaded[at].pending.saturating_sub(1);
+            if !loaded[at].sealed && loaded[at].pending == 0 {
+                loaded.swap_remove(at);
+            }
         }
     }
 }
@@ -109,21 +185,32 @@ impl Drop for InPlaceClaim {
 /// (`0700`, per-user, exclusively created) staging directory before calling `dlopen` (a rebuilt
 /// file at the same path always runs new code; no Windows DLL locks) and unloads before removing
 /// the copy. On Android / iOS it loads the file in place ([`STAGES_PRIVATE_COPY`]) unless
-/// [`MODULE_STAGE_DIR_ENV`] names a staging root, refusing any inode already loaded in place.
+/// [`MODULE_STAGE_DIR_ENV`] names a staging root, permitting unchanged bundle re-opens while
+/// refusing reloads whose bytes changed on disk.
 pub struct StagedDylib {
     lib: Option<Library>,
     get_interface: NveGetInterfaceFn,
     loaded_path: PathBuf,
     /// `true` when `loaded_path` is our private copy (removed after unloading).
     owns_copy: bool,
-    /// Process-lifetime tombstone sealed once `dlopen` maps an in-place file.
+    /// Digest-validated claim sealed once `dlopen` maps an in-place file.
     _in_place: Option<InPlaceClaim>,
 }
 
 impl StagedDylib {
     pub fn load(dylib_path: &Path, subdir: &str, label: &str) -> Result<Self, LoaderError> {
-        let (loaded_path, owns_copy, mut in_place) = match stage_root() {
-            Some(root) => (stage_private_copy(&root, dylib_path, subdir, label)?, true, None),
+        let root = stage_root();
+        Self::load_with_root(dylib_path, root.as_deref(), subdir, label)
+    }
+
+    fn load_with_root(
+        dylib_path: &Path,
+        root: Option<&Path>,
+        subdir: &str,
+        label: &str,
+    ) -> Result<Self, LoaderError> {
+        let (loaded_path, owns_copy, mut in_place) = match root {
+            Some(root) => (stage_private_copy(root, dylib_path, subdir, label)?, true, None),
             None => (dylib_path.to_path_buf(), false, Some(InPlaceClaim::new(dylib_path)?)),
         };
         let discard = |path: &Path| {
@@ -370,7 +457,10 @@ fn ensure_private_dir_non_unix(dir: PathBuf) -> std::io::Result<PathBuf> {
 
 #[cfg(all(test, unix))]
 mod staging_tests {
-    use super::{InPlaceClaim, LoaderError, open_private_dir, stage_private_copy, staging_dir_in};
+    use super::{
+        InPlaceClaim, LoaderError, StagedDylib, open_private_dir, stage_private_copy,
+        staging_dir_in,
+    };
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -391,39 +481,86 @@ mod staging_tests {
     }
 
     #[test]
-    fn in_place_claim_rolls_back_when_unsealed_and_tombstones_once_sealed() {
+    fn in_place_claim_allows_unchanged_reopens_and_rejects_modified_reloads() {
         let dir = scratch("claim");
         std::fs::create_dir(&dir).expect("test fs op");
-        let (file, alias, replacement) = (
+        let (file, alias, atomic_tmp, replacement) = (
             dir.join("libapp.so"),
+            dir.join("libapp-alias.so"),
+            dir.join("libapp.so.tmp"),
             dir.join("libapp-v2.so"),
-            dir.join("libapp-fresh.so"),
         );
-        std::fs::write(&file, b"code").expect("test fs op");
+        std::fs::write(&file, b"bundle-v1").expect("test fs op");
         std::fs::hard_link(&file, &alias).expect("test fs op");
 
-        // Unsealed claim (simulating a failed dlopen) releases on drop so retries work.
-        let unsealed = InPlaceClaim::new(&file).expect("first attempt");
-        assert!(matches!(InPlaceClaim::new(&alias), Err(LoaderError::AlreadyLoadedInPlace(_))));
-        drop(unsealed);
+        // (a) Unchanged bundle re-opens succeed both concurrently (multi-surface) and after drop
+        //     (Activity recreation / detachApp -> attachApp), including through hard-link aliases.
+        let mut first = InPlaceClaim::new(&file).expect("initial in-place claim");
+        let mut concurrent = InPlaceClaim::new(&file).expect("concurrent unchanged claim");
+        first.seal();
+        let mut concurrent_alias = InPlaceClaim::new(&alias).expect("unchanged hard-link alias");
+        concurrent.seal();
+        concurrent_alias.seal();
+        drop(first);
+        drop(concurrent);
+        drop(concurrent_alias);
 
-        // Sealed claim (successful dlopen) stays tombstoned for the lifetime of the process so
-        // `RTLD_NODELETE` platforms cannot silently execute the old mapped image on reload.
-        let mut sealed = InPlaceClaim::new(&file).expect("retry after failed load");
-        sealed.seal();
-        drop(sealed);
+        let mut after_drop = InPlaceClaim::new(&file).expect("re-open unchanged file after drop");
+        after_drop.seal();
+        drop(after_drop);
+
+        // (b) Modifying the in-place file on disk (same inode, changed bytes — even same length)
+        //     fails with `AlreadyLoadedInPlace` on both the original path and its hard-link alias.
+        std::fs::write(&file, b"bundle-v2").expect("test fs op");
         for again in [&file, &alias] {
             assert!(
                 matches!(InPlaceClaim::new(again), Err(LoaderError::AlreadyLoadedInPlace(_))),
-                "sealed inode remains tombstoned after unload (including hard-link aliases)"
+                "modified inode must be rejected after sealed load"
             );
         }
 
-        // A freshly created file (distinct inode, e.g. versioned mobile build) still loads cleanly.
-        std::fs::write(&replacement, b"code v2").expect("test fs op");
-        let mut fresh = InPlaceClaim::new(&replacement).expect("distinct inode loads");
+        // Atomic rename replacement at the same canonical path (new inode, changed bytes) is also
+        // rejected because `dlopen` caches mapped images by path / install name.
+        std::fs::write(&atomic_tmp, b"bundle-v3-longer").expect("test fs op");
+        std::fs::rename(&atomic_tmp, &file).expect("test fs op");
+        assert!(
+            matches!(InPlaceClaim::new(&file), Err(LoaderError::AlreadyLoadedInPlace(_))),
+            "atomic replacement with changed bytes at same canonical path must be rejected"
+        );
+
+        // A freshly created versioned file (distinct inode & canonical path) still loads cleanly.
+        std::fs::write(&replacement, b"bundle-v3-longer").expect("test fs op");
+        let mut fresh = InPlaceClaim::new(&replacement).expect("distinct versioned file loads");
         fresh.seal();
         drop(fresh);
+        std::fs::remove_dir_all(&dir).expect("test fs op");
+    }
+
+    #[test]
+    fn in_place_claim_rolls_back_on_failed_library_load() {
+        let dir = scratch("claim-rollback");
+        std::fs::create_dir(&dir).expect("test fs op");
+        let file = dir.join("libbroken.so");
+        std::fs::write(&file, b"not-a-valid-dylib-v1").expect("test fs op");
+
+        // Unsealed claim rolls back on drop so modified bytes can subsequently be claimed.
+        let unsealed = InPlaceClaim::new(&file).expect("unsealed claim");
+        drop(unsealed);
+        std::fs::write(&file, b"not-a-valid-dylib-v2").expect("test fs op");
+        let unsealed2 = InPlaceClaim::new(&file).expect("retry after unsealed rollback");
+        drop(unsealed2);
+
+        // Real `StagedDylib::load_with_root(..., None, ...)` failing inside `Library::new` must
+        // roll back its `InPlaceClaim` cleanly so a subsequent load of new bytes at the same path
+        // is NOT rejected with `AlreadyLoadedInPlace`.
+        assert!(matches!(
+            StagedDylib::load_with_root(&file, None, "mods", "g1"),
+            Err(LoaderError::Load(_))
+        ));
+        std::fs::write(&file, b"still-not-a-dylib-but-different-bytes").expect("test fs op");
+        let mut retry = InPlaceClaim::new(&file).expect("failed Library::new rolled back claim");
+        retry.seal();
+        drop(retry);
         std::fs::remove_dir_all(&dir).expect("test fs op");
     }
 
