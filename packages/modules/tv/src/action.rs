@@ -111,6 +111,34 @@ const FIRST_DIGIT_CODE: u8 = FIRST_UNIT_CODE + UNIT_ACTIONS.len() as u8;
 /// `KeyboardEvent.key` digit names indexed by digit value.
 const DIGIT_KEY_NAMES: [&str; 10] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
 
+/// Canonical W3C `KeyboardEvent.key` names in dense code order `0..24` (moves `0..4`, units `4..24`).
+const CANONICAL_KEY_NAMES: [&str; FIRST_DIGIT_CODE as usize] = [
+    "ArrowUp",
+    "ArrowDown",
+    "ArrowLeft",
+    "ArrowRight",
+    "Enter",
+    "GoBack",
+    "MediaPlayPause",
+    "MediaPlay",
+    "MediaPause",
+    "MediaStop",
+    "MediaFastForward",
+    "MediaRewind",
+    "MediaTrackNext",
+    "MediaTrackPrevious",
+    "Menu",
+    "ContextMenu",
+    "Info",
+    "Guide",
+    "ChannelUp",
+    "ChannelDown",
+    "ColorF0Red",
+    "ColorF1Green",
+    "ColorF2Yellow",
+    "ColorF3Blue",
+];
+
 impl RemoteAction {
     /// Number of distinct dense codes (`0..CODE_COUNT`).
     pub const CODE_COUNT: usize = FIRST_DIGIT_CODE as usize + 10;
@@ -189,31 +217,21 @@ impl RemoteAction {
         if let [byte] = key.as_bytes() {
             return DecimalDigit::from_ascii(*byte).map(Self::Digit);
         }
+        if let Some(idx) = CANONICAL_KEY_NAMES.iter().position(|&name| name == key) {
+            return Self::from_code(idx as u8);
+        }
         let action = match key {
-            "ArrowUp" | "Up" => Self::Move(FocusDirection::Up),
-            "ArrowDown" | "Down" => Self::Move(FocusDirection::Down),
-            "ArrowLeft" | "Left" => Self::Move(FocusDirection::Left),
-            "ArrowRight" | "Right" => Self::Move(FocusDirection::Right),
-            "Enter" | "Select" | "Accept" => Self::Select,
-            "Escape" | "Esc" | "Back" | "GoBack" | "BrowserBack" | "XF86Back" => Self::Back,
-            "MediaPlayPause" => Self::PlayPause,
-            "MediaPlay" => Self::Play,
-            "MediaPause" | "Pause" => Self::Pause,
-            "MediaStop" => Self::Stop,
-            "MediaFastForward" => Self::FastForward,
-            "MediaRewind" => Self::Rewind,
-            "MediaTrackNext" | "MediaNextTrack" => Self::TrackNext,
-            "MediaTrackPrevious" | "MediaPreviousTrack" => Self::TrackPrevious,
-            "Menu" => Self::Menu,
-            "ContextMenu" | "Tools" => Self::ContextMenu,
-            "Info" => Self::Info,
-            "Guide" | "Epg" => Self::Guide,
-            "ChannelUp" => Self::ChannelUp,
-            "ChannelDown" => Self::ChannelDown,
-            "ColorF0Red" => Self::ColorRed,
-            "ColorF1Green" => Self::ColorGreen,
-            "ColorF2Yellow" => Self::ColorYellow,
-            "ColorF3Blue" => Self::ColorBlue,
+            "Up" => Self::Move(FocusDirection::Up),
+            "Down" => Self::Move(FocusDirection::Down),
+            "Left" => Self::Move(FocusDirection::Left),
+            "Right" => Self::Move(FocusDirection::Right),
+            "Select" | "Accept" => Self::Select,
+            "Escape" | "Esc" | "Back" | "BrowserBack" | "XF86Back" => Self::Back,
+            "Pause" => Self::Pause,
+            "MediaNextTrack" => Self::TrackNext,
+            "MediaPreviousTrack" => Self::TrackPrevious,
+            "Tools" => Self::ContextMenu,
+            "Epg" => Self::Guide,
             _ => return None,
         };
         Some(action)
@@ -223,31 +241,8 @@ impl RemoteAction {
     #[inline]
     pub const fn key_name(self) -> &'static str {
         match self {
-            Self::Move(FocusDirection::Up) => "ArrowUp",
-            Self::Move(FocusDirection::Down) => "ArrowDown",
-            Self::Move(FocusDirection::Left) => "ArrowLeft",
-            Self::Move(FocusDirection::Right) => "ArrowRight",
-            Self::Select => "Enter",
-            Self::Back => "GoBack",
-            Self::PlayPause => "MediaPlayPause",
-            Self::Play => "MediaPlay",
-            Self::Pause => "MediaPause",
-            Self::Stop => "MediaStop",
-            Self::FastForward => "MediaFastForward",
-            Self::Rewind => "MediaRewind",
-            Self::TrackNext => "MediaTrackNext",
-            Self::TrackPrevious => "MediaTrackPrevious",
-            Self::Menu => "Menu",
-            Self::ContextMenu => "ContextMenu",
-            Self::Info => "Info",
-            Self::Guide => "Guide",
-            Self::ChannelUp => "ChannelUp",
-            Self::ChannelDown => "ChannelDown",
-            Self::ColorRed => "ColorF0Red",
-            Self::ColorGreen => "ColorF1Green",
-            Self::ColorYellow => "ColorF2Yellow",
-            Self::ColorBlue => "ColorF3Blue",
             Self::Digit(d) => DIGIT_KEY_NAMES[d.0 as usize],
+            _ => CANONICAL_KEY_NAMES[self.code() as usize],
         }
     }
 }

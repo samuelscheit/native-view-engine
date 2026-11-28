@@ -112,7 +112,7 @@ fn no_duplicate_enum_match_arms_workspace_wide() {
     assert_staged_ratchet(
         Stage::Post1B1D,
         "Pre-existing allowlisted duplicate enum match/assignment tables",
-        10,
+        8,
         &report.allowlisted_violations,
     );
 }

@@ -168,31 +168,38 @@ fn resolve_key(platform: WebTvPlatform, input: &WebKeyInput<'_>) -> Option<Remot
     platform.map_named_key(input.key, input.key_code)
 }
 
+/// Physical `KeyboardEvent.code` actions whose W3C `code` matches their canonical `key_name()`.
+const PHYSICAL_CODE_ACTIONS: &[RemoteAction] = &[
+    RemoteAction::Move(FocusDirection::Up),
+    RemoteAction::Move(FocusDirection::Down),
+    RemoteAction::Move(FocusDirection::Left),
+    RemoteAction::Move(FocusDirection::Right),
+    RemoteAction::Select,
+    RemoteAction::PlayPause,
+    RemoteAction::Stop,
+    RemoteAction::TrackNext,
+    RemoteAction::TrackPrevious,
+    RemoteAction::ContextMenu,
+];
+
 /// Tier 2: W3C `KeyboardEvent.code` physical key names.
 fn from_code_name(code: &str) -> Option<RemoteAction> {
-    let action = match code {
-        "ArrowUp" => RemoteAction::Move(FocusDirection::Up),
-        "ArrowDown" => RemoteAction::Move(FocusDirection::Down),
-        "ArrowLeft" => RemoteAction::Move(FocusDirection::Left),
-        "ArrowRight" => RemoteAction::Move(FocusDirection::Right),
-        "Enter" | "NumpadEnter" => RemoteAction::Select,
-        "Escape" | "BrowserBack" => RemoteAction::Back,
-        "MediaPlayPause" => RemoteAction::PlayPause,
-        "MediaStop" => RemoteAction::Stop,
-        "MediaTrackNext" => RemoteAction::TrackNext,
-        "MediaTrackPrevious" => RemoteAction::TrackPrevious,
-        "ContextMenu" => RemoteAction::ContextMenu,
+    if let Some(&action) = PHYSICAL_CODE_ACTIONS.iter().find(|a| a.key_name() == code) {
+        return Some(action);
+    }
+    match code {
+        "NumpadEnter" => Some(RemoteAction::Select),
+        "Escape" | "BrowserBack" => Some(RemoteAction::Back),
         _ => {
             let digit = code
                 .strip_prefix("Digit")
                 .or_else(|| code.strip_prefix("Numpad"))?;
-            return match digit.as_bytes() {
+            match digit.as_bytes() {
                 [byte] => DecimalDigit::from_ascii(*byte).map(RemoteAction::Digit),
                 _ => None,
-            };
+            }
         }
-    };
-    Some(action)
+    }
 }
 
 const fn digit(value: u32) -> Option<RemoteAction> {

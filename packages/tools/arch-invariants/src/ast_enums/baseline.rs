@@ -68,7 +68,6 @@ pub struct DuplicateMatchReport {
 }
 
 const SAME: DuplicateKind = DuplicateKind::SameDirection;
-const MIRR: DuplicateKind = DuplicateKind::Mirrored;
 
 /// Strictly sorted shrink-only baseline of verified legacy duplicate enum match/assignment tables
 /// audited on `integration` (`521f7f95`). Shrink or delete entries whenever duplicates are collapsed.
@@ -84,9 +83,6 @@ pub const ALLOWLISTED_DUPLICATES: &[AllowlistedDuplicate] = &[
     entry(SAME, ("packages/core/codegen/src/targets/kotlin_java/kotlin_hybrid/type_helpers.rs", "jni_cpp_param_type"), ("packages/core/codegen/src/targets/kotlin_java/kotlin_hybrid/type_helpers.rs", "jni_cpp_return_type"), "HybridType", 1, "track-codegen", "Duplicate JNI C++ param/return scalar type table"),
     entry(SAME, ("packages/core/codegen/src/targets/kotlin_java/kotlin_hybrid/type_helpers.rs", "kotlin_jni_param_type"), ("packages/core/codegen/src/targets/kotlin_java/kotlin_hybrid/type_helpers.rs", "kotlin_jni_return_type"), "HybridType", 1, "track-codegen", "Duplicate Kotlin JNI param/return scalar type table"),
 
-    // --- Mirrored / bidirectional duplicates (2 hits across 2 unique symbol pairs) ---
-    entry(MIRR, ("packages/modules/tv/src/action.rs", "RemoteAction::from_key_name"), ("packages/modules/tv/src/action.rs", "RemoteAction::key_name"), "RemoteAction", 1, "track-tv", "Bidirectional RemoteAction<->W3C key table (20 arms)"),
-    entry(MIRR, ("packages/modules/tv/src/action.rs", "RemoteAction::key_name"), ("packages/modules/tv/src/web_keys.rs", "from_code_name"), "RemoteAction", 1, "track-tv", "Cross-file bidirectional RemoteAction<->W3C code table"),
 ];
 
 type PairKey<'a> = (DuplicateKind, &'a str, &'a str, &'a str, &'a str, &'a str);
