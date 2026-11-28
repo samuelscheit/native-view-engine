@@ -292,10 +292,15 @@ impl DioxusSurface {
                     handled = true;
                 }
                 table_key => {
-                    if self
-                        .writer
-                        .has_table_event_listener_in_chain(node, table_key, ev.event())
-                    {
+                    let bubbles = ev.bubbles();
+                    let has_listener = if bubbles {
+                        self.writer
+                            .has_table_event_listener_in_chain(node, table_key, ev.event())
+                    } else {
+                        self.writer
+                            .has_table_event_listener(node, table_key, ev.event())
+                    };
+                    if has_listener {
                         let data = EventSlots::reuse(&mut self.event_slots.table, |d| {
                             d.table_key = table_key.0;
                             d.event_id = ev.event().raw();
@@ -304,7 +309,7 @@ impl DioxusSurface {
                         });
                         self.vdom
                             .runtime()
-                            .handle_event("tableevent", Event::new(data, true), el_id);
+                            .handle_event("tableevent", Event::new(data, bubbles), el_id);
                         handled = true;
                     }
                 }

@@ -63,7 +63,7 @@ pub struct WebStoreRenderer {
     plugin_inner_html: HashMap<NodeId, String>,
     plugin_inline_css: HashMap<NodeId, String>,
     slot_attrs: HashMap<(NodeId, TableSlot), Vec<ctx::OwnedAttr>>,
-    inner_html_owner: HashMap<NodeId, TableSlot>,
+    inner_html_owner: HashMap<NodeId, (TableSlot, u64)>,
     slot_inline_css: HashMap<(NodeId, TableSlot), ctx::OwnedInlineCss>,
     write_seq: u64,
     /// Reusable O(1) lookup of `(slot, nid)` committed during Step 2 (populated only when
@@ -76,6 +76,9 @@ pub struct WebStoreRenderer {
     /// Reusable drain-time dedupe set for `connected_sync`.
     #[cfg(target_arch = "wasm32")]
     connected_seen: nve_abi::hash::HashSet<(TableSlot, NodeId)>,
+    /// Reusable DFS scratch stack for `queue_connected_sync_subtree`.
+    #[cfg(target_arch = "wasm32")]
+    connected_stack: Vec<NodeId>,
     pub events: EventBatchBuf,
     pub composite_fast_lane_hits: u64,
     pub full_style_rebuilds: u64,
@@ -525,6 +528,8 @@ impl StoreBackend for WebStoreRenderer {
         self.connected_sync.clear();
         #[cfg(target_arch = "wasm32")]
         self.connected_seen.clear();
+        #[cfg(target_arch = "wasm32")]
+        self.connected_stack.clear();
         self.events.clear();
     }
 }

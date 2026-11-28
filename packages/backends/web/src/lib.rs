@@ -33,6 +33,8 @@ pub mod media_css;
 pub mod select_parity;
 #[cfg(target_arch = "wasm32")]
 pub mod native_events;
+#[cfg(all(not(target_arch = "wasm32"), test))]
+mod native_events;
 pub mod patch_css;
 pub mod sanitize;
 #[cfg(feature = "ssr")]
@@ -386,7 +388,9 @@ impl WebBackend {
     fn sync_dom_listeners(&mut self) {
         #[cfg(target_arch = "wasm32")]
         if let Some(ref mut delegator) = self.delegated_events {
-            self.click_interceptors.borrow_mut().refresh(self.renderer.registry());
+            if let Ok(mut hooks) = self.click_interceptors.try_borrow_mut() {
+                hooks.refresh(self.renderer.registry());
+            }
             delegator.sync_listeners(&self.event_state.borrow());
         }
     }

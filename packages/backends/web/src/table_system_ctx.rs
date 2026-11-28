@@ -35,9 +35,22 @@ impl ClickInterceptors {
         self.hooks.is_empty()
     }
 
-    /// Runs every hook in priority order until one consumes the click.
-    pub(crate) fn consume(&self, ev: &web_sys::MouseEvent) -> bool {
-        self.hooks.iter().any(|hook| hook(ev))
+    /// Runs every hook in priority order without holding a `RefCell` borrow across user code, so
+    /// a synchronously re-entrant hook cannot trigger `BorrowMutError` in `refresh()`.
+    pub(crate) fn try_consume(
+        cell: &std::cell::RefCell<Self>,
+        ev: &web_sys::MouseEvent,
+    ) -> bool {
+        let len = cell.borrow().hooks.len();
+        for i in 0..len {
+            let Some(&hook) = cell.borrow().hooks.get(i) else {
+                break;
+            };
+            if hook(ev) {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -60,11 +73,14 @@ impl WebStoreRenderer {
         if self.registry.iter().is_empty() {
             return;
         }
-        let mut stack = vec![root];
+        let mut stack = std::mem::take(&mut self.connected_stack);
+        stack.clear();
+        stack.push(root);
         while let Some(node) = stack.pop() {
             self.queue_connected_sync_node(store, node);
             stack.extend(store.children(node).iter().rev());
         }
+        self.connected_stack = stack;
     }
 
     /// Drains the queued connected syncs once the commit has connected and placed every element,
@@ -110,7 +126,7 @@ pub struct WebSystemCommitCtx<'a> {
     pub(crate) current_slot: TableSlot,
     pub(crate) registry: &'a WebTableRegistry,
     pub(crate) slot_attrs: &'a mut HashMap<(NodeId, TableSlot), Vec<OwnedAttr>>,
-    pub(crate) inner_html_owner: &'a mut HashMap<NodeId, TableSlot>,
+    pub(crate) inner_html_owner: &'a mut HashMap<NodeId, (TableSlot, u64)>,
     pub(crate) slot_inline_css: &'a mut HashMap<(NodeId, TableSlot), OwnedInlineCss>,
     pub(crate) write_seq: &'a mut u64,
     #[cfg(target_arch = "wasm32")]
@@ -289,16 +305,21 @@ impl WebSystemCommitCtx<'_> {
     }
 
     pub fn set_inner_html(&mut self, node: NodeId, html: String) {
+        let seq = self.next_seq();
         #[cfg(target_arch = "wasm32")]
         if let Some(el) = self.live_element {
             el.set_inner_html(&html);
         }
         self.inner_html.insert(node, html);
-        self.inner_html_owner.insert(node, self.current_slot);
+        self.inner_html_owner.insert(node, (self.current_slot, seq));
     }
 
     pub fn clear_inner_html(&mut self, node: NodeId) {
-        if self.inner_html_owner.get(&node) == Some(&self.current_slot) {
+        if self
+            .inner_html_owner
+            .get(&node)
+            .is_some_and(|&(slot, _)| slot == self.current_slot)
+        {
             self.inner_html_owner.remove(&node);
             self.inner_html.remove(&node);
             #[cfg(target_arch = "wasm32")]
@@ -436,7 +457,9 @@ impl crate::table_system::WebStoreRenderer {
             {
                 el.set_attr("data-nve-mod-style", css);
             }
-            if let Some(html) = self.plugin_inner_html.get(&nid) {
+            if let Some(html) = self.plugin_inner_html.get(&nid)
+                && self.inner_html_owner.get(&nid).map_or(0, |&(_, seq)| seq) <= written_after
+            {
                 el.set_inner_html(html);
             }
         }

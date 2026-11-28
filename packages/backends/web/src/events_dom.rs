@@ -168,7 +168,7 @@ impl RootEventDelegator {
         let hooks = Rc::clone(&self.click_interceptors);
         self.on_root("click", false, move |ev| {
             let Some(me) = ev.dyn_ref::<web_sys::MouseEvent>() else { return };
-            if hooks.borrow().consume(me) {
+            if ClickInterceptors::try_consume(&hooks, me) {
                 return;
             }
             let Some(el) = target_to_element(ev.target()) else { return };

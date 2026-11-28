@@ -6,8 +6,8 @@ use nve_store::NodeStore;
 use wasm_bindgen::JsCast;
 
 use crate::hydrate::{
-    pair_ssr_dom, ssr_select_base_value, HydratedControlState, HydrationPass, HydrationReport,
-    SsrDomTree, SsrSelectOption,
+    collapse_ascii_whitespace, pair_ssr_dom, select_display_size_is_one, HydratedControlState,
+    HydrationPass, HydrationReport, SsrDomTree,
 };
 use crate::input_attrs::{read_dom_control_value, write_dom_control_value};
 use crate::{StyleSheetCache, WebBackend};
@@ -222,46 +222,62 @@ fn find_hydrate_root(container: &web_sys::Element) -> Option<web_sys::Element> {
     first_ui
 }
 
-/// Server-rendered `<select>` value from its markup alone (shared selectedness rules in
-/// [`crate::hydrate::ssr_select_base_value`], identical to `hydrate_native_parse`).
+/// Server-rendered `<select>` value from its markup alone (HTML selectedness algorithm, zero `Vec`
+/// allocations and at most one JS string read on the single winning `<option>`).
 fn select_markup_value(select: &web_sys::Element) -> String {
-    let mut options: Vec<SsrSelectOption> = Vec::new();
-    let mut push = |opt: &web_sys::Element, group_disabled: bool| {
-        let value = opt.get_attribute("value");
-        // `option.text`: descendant text without `<script>`, only read as the value fallback.
-        let text = match (&value, opt.dyn_ref::<web_sys::HtmlOptionElement>()) {
-            (None, Some(o)) => o.text(),
-            _ => String::new(),
-        };
-        options.push(SsrSelectOption {
-            selected: opt.has_attribute("selected"),
-            disabled: group_disabled || opt.has_attribute("disabled"),
-            value,
-            text,
-        });
+    let multiple = select.has_attribute("multiple");
+    let display_size_one = select_display_size_is_one(select.get_attribute("size").as_deref());
+    let mut winner: Option<web_sys::Element> = None;
+    let mut winner_selected = false;
+
+    let mut visit = |opt: &web_sys::Element, group_disabled: bool| -> bool {
+        if opt.has_attribute("selected") {
+            winner = Some(opt.clone());
+            winner_selected = true;
+            return multiple;
+        }
+        if !multiple
+            && !winner_selected
+            && winner.is_none()
+            && display_size_one
+            && !(group_disabled || opt.has_attribute("disabled"))
+        {
+            winner = Some(opt.clone());
+        }
+        false
     };
+
     let mut cur = select.first_element_child();
-    while let Some(child) = cur {
+    'walk: while let Some(child) = cur {
         let tag = child.tag_name();
         if tag.eq_ignore_ascii_case("option") {
-            push(&child, false);
+            if visit(&child, false) {
+                break 'walk;
+            }
         } else if tag.eq_ignore_ascii_case("optgroup") {
             let group_disabled = child.has_attribute("disabled");
             let mut opt = child.first_element_child();
             while let Some(o) = opt {
-                if o.tag_name().eq_ignore_ascii_case("option") {
-                    push(&o, group_disabled);
+                if o.tag_name().eq_ignore_ascii_case("option") && visit(&o, group_disabled) {
+                    break 'walk;
                 }
                 opt = o.next_element_sibling();
             }
         }
         cur = child.next_element_sibling();
     }
-    ssr_select_base_value(
-        &options,
-        select.has_attribute("multiple"),
-        select.get_attribute("size").as_deref(),
-    )
+
+    let Some(opt) = winner else {
+        return String::new();
+    };
+    if let Some(value) = opt.get_attribute("value") {
+        return value;
+    }
+    // `option.text`: descendant text without `<script>`, read at most once for the winning option.
+    match opt.dyn_ref::<web_sys::HtmlOptionElement>() {
+        Some(o) => collapse_ascii_whitespace(&o.text()),
+        None => String::new(),
+    }
 }
 
 /// Detaches a stale SSR root that is the mount container itself: keeps `#app` connected and its

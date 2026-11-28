@@ -72,6 +72,7 @@ pub(crate) struct HydratedControlState {
 
 /// One `<option>` in a `<select>`'s list of options (a direct child, or a child of a direct
 /// `<optgroup>` child), as authored in SSR markup.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct SsrSelectOption {
     /// `[selected]` (`defaultSelected`).
@@ -105,17 +106,39 @@ fn parse_non_negative_u32(s: &str) -> Option<u32> {
     (!negative || n == 0).then_some(n)
 }
 
+/// Whether `<select size>` implies display size 1 (`size` absent, invalid, `0`, or `1`).
+#[inline]
+pub(crate) fn select_display_size_is_one(size: Option<&str>) -> bool {
+    size.and_then(parse_non_negative_u32).is_none_or(|n| n <= 1)
+}
+
+/// Strips leading/trailing ASCII whitespace and collapses internal runs to a single space
+/// (`HTMLOptionElement.value` text fallback) without intermediate `Vec` allocations.
+pub(crate) fn collapse_ascii_whitespace(s: &str) -> String {
+    let trimmed = s.trim_matches(|c: char| c.is_ascii_whitespace());
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let mut out = String::with_capacity(trimmed.len());
+    for word in trimmed.split_ascii_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    out
+}
+
 /// `select.value` implied by SSR markup alone (the HTML selectedness setting algorithm): the
 /// first `[selected]` option for `multiple`; otherwise the last `[selected]` one, else the first
 /// enabled option when the display size is 1 (`size` absent, invalid, `0`, or `1`).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn ssr_select_base_value(
     options: &[SsrSelectOption],
     multiple: bool,
     size: Option<&str>,
 ) -> String {
-    let display_size_one = size
-        .and_then(parse_non_negative_u32)
-        .is_none_or(|n| n <= 1);
+    let display_size_one = select_display_size_is_one(size);
     let chosen = if multiple {
         options.iter().find(|o| o.selected)
     } else {
@@ -128,11 +151,7 @@ pub(crate) fn ssr_select_base_value(
     chosen.map_or_else(String::new, |o| match &o.value {
         Some(v) => v.clone(),
         // `option.value` falls back to the text with ASCII whitespace stripped and collapsed.
-        None => o
-            .text
-            .split_ascii_whitespace()
-            .collect::<Vec<_>>()
-            .join(" "),
+        None => collapse_ascii_whitespace(&o.text),
     })
 }
 
