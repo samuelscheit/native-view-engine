@@ -15,7 +15,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use nve_codegen::{generate_all_abi_files, generate_c_abi_header, generate_table_files};
-use nve_components::tables::{CORE_TABLE_DESCS, CORE_WORD_CONSTS};
+use nve_components::tables::CORE_TABLE_DESCS;
 
 struct CountingAlloc;
 
@@ -89,7 +89,7 @@ fn c_abi_header_allocation_ceiling() {
 
 #[test]
 fn table_files_allocation_ceiling() {
-    let (allocs, bytes, files) = counted(|| generate_table_files(CORE_TABLE_DESCS, CORE_WORD_CONSTS));
+    let (allocs, bytes, files) = counted(|| generate_table_files(CORE_TABLE_DESCS));
     let out: usize = files.expect("tables").iter().map(|f| f.content.len()).sum();
     eprintln!(
         "generate_table_files(17 core): {allocs} allocations, {bytes} bytes for {out} output bytes"
@@ -104,7 +104,7 @@ fn table_files_allocation_ceiling() {
 
 #[test]
 fn every_host_file_allocation_ceiling() {
-    let (allocs, bytes, files) = counted(|| generate_all_abi_files(CORE_TABLE_DESCS, CORE_WORD_CONSTS));
+    let (allocs, bytes, files) = counted(|| generate_all_abi_files(CORE_TABLE_DESCS));
     let out: usize = files
         .expect("all files")
         .iter()

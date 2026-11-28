@@ -292,7 +292,8 @@ class RetainedTree {
     const std::optional<NodeGeometry> g = read_geometry(scene, tables, i);
     if (!g || g->id != e.id) return;
     kids_.clear();
-    for (const uint32_t child : scene.node_children(i).value_or(std::span<const uint32_t>())) {
+    const std::span<const uint32_t> children = scene.node_children(i).value_or(std::span<const uint32_t>());
+    for (const uint32_t child : children) {
       if (Handle* h = find(child)) kids_.push_back(h);
     }
     adapter.set_children(*g, i == kRootIndex ? nullptr : &e.handle, std::span<Handle* const>(kids_));

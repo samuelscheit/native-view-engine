@@ -99,10 +99,10 @@ void test_writer_round_trip_and_retained_tree() {
       CHECK(input.content.x == 12.0f && input.content.y == 52.0f && input.content.width == 182.0f);
       CHECK(input.content.height == input.rect.height - 54.0f);
       // The content box is geometry: `move` (moved-only nodes) sees it without a full decode.
-      const NodeData moved = read_geometry(guard->reader(), h.tables, 5u);
-      CHECK(moved.content.x == input.content.x && moved.content.y == input.content.y &&
-            moved.content.width == input.content.width && moved.content.height == input.content.height);
-      CHECK(moved.visual.border_width == 0.0f && moved.text.empty());  // nothing beyond geometry
+      // (`NodeGeometry` carries nothing beyond geometry.)
+      const std::optional<NodeGeometry> moved = read_geometry(guard->reader(), h.tables, 5u);
+      CHECK(moved.has_value() && moved->content.x == input.content.x && moved->content.y == input.content.y &&
+            moved->content.width == input.content.width && moved->content.height == input.content.height);
     }
   }
 
