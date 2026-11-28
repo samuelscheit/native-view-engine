@@ -107,21 +107,57 @@ const GENERATED_TABLE_MEMBERS: &[(&str, &str)] = &[
     ("no_such_method", "noSuchMethod"),
 ];
 
-/// Consts fit `u32`, every signature / alias type resolves, and no record needs an alignment a
-/// target cannot express.
+/// Consts fit `u32`, every signature / alias / callback / vtable type resolves, and no record
+/// needs an alignment a target cannot express.
 pub(super) fn abi(
     files: &[&AbiFileDescriptor],
     records: &[RecordLayout<'_>],
 ) -> Result<(), CodegenError> {
-    let mut known: BTreeSet<&str> = records.iter().map(|r| r.name).collect();
-    let enums: BTreeSet<&str> = files.iter().flat_map(|f| f.enums).map(|e| e.name).collect();
-    let slab_aligned: BTreeSet<&str> = records
+    abi_on(&[], &[], files, records)
+}
+
+/// [`abi`] for headers layered on top of already-validated base files (`base_files`,
+/// `base_records`), e.g. the runtime ABI referencing Core records, aliases, and callbacks.
+pub(super) fn abi_on(
+    base_files: &[&AbiFileDescriptor],
+    base_records: &[RecordLayout<'_>],
+    files: &[&AbiFileDescriptor],
+    records: &[RecordLayout<'_>],
+) -> Result<(), CodegenError> {
+    let mut known: BTreeSet<&str> = base_records
         .iter()
+        .chain(records)
+        .map(|r| r.name)
+        .collect();
+    let mut callbacks: BTreeSet<&str> = BTreeSet::new();
+    let enums: BTreeSet<&str> = base_files
+        .iter()
+        .chain(files)
+        .flat_map(|f| f.enums)
+        .map(|e| e.name)
+        .collect();
+    let slab_aligned: BTreeSet<&str> = base_records
+        .iter()
+        .chain(records)
         .filter(|r| r.slab_align.is_some())
         .map(|r| r.name)
         .collect();
+    for file in base_files.iter().chain(files) {
+        for a in file.aliases {
+            known.insert(a.name);
+            if let Some(rn) = a.rust_name {
+                known.insert(rn);
+            }
+        }
+        for cb in file.callbacks {
+            known.insert(cb.name);
+            callbacks.insert(cb.name);
+        }
+        for v in file.vtables {
+            known.insert(v.name);
+        }
+    }
     for file in files {
-        known.extend(file.aliases.iter().map(|a| a.name));
         for c in file.consts {
             let valid = match c.ty {
                 "u32" => c.value <= u64::from(u32::MAX),
@@ -138,6 +174,7 @@ pub(super) fn abi(
     }
     let known = Known {
         names: known,
+        callbacks,
         enums,
         slab_aligned,
     };
@@ -145,16 +182,24 @@ pub(super) fn abi(
         for a in file.aliases {
             check_type(a.target, Position::AliasTarget, &known, "alias", a.name)?;
         }
-        let module_methods = file.modules.iter().flat_map(|m| {
-            m.methods
-                .iter()
-                .map(move |f| (m.name, f.name, f.params, f.return_type))
-        });
-        for (owner, name, params, ret) in module_methods {
-            for p in params {
-                check_type(p.ty, Position::Param, &known, owner, name)?;
+        for cb in file.callbacks {
+            for p in cb.params {
+                check_param_name(p.name, "callback", cb.name)?;
+                check_type(p.ty, Position::Param, &known, "callback", cb.name)?;
             }
-            check_type(ret, Position::Return, &known, owner, name)?;
+            check_type(cb.return_type, Position::Return, &known, "callback", cb.name)?;
+        }
+        for v in file.vtables {
+            for h in v.header_fields {
+                check_type(h.abi_type(), Position::Param, &known, v.name, h.name)?;
+            }
+            for f in v.methods {
+                for p in f.params {
+                    check_param_name(p.name, v.name, f.name)?;
+                    check_type(p.ty, Position::Param, &known, v.name, f.name)?;
+                }
+                check_type(f.return_type, Position::Return, &known, v.name, f.name)?;
+            }
         }
     }
     // Dart `ffi.Struct` cannot over-align: it may only skip an `align(N)` that changes nothing on
@@ -172,6 +217,20 @@ pub(super) fn abi(
     Ok(())
 }
 
+fn check_param_name(name: &str, owner: &str, fn_name: &str) -> Result<(), CodegenError> {
+    let valid = name
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !valid {
+        return Err(invalid(format!(
+            "`{owner}::{fn_name}` parameter `{name}` must be a valid identifier"
+        )));
+    }
+    Ok(())
+}
+
 /// Where a type appears in a C signature.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Position {
@@ -181,10 +240,11 @@ enum Position {
     AliasTarget,
 }
 
-/// The record and alias names the ABI declares, its enums (rejected in signatures), and the
-/// records whose alignment C cannot reproduce by value.
+/// The record, vtable, alias, and callback names the ABI declares, its enums (rejected in
+/// signatures), and the records whose alignment C cannot reproduce by value.
 struct Known<'a> {
     names: BTreeSet<&'a str>,
+    callbacks: BTreeSet<&'a str>,
     enums: BTreeSet<&'a str>,
     slab_aligned: BTreeSet<&'a str>,
 }
@@ -208,6 +268,15 @@ fn check_type(
         ))),
         Ty::Void => Err(invalid(format!(
             "`{}`: `c_void` is only valid behind a pointer",
+            ctx()
+        ))),
+        Ty::Nullable(inner) if pos == Position::Pointee => Err(invalid(format!(
+            "`{}`: `Option<{inner}>` cannot appear behind a pointer",
+            ctx()
+        ))),
+        Ty::Nullable(inner) if known.callbacks.contains(inner) => Ok(()),
+        Ty::Nullable(inner) => Err(invalid(format!(
+            "`{}`: `Option<{inner}>` is only valid for declared callback typedefs",
             ctx()
         ))),
         // C / Dart see an enum as an `int`-sized C enum whatever its Rust repr, by value and behind

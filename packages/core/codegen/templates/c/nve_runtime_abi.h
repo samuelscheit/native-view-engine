@@ -33,37 +33,50 @@ NVE_EXTERN_C_BEGIN
 {%- endfor %}
 {% for e in m.file.enums %}{% call records::enum_def(e) %}{% endcall %}{% endfor %}
 {%- call records::typedefs(m.records) %}{% endcall %}
-
-typedef void* NveRuntimeHandle;
-{%- for f in m.callbacks %}
-/* {{ spell::one_line(f.doc) }} */
-typedef {{ f.ret }} (*{{ f.name }})({{ f.params }});
+{%- for v in m.file.vtables %}
+typedef struct {{ v.name }} {{ v.name }};
 {%- endfor %}
-{%- call records::definitions(m.records) %}{% endcall %}
+{% for a in m.file.aliases %}
+{%- if let Some(doc) = a.doc %}
+/* {{ spell::one_line(doc) }} */
+{%- endif %}
+typedef {{ c::ty(m.all_aliases(), a.target) }} {{ a.name }};
+{%- endfor %}
+{%- for cb in m.file.callbacks %}
+{%- if let Some(doc) = cb.doc %}
+/* {{ spell::one_line(doc) }} */
+{%- endif %}
+typedef {{ c::ty(m.all_aliases(), cb.return_type) }} (*{{ cb.name }})({{ c::fn_params(m.all_aliases(), cb.params) }});
+{%- endfor %}
+{%- call records::definitions(m.records, m.all_aliases()) %}{% endcall %}
 {%- call records::asserts(m.records) %}{% endcall %}
 
-#define NVE_RUNTIME_API_SLOT_COUNT {{ m.slots.len() }}u
+#define NVE_RUNTIME_API_SLOT_COUNT {{ m.slots().len() }}u
 
-typedef struct NveRuntimeApi {
-  uint32_t abi_version;
-  uint32_t struct_size;
-  uint64_t schema_hash;
-{%- for f in m.slots %}
-  /* {{ spell::one_line(f.doc) }} */
-  {{ f.ret }} (*{{ f.name }})({{ f.params }});
+struct {{ m.vtable().name }} {
+{%- for h in m.vtable().header_fields %}
+  {{ c::decl(m.all_aliases(), h.abi_type(), h.name) }};
 {%- endfor %}
-} NveRuntimeApi;
-NVE_STATIC_ASSERT(offsetof(NveRuntimeApi, abi_version) == 0u, "NveRuntimeApi.abi_version offset");
-NVE_STATIC_ASSERT(offsetof(NveRuntimeApi, struct_size) == 4u, "NveRuntimeApi.struct_size offset");
-NVE_STATIC_ASSERT(offsetof(NveRuntimeApi, schema_hash) == 8u, "NveRuntimeApi.schema_hash offset");
-{%- for f in m.slots %}
-NVE_STATIC_ASSERT(offsetof(NveRuntimeApi, {{ f.name }}) == 16u + {{ loop.index0 }}u * sizeof(void*), "NveRuntimeApi.{{ f.name }} slot");
+{%- for method in m.slots() %}
+{%- if let Some(doc) = method.doc %}
+  /* {{ spell::one_line(doc) }} */
+{%- endif %}
+  {{ c::ty(m.all_aliases(), method.return_type) }} (*{{ method.name }})({{ c::fn_params(m.all_aliases(), method.params) }});
+{%- endfor %}
+};
+{%- for h in m.vtable().header_fields %}
+{%- if let Some(off) = h.expected_offset %}
+NVE_STATIC_ASSERT(offsetof({{ m.vtable().name }}, {{ h.name }}) == {{ off }}u, "{{ m.vtable().name }}.{{ h.name }} offset");
+{%- endif %}
+{%- endfor %}
+{%- for method in m.slots() %}
+NVE_STATIC_ASSERT(offsetof({{ m.vtable().name }}, {{ method.name }}) == {{ m.vtable().slots_offset }}u + {{ loop.index0 }}u * sizeof(void*), "{{ m.vtable().name }}.{{ method.name }} slot");
 {%- endfor %}
 NVE_STATIC_ASSERT(
-    sizeof(NveRuntimeApi) ==
-        ((16u + NVE_RUNTIME_API_SLOT_COUNT * sizeof(void*) + NVE_ALIGNOF(NveRuntimeApi) - 1u) &
-         ~(NVE_ALIGNOF(NveRuntimeApi) - 1u)),
-    "NveRuntimeApi size");
+    sizeof({{ m.vtable().name }}) ==
+        (({{ m.vtable().slots_offset }}u + NVE_RUNTIME_API_SLOT_COUNT * sizeof(void*) + NVE_ALIGNOF({{ m.vtable().name }}) - 1u) &
+         ~(NVE_ALIGNOF({{ m.vtable().name }}) - 1u)),
+    "{{ m.vtable().name }} size");
 
 /*
  * Threading, wake-callback, and borrowed-view lifetime contracts:
@@ -85,8 +98,8 @@ NVE_STATIC_ASSERT(
 /* 1 when `api` is non-NULL and every slot is set (version / hash checked separately). */
 static inline int nve_runtime_api_slots_complete(const NveRuntimeApi* api) {
   return api != NULL
-{%- for f in m.slots %} &&
-         api->{{ f.name }} != NULL
+{%- for method in m.slots() %} &&
+         api->{{ method.name }} != NULL
 {%- endfor %};
 }
 

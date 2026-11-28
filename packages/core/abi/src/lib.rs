@@ -38,9 +38,9 @@ pub use nve_abi_macros::{EventEnum, NveAbi};
 pub use nve_hash::{const_id, xxh64, Key64, Xxh64Hasher};
 
 pub use ffi::{
-    DecodeError, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi,
-    NveGestureDisposition, NveGetInterfaceFn, NveIntrinsicSize, slab_ptr, NveLayoutApi,
-    NveSizeConstraints, NveSurfaceApi, NVE_CORE_ABI_SCHEMA_HASH, NVE_IFACE_COMPONENT,
+    slab_ptr, DecodeError, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi,
+    NveGestureDisposition, NveGetInterfaceFn, NveIntrinsicSize, NveLayoutApi, NveSizeConstraints,
+    NveSurfaceApi, NVE_ABI_MAGIC, NVE_ABI_VERSION, NVE_CORE_ABI_SCHEMA_HASH, NVE_IFACE_COMPONENT,
     NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 pub use host::{
@@ -61,21 +61,21 @@ pub use runtime::{
     NveLayoutRect, NveNodeRow, NveRuntimeApi, NveRuntimeConfig, NveRuntimeGetInterfaceFn,
     NveRuntimeHandle, NveRuntimeIntrinsicSizeInvalidatedFn, NveRuntimeMeasureTextFn,
     NveRuntimeMetrics, NveRuntimeStatus, NveRuntimeTextStyle, NveRuntimeWakeFn, NveSceneView,
-    NveScrollOffset, NveSurfaceMeasure, RuntimeFnSignature, NVE_LAYOUT_RECT_SIZE,
-    NVE_LINE_HEIGHT_AUTO, NVE_LINE_HEIGHT_PERCENT, NVE_LINE_HEIGHT_POINTS,
-    NVE_MEASURE_FLAG_DRY_RUN, NVE_MEASURE_FLAG_IDEAL, NVE_NODE_ROW_FLAG_LIVE, NVE_NODE_ROW_SIZE,
-    NVE_RUNTIME_ABI_VERSION, NVE_RUNTIME_SCHEMA_HASH, RUNTIME_API_SLOTS, RUNTIME_CALLBACK_TYPEDEFS,
+    NveScrollOffset, NveSurfaceMeasure, NVE_LAYOUT_RECT_SIZE, NVE_LINE_HEIGHT_AUTO,
+    NVE_LINE_HEIGHT_PERCENT, NVE_LINE_HEIGHT_POINTS, NVE_MEASURE_FLAG_DRY_RUN,
+    NVE_MEASURE_FLAG_IDEAL, NVE_NODE_ROW_FLAG_LIVE, NVE_NODE_ROW_SIZE, NVE_RUNTIME_ABI_VERSION,
+    NVE_RUNTIME_SCHEMA_HASH,
 };
 pub use style_types::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
 #[cfg(feature = "wire")]
 pub use value::{
     encode_bin_value, encode_bin_value_to_vec, BinArrayIter, BinArrayWriter, BinMapIter,
-    BinMapWriter, BinValueView, BinWriter, NveValueTree, NVE_BIN_VALUE_MAX_DEPTH,
+    BinMapWriter, BinValueView, BinWriter, NveValueTree,
 };
 pub use value::{
     NveArrayRef, NveCommandSlice, NveCommandSliceRef, NveMapEntry, NveMapRef, NvePropEntry,
     NvePropSlice, NvePropSliceRef, NvePropsRef, NveStrSlice, NveValue, NveValueArray, NveValueData,
-    NveValueMap, NveValueRef, NveValueTag,
+    NveValueMap, NveValueRef, NveValueTag, NVE_BIN_VALUE_MAX_DEPTH,
 };
 
 pub use id::{

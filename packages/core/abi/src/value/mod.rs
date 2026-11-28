@@ -16,9 +16,12 @@ mod tests;
 #[cfg(feature = "wire")]
 mod value_tree;
 
-/// Maximum permitted container nesting depth for `NveBinValue` encoding & decoding.
-#[cfg(feature = "wire")]
-pub const NVE_BIN_VALUE_MAX_DEPTH: usize = 64;
+nve_abi_macros::abi_consts! {
+    pub(crate) const VALUE_ABI_CONSTS;
+
+    /// Maximum permitted container nesting depth for `NveBinValue` encoding & decoding.
+    pub const NVE_BIN_VALUE_MAX_DEPTH: usize = 64;
+}
 
 #[cfg(feature = "wire")]
 pub use bin_codec::{encode_bin_value, encode_bin_value_to_vec};

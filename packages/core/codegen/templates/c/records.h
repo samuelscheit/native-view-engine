@@ -17,7 +17,7 @@ typedef {% if r.is_union %}union{% else %}struct{% endif %} {{ r.name }} {{ r.na
 {%- endfor %}
 {%- endmacro -%}
 
-{%- macro definitions(records) %}
+{%- macro definitions(records, aliases) %}
 {%- for r in records %}
 {%- if let Some(doc) = r.doc %}
 /* {{ spell::one_line(doc) }} */
@@ -29,7 +29,7 @@ typedef {% if r.is_union %}union{% else %}struct{% endif %} {{ r.name }} {{ r.na
 {%- endif %}
 {% if r.is_union %}union{% else %}struct{% endif %} {{ r.name }} {
 {%- for f in r.fields %}
-  {% if loop.first %}{% if let Some(n) = r.alignas %}NVE_ALIGNAS({{ n }}) {% endif %}{% endif %}{{ c::field_decl(f) }};
+  {% if loop.first %}{% if let Some(n) = r.alignas %}NVE_ALIGNAS({{ n }}) {% endif %}{% endif %}{{ c::field_decl(aliases, f) }};
 {%- endfor %}
 };
 {% endfor %}

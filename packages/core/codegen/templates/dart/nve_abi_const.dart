@@ -17,8 +17,8 @@ const int {{ spell::camel(k.name) }} = {{ spell::uint(k.value, k.hex) }};
 {%- endfor %}
 
 /// Modular interface IDs passed to `nve_get_interface(uint32_t)`.
-{%- for iface in m.core.modules %}
-const int nveIface{{ spell::pascal(iface.name) }} = {{ iface.interface_id }};
+{%- for iface in m.modules() %}
+const int nveIface{{ spell::pascal(model::module_name(iface)) }} = {{ model::interface_id(iface) }};
 {%- endfor %}
 {%- for e in m.enums() %}
 {%- if let Some(doc) = e.doc %}

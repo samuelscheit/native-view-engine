@@ -5,11 +5,12 @@ use core::mem::{offset_of, size_of};
 
 use nve_abi::host::NveHostStatus;
 use nve_abi::schema::{
-    core_abi_descriptor, AbiItemDescriptor, AbiRecordDescriptor,
-    NveEnumSchema, NveSchema, NveStructSchema, NveUnionSchema,
+    core_abi_descriptor, runtime_abi_descriptor, AbiItemDescriptor, AbiRecordDescriptor,
+    NveAliasSchema, NveEnumSchema, NveSchema, NveStructSchema, NveUnionSchema, NveVtableSchema,
 };
 use nve_abi::{
-    InteractionEvent, NveAbi, NveBufferSlice, NveEvent, NveSceneView, NveValueData,
+    InteractionEvent, NodeId, NveAbi, NveBufferSlice, NveEvent, NveRuntimeApi, NveSceneView,
+    NveSurfaceApi, NveValueData,
 };
 
 /// Custom aligned POD struct exercising all `#[nve_abi(...)]` struct & field options.
@@ -92,13 +93,44 @@ fn core_and_scene_view_descriptors_reflect_real_rustc_layouts() {
     assert_eq!(core.consts.len(), 31);
     assert_eq!(core.aliases.len(), 14);
     assert_eq!(core.aliases[0].name, "NveNodeId");
+    assert_eq!(core.aliases[0].rust_name, Some("NodeId"));
     assert_eq!(core.aliases[1].name, "NveSurfaceId");
     assert_eq!(core.aliases[3].name, "NveTableKey");
     assert_eq!(core.aliases[5].name, "NveDurationUs");
     assert_eq!(core.aliases[10].name, "NveInterfaceId");
-    assert_eq!(core.enums.len(), 6);
+    assert_eq!(core.aliases[11].name, "NveHostServiceId");
+    assert_eq!(core.aliases[12].name, "NveHostRequestId");
+    assert_eq!(core.callbacks.len(), 3);
+    assert_eq!(core.enums.len(), 7);
     assert_eq!(core.records.len(), 17);
-    assert_eq!(core.modules.len(), 5);
+    assert_eq!(core.vtables.len(), 5);
+
+    let rt = runtime_abi_descriptor();
+    assert_eq!(rt.namespace, Some("NveRuntimeAbi"));
+    assert_eq!(rt.consts.len(), 9);
+    assert_eq!(rt.aliases.len(), 1);
+    assert_eq!(rt.aliases[0].name, "NveRuntimeHandle");
+    assert_eq!(rt.callbacks.len(), 4);
+    assert_eq!(rt.enums.len(), 1);
+    assert_eq!(rt.records.len(), 8);
+    assert_eq!(rt.vtables.len(), 1);
+    assert_eq!(rt.vtables[0].name, "NveRuntimeApi");
+    assert_eq!(rt.vtables[0].slots_offset, 16);
+    assert_eq!(rt.vtables[0].header_fields.len(), 3);
+    assert_eq!(rt.vtables[0].methods.len(), 37);
+
+    assert_eq!(
+        <NodeId as NveSchema>::ITEM,
+        AbiItemDescriptor::Alias(<NodeId as NveAliasSchema>::SCHEMA)
+    );
+    assert_eq!(
+        <NveSurfaceApi as NveSchema>::ITEM,
+        AbiItemDescriptor::Vtable(<NveSurfaceApi as NveVtableSchema>::SCHEMA)
+    );
+    assert_eq!(
+        <NveRuntimeApi as NveSchema>::ITEM,
+        AbiItemDescriptor::Vtable(<NveRuntimeApi as NveVtableSchema>::SCHEMA)
+    );
 
     let ev_schema = <NveEvent as NveStructSchema>::SCHEMA;
     assert_eq!(ev_schema.size, 64);

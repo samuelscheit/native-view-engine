@@ -24,8 +24,8 @@ public final class NveAbi {
 {%- endfor %}
 
     // Modular interface IDs (`nve_get_interface`).
-{%- for iface in m.core.modules %}
-    public static final int IFACE_{{ spell::screaming(iface.name) }} = {{ iface.interface_id }};
+{%- for iface in m.modules() %}
+    public static final int IFACE_{{ spell::screaming(model::module_name(iface)) }} = {{ model::interface_id(iface) }};
 {%- endfor %}
 {%- for e in m.enums() %}
 

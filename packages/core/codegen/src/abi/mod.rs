@@ -18,10 +18,7 @@ mod validate;
 pub use flat_op::generate_flat_op_codec_files;
 
 use askama::Template;
-use nve_abi::NveHostStatus;
-use nve_abi::schema::{
-    AbiEnumDescriptor, AbiFileDescriptor, NveEnumSchema, core_abi_descriptor, runtime_abi_descriptor,
-};
+use nve_abi::schema::{AbiFileDescriptor, core_abi_descriptor, runtime_abi_descriptor};
 use nve_abi::table::{TableDesc, ValueSetDesc};
 
 use crate::error::CodegenError;
@@ -33,7 +30,6 @@ use spell::{c, dart, swift, ts};
 
 const CORE: AbiFileDescriptor = core_abi_descriptor();
 const RUNTIME: AbiFileDescriptor = runtime_abi_descriptor();
-const HOST_STATUS: AbiEnumDescriptor = <NveHostStatus as NveEnumSchema>::SCHEMA;
 
 const CXX: &str = "packages/core/host-cxx";
 const SWIFT: &str = "packages/core/host-swift";
@@ -84,12 +80,12 @@ struct TsAbi<'a> {
 
 /// The Core ABI model of the linked `nve-abi`.
 pub fn abi_model() -> Result<AbiModel<'static>, CodegenError> {
-    AbiModel::new(&CORE, &HOST_STATUS)
+    AbiModel::new(&CORE)
 }
 
 /// The runtime ABI model on top of `base` (`abi_model()`).
 pub fn runtime_abi_model(base: &AbiModel<'static>) -> Result<RuntimeAbiModel<'static>, CodegenError> {
-    RuntimeAbiModel::new(&RUNTIME, base, nve_abi::RUNTIME_CALLBACK_TYPEDEFS, nve_abi::RUNTIME_API_SLOTS)
+    RuntimeAbiModel::new(&RUNTIME, base)
 }
 
 /// Renders one template into a pre-sized buffer, ending in exactly one `\n` (Askama drops a

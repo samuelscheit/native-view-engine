@@ -11,12 +11,9 @@ use crate::event::{
     InteractionEvent, LayoutEvent, NveEvent, NveEventBatch, RawEventBytes, ScrollEvent,
     TextInputEvent, NVE_EVENT_ALIGN, NVE_EVENT_SIZE,
 };
-use crate::ffi::{
-    NveBufferSlice, NveComponentApi, NveDevApi,
-    NveGestureDisposition, NveIntrinsicSize, NveLayoutApi, NveSizeConstraints, NveSurfaceApi,
-};
+use crate::ffi::{NveBufferSlice, NveGestureDisposition, NveIntrinsicSize, NveSizeConstraints};
 use crate::host::{
-    NveHostApi, NveHostCallbacks, NveHostEventBatchHeader, NveHostEventRecordHeader, NveHostStatus,
+    NveHostCallbacks, NveHostEventBatchHeader, NveHostEventRecordHeader, NveHostStatus,
 };
 use crate::runtime::{
     NveLayoutRect, NveNodeRow, NveRuntimeConfig, NveRuntimeMetrics, NveRuntimeStatus,
@@ -70,41 +67,12 @@ const _: () = {
     assert!(offset_of!(NveIntrinsicSize, width) == 0);
     assert!(offset_of!(NveIntrinsicSize, height) == 4);
 
-    // ---- Core modular interface vtables (ffi.rs) ----
-    assert!(size_of::<NveSurfaceApi>() == 4 * PTR_SIZE);
-    assert!(align_of::<NveSurfaceApi>() == PTR_ALIGN);
-    assert!(offset_of!(NveSurfaceApi, create) == 0);
-    assert!(offset_of!(NveSurfaceApi, destroy) == PTR_SIZE);
-    assert!(offset_of!(NveSurfaceApi, render) == 2 * PTR_SIZE);
-    assert!(offset_of!(NveSurfaceApi, dispatch_events) == 3 * PTR_SIZE);
-
-    assert!(size_of::<NveLayoutApi>() == 2 * PTR_SIZE);
-    assert!(align_of::<NveLayoutApi>() == PTR_ALIGN);
-    assert!(offset_of!(NveLayoutApi, measure) == 0);
-    assert!(offset_of!(NveLayoutApi, hit_test) == PTR_SIZE);
-
-    assert!(size_of::<NveComponentApi>() == 2 * PTR_SIZE);
-    assert!(align_of::<NveComponentApi>() == PTR_ALIGN);
-    assert!(offset_of!(NveComponentApi, set_props) == 0);
-    assert!(offset_of!(NveComponentApi, drain_emitted_events) == PTR_SIZE);
-
-    assert!(size_of::<NveDevApi>() == 3 * PTR_SIZE);
-    assert!(align_of::<NveDevApi>() == PTR_ALIGN);
-    assert!(offset_of!(NveDevApi, apply_hot_patch) == 0);
-    assert!(offset_of!(NveDevApi, snapshot_state) == PTR_SIZE);
-    assert!(offset_of!(NveDevApi, restore_state) == 2 * PTR_SIZE);
-
-    // ---- Host capability structs & vtable (host/mod.rs) ----
+    // ---- Host capability structs (vtable slots locked by #[derive(NveAbi)]) ----
     assert!(size_of::<NveHostCallbacks>() == 3 * PTR_SIZE);
     assert!(align_of::<NveHostCallbacks>() == PTR_ALIGN);
     assert!(offset_of!(NveHostCallbacks, host_ctx) == 0);
     assert!(offset_of!(NveHostCallbacks, invoke) == PTR_SIZE);
     assert!(offset_of!(NveHostCallbacks, channel_publish) == 2 * PTR_SIZE);
-
-    assert!(size_of::<NveHostApi>() == 2 * PTR_SIZE);
-    assert!(align_of::<NveHostApi>() == PTR_ALIGN);
-    assert!(offset_of!(NveHostApi, bind_host) == 0);
-    assert!(offset_of!(NveHostApi, dispatch_host_events) == PTR_SIZE);
 
     assert!(size_of::<NveHostEventBatchHeader>() == 8);
     assert!(offset_of!(NveHostEventBatchHeader, magic) == 0);
@@ -309,7 +277,7 @@ const _: () = {
     assert!(offset_of!(NveScrollOffset, x) == 4);
     assert!(offset_of!(NveScrollOffset, y) == 8);
 
-    // `NveRuntimeApi` slots are locked against `RUNTIME_API_SLOTS` in `runtime.rs`.
+    // `NveRuntimeApi` slots & ILP32-aligned size are locked by `#[derive(NveAbi)]` in `runtime/vtable.rs`.
 };
 
 // Exact 64-bit ABI verification matching the checked-in C/Swift/Dart/TS/Java artifacts.
@@ -361,12 +329,7 @@ const _: () = {
     assert!(offset_of!(NveCommandSlice, _pad) == 4);
     assert!(offset_of!(NveCommandSlice, args) == 8);
 
-    assert!(size_of::<NveSurfaceApi>() == 32);
-    assert!(size_of::<NveLayoutApi>() == 16);
-    assert!(size_of::<NveComponentApi>() == 16);
-    assert!(size_of::<NveDevApi>() == 24);
     assert!(size_of::<NveHostCallbacks>() == 24);
-    assert!(size_of::<NveHostApi>() == 16);
 
     assert!(size_of::<crate::table::NveTableView>() == 72);
     assert!(align_of::<crate::table::NveTableView>() == 8);

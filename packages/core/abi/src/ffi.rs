@@ -21,6 +21,16 @@ use crate::value::{NveMapEntry, NveValueTag};
 /// `crate::schema::core_abi_descriptor()` (zero hardcoded hex literals).
 pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = crate::schema::compute_core_abi_schema_hash();
 
+nve_abi_macros::abi_consts! {
+    pub(crate) const FFI_ABI_CONSTS;
+
+    /// Wire magic bytes (`"NVE2"` little-endian).
+    #[nve_abi(hex)]
+    pub const NVE_ABI_MAGIC: u32 = u32::from_le_bytes(*b"NVE2");
+    /// Binary `NVE2` wire protocol version.
+    pub const NVE_ABI_VERSION: u32 = 1;
+}
+
 pub const NVE_IFACE_SURFACE: InterfaceId = InterfaceId(1);
 pub const NVE_IFACE_LAYOUT: InterfaceId = InterfaceId(2);
 pub const NVE_IFACE_COMPONENT: InterfaceId = InterfaceId(3);
@@ -174,15 +184,24 @@ impl std::fmt::Display for DecodeError {
 
 impl std::error::Error for DecodeError {}
 
-/// Opaque handle to an instantiated NVE app/component.
-pub type NveAppHandle = *mut c_void;
+nve_abi_macros::abi_aliases! {
+    pub(crate) const FFI_ABI_ALIASES;
 
-/// Single exported entry point per NVE module (`nve_get_interface`).
-pub type NveGetInterfaceFn = unsafe extern "C" fn(interface_id: InterfaceId) -> *const c_void;
+    /// Opaque handle to an instantiated NVE app/component.
+    pub type NveAppHandle = *mut c_void;
+}
+
+nve_abi_macros::abi_callbacks! {
+    pub(crate) const FFI_ABI_CALLBACKS;
+
+    /// Single exported entry point per NVE module (`nve_get_interface`).
+    pub type NveGetInterfaceFn = unsafe extern "C" fn(interface_id: InterfaceId) -> *const c_void;
+}
 
 /// Required core surface interface (`NVE_IFACE_SURFACE = 1`).
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, NveAbi)]
+#[nve_abi(interface = NVE_IFACE_SURFACE)]
 pub struct NveSurfaceApi {
     pub create: unsafe extern "C" fn(surface_id: SurfaceId) -> NveAppHandle,
     pub destroy: unsafe extern "C" fn(handle: NveAppHandle),
@@ -190,10 +209,10 @@ pub struct NveSurfaceApi {
     pub dispatch_events: unsafe extern "C" fn(handle: NveAppHandle, batch: NveEventBatch) -> u32,
 }
 
-/// Optional layout & gesture negotiation interface (`NVE_IFACE_LAYOUT = 2`).
-/// Pure register-to-register scalar calls (~1–2 ns, zero serialization).
+/// Optional layout & gesture interface (`NVE_IFACE_LAYOUT = 2`). Zero-serialization register calls.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, NveAbi)]
+#[nve_abi(interface = NVE_IFACE_LAYOUT)]
 pub struct NveLayoutApi {
     pub measure:
         unsafe extern "C" fn(handle: NveAppHandle, constraints: NveSizeConstraints) -> NveIntrinsicSize,
@@ -207,7 +226,8 @@ pub struct NveLayoutApi {
 
 /// Optional embedded component props & outbound event interface (`NVE_IFACE_COMPONENT = 3`).
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, NveAbi)]
+#[nve_abi(interface = NVE_IFACE_COMPONENT)]
 pub struct NveComponentApi {
     pub set_props:
         unsafe extern "C" fn(handle: NveAppHandle, entries: *const NveMapEntry, count: u32) -> u32,
@@ -216,8 +236,11 @@ pub struct NveComponentApi {
 
 /// Optional dev / 2-tier hot-reload interface (`NVE_IFACE_DEV = 4`, may be NULL in release builds).
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, NveAbi)]
+#[nve_abi(interface = NVE_IFACE_DEV)]
 pub struct NveDevApi {
+    /// Applies one binary `NVP1` `HotPatchMsg` frame exactly as broadcast by `nve dev`
+    /// (returns 1 when the app changed; 0 for non-template or malformed frames).
     pub apply_hot_patch:
         unsafe extern "C" fn(handle: NveAppHandle, patch_nvp1: NveBufferSlice) -> u32,
     pub snapshot_state: unsafe extern "C" fn(handle: NveAppHandle) -> NveBufferSlice,

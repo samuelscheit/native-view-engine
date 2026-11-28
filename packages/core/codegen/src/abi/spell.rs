@@ -5,7 +5,7 @@
 //! starts, so the `/* unsupported */` fallback below is unreachable (and would fail the host
 //! compile if it were not).
 
-use nve_abi::schema::AbiAliasDescriptor;
+use nve_abi::schema::{AbiAliasDescriptor, AbiParamDescriptor};
 
 use super::layout::{FieldLayout, Scalar, Ty, Width};
 use super::model::{HexLiteral, U64Split};
@@ -89,7 +89,11 @@ pub fn record_prefix(name: &str) -> String {
 /// Constant prefix of one runtime ABI enum's values: its name without the `NveRuntime` / `Nve`
 /// namespace, `SCREAMING` (`NveRuntimeStatus` -> `STATUS`), so each enum owns its own prefix.
 pub fn enum_prefix(name: &str) -> String {
-    screaming(name.strip_prefix("NveRuntime").or_else(|| name.strip_prefix("Nve")).unwrap_or(name))
+    screaming(
+        name.strip_prefix("NveRuntime")
+            .or_else(|| name.strip_prefix("Nve"))
+            .unwrap_or(name),
+    )
 }
 
 /// Constant name without the `NVE_` namespace (`NVE_ABI_MAGIC` -> `ABI_MAGIC`).
@@ -100,8 +104,7 @@ pub fn bare(name: &str) -> &str {
 /// Java `int` constants for a layout value: one constant when every data model agrees, else
 /// `_64` / `_32` (or one constant when those agree) plus `_I386` where i386 differs from ILP32.
 pub fn java_width(name: String, w: &Width) -> String {
-    let line =
-        |suffix: &str, v: usize| format!("    public static final int {name}{suffix} = {v};");
+    let line = |suffix: &str, v: usize| format!("    public static final int {name}{suffix} = {v};");
     let mut out = match w.fixed() {
         Some(n) => return line("", n),
         None if w.p64() == w.p32() => line("", w.p64()),
@@ -118,6 +121,7 @@ pub fn java_width(name: String, w: &Width) -> String {
 pub fn one_line(doc: &str) -> String {
     doc.split('\n')
         .map(str::trim)
+        .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
         .replace("*/", "* /")
@@ -141,30 +145,51 @@ pub mod c {
         }
     }
 
+    fn resolve_c_alias<'a>(aliases: &'a [AbiAliasDescriptor], name: &'a str) -> &'a str {
+        aliases
+            .iter()
+            .find(|a| a.rust_name == Some(name))
+            .map_or(name, |a| a.name)
+    }
+
     /// C spelling of an ABI type (arrays spell their element type; see [`decl`]).
-    pub fn ty(spelling: &str) -> String {
+    pub fn ty(aliases: &[AbiAliasDescriptor], spelling: &str) -> String {
         match Ty::parse(spelling) {
             Ok(Ty::Unit | Ty::Void) => "void".to_owned(),
             Ok(Ty::Scalar(s)) => scalar(s).to_owned(),
             Ok(Ty::Ptr {
                 mutable: false,
                 pointee,
-            }) => format!("const {}*", ty(pointee)),
+            }) => format!("const {}*", ty(aliases, pointee)),
             Ok(Ty::Ptr {
                 mutable: true,
                 pointee,
-            }) => format!("{}*", ty(pointee)),
-            Ok(Ty::Array { elem, .. }) => ty(elem),
-            Ok(Ty::Named(name)) => name.to_owned(),
+            }) => format!("{}*", ty(aliases, pointee)),
+            Ok(Ty::Array { elem, .. }) => ty(aliases, elem),
+            Ok(Ty::Nullable(cb)) => cb.to_owned(),
+            Ok(Ty::Named(name)) => resolve_c_alias(aliases, name).to_owned(),
             Err(_) => "/* unsupported */".to_owned(),
         }
     }
 
     /// `type name` / `type name[N]` declaration of a field or parameter.
-    pub fn decl(spelling: &str, name: &str) -> String {
+    pub fn decl(aliases: &[AbiAliasDescriptor], spelling: &str, name: &str) -> String {
         match Ty::parse(spelling) {
-            Ok(Ty::Array { len, .. }) => format!("{} {name}[{len}]", ty(spelling)),
-            _ => format!("{} {name}", ty(spelling)),
+            Ok(Ty::Array { len, .. }) => format!("{} {name}[{len}]", ty(aliases, spelling)),
+            _ => format!("{} {name}", ty(aliases, spelling)),
+        }
+    }
+
+    /// C parameter list (`void` when empty, else comma-separated `type name`).
+    pub fn fn_params(aliases: &[AbiAliasDescriptor], params: &[AbiParamDescriptor]) -> String {
+        if params.is_empty() {
+            "void".to_owned()
+        } else {
+            params
+                .iter()
+                .map(|p| decl(aliases, p.ty, p.name))
+                .collect::<Vec<_>>()
+                .join(", ")
         }
     }
 
@@ -186,31 +211,38 @@ pub mod c {
         format!("(sizeof(void*) == 8u ? {}u : {p32})", w.p64())
     }
 
-    pub fn field_decl(f: &FieldLayout<'_>) -> String {
+    pub fn field_decl(aliases: &[AbiAliasDescriptor], f: &FieldLayout<'_>) -> String {
         match f.ty {
-            Ty::Array { elem, len } => format!("{} {}[{len}]", ty(elem), f.desc.name),
-            _ => format!("{} {}", ty(f.desc.abi_type()), f.desc.name),
+            Ty::Array { elem, len } => format!("{} {}[{len}]", ty(aliases, elem), f.desc.name),
+            _ => format!("{} {}", ty(aliases, f.desc.abi_type()), f.desc.name),
         }
     }
 }
 
 pub mod dart {
-    use std::collections::BTreeMap;
-
     use super::*;
 
-    /// Follows value-alias chains (`NveNodeId` -> `u32`, `NveAppHandle` -> `*mut c_void`) to their
-    /// underlying ABI type; callback aliases stay named for their custom `Native` typedefs.
-    fn resolve_alias<'a>(spelling: &'a str, aliases: &'a [AbiAliasDescriptor]) -> &'a str {
+    /// Follows value-alias chains (`NodeId`/`NveNodeId` -> `u32`, `NveAppHandle` -> `*mut c_void`)
+    /// to their underlying ABI type, stopping at callbacks and aliases emitted as Dart typedefs
+    /// (`keep_aliases`, e.g. `NveRuntimeHandle`).
+    fn resolve_alias<'a>(
+        spelling: &'a str,
+        aliases: &'a [AbiAliasDescriptor],
+        keep_aliases: &'a [AbiAliasDescriptor],
+        callbacks: &[&str],
+    ) -> &'a str {
         let mut cur = spelling;
         for _ in 0..=aliases.len() {
             let Ok(Ty::Named(name)) = Ty::parse(cur) else {
                 break;
             };
-            if matches!(name, "NveHostInvokeFn" | "NveHostChannelPublishFn") {
+            if callbacks.contains(&name) || keep_aliases.iter().any(|k| k.name == name) {
                 break;
             }
-            match aliases.iter().find(|a| a.name == name) {
+            match aliases
+                .iter()
+                .find(|a| a.name == name || a.rust_name == Some(name))
+            {
                 Some(alias) => cur = alias.target,
                 None => break,
             }
@@ -218,23 +250,77 @@ pub mod dart {
         cur
     }
 
-    /// `dart:ffi` native type (`ffi.Uint32`, `ffi.Pointer<NveValue>`, `NveStrSlice`).
-    pub fn native(aliases: &[AbiAliasDescriptor], spelling: &str) -> String {
-        match Ty::parse(resolve_alias(spelling, aliases)) {
+    /// `dart:ffi` native type (`ffi.Uint32`, `ffi.Pointer<NveValue>`, `NveStrSlice`,
+    /// `ffi.Pointer<ffi.NativeFunction<NveRuntimeWakeNative>>`).
+    pub fn native(
+        aliases: &[AbiAliasDescriptor],
+        keep_aliases: &[AbiAliasDescriptor],
+        callbacks: &[&str],
+        spelling: &str,
+    ) -> String {
+        match Ty::parse(resolve_alias(spelling, aliases, keep_aliases, callbacks)) {
             Ok(Ty::Unit | Ty::Void) => "ffi.Void".to_owned(),
             Ok(Ty::Scalar(s)) => native_scalar(s).to_owned(),
-            Ok(Ty::Ptr { pointee, .. }) => format!("ffi.Pointer<{}>", native(aliases, pointee)),
-            Ok(Ty::Array { elem, .. }) => format!("ffi.Array<{}>", native(aliases, elem)),
-            Ok(Ty::Named("NveHostInvokeFn")) => {
-                "ffi.Pointer<ffi.NativeFunction<NveHostInvokeNative>>".to_owned()
+            Ok(Ty::Ptr { pointee, .. }) => format!(
+                "ffi.Pointer<{}>",
+                native(aliases, keep_aliases, callbacks, pointee)
+            ),
+            Ok(Ty::Array { elem, .. }) => format!(
+                "ffi.Array<{}>",
+                native(aliases, keep_aliases, callbacks, elem)
+            ),
+            Ok(Ty::Nullable(cb)) => {
+                format!(
+                    "ffi.Pointer<ffi.NativeFunction<{}Native>>",
+                    callback_stem(cb)
+                )
             }
-            Ok(Ty::Named("NveHostChannelPublishFn")) => {
-                "ffi.Pointer<ffi.NativeFunction<NveHostChannelPublishNative>>".to_owned()
+            Ok(Ty::Named(name)) if callbacks.contains(&name) => {
+                format!(
+                    "ffi.Pointer<ffi.NativeFunction<{}Native>>",
+                    callback_stem(name)
+                )
             }
-            Ok(Ty::Named("NveAppHandle")) => "ffi.Pointer<ffi.Void>".to_owned(),
             Ok(Ty::Named(name)) => name.to_owned(),
             Err(_) => "/* unsupported */".to_owned(),
         }
+    }
+
+    /// Dart-side `asFunction` type (`int`, `double`, `bool`, `void`, `ffi.Pointer<...>`).
+    pub fn dart_side(
+        aliases: &[AbiAliasDescriptor],
+        keep_aliases: &[AbiAliasDescriptor],
+        callbacks: &[&str],
+        spelling: &str,
+    ) -> String {
+        match Ty::parse(resolve_alias(spelling, aliases, keep_aliases, callbacks)) {
+            Ok(Ty::Unit | Ty::Void) => "void".to_owned(),
+            Ok(Ty::Scalar(s)) => dart_scalar(s).to_owned(),
+            _ => native(aliases, keep_aliases, callbacks, spelling),
+        }
+    }
+
+    /// Single-line `RET Function(T name, ...)` signature (`native` or `dart_side`).
+    pub fn fn_sig(
+        aliases: &[AbiAliasDescriptor],
+        keep_aliases: &[AbiAliasDescriptor],
+        callbacks: &[&str],
+        params: &[AbiParamDescriptor],
+        ret: &str,
+        as_dart: bool,
+    ) -> String {
+        let pick = |ty: &str| {
+            if as_dart {
+                dart_side(aliases, keep_aliases, callbacks, ty)
+            } else {
+                native(aliases, keep_aliases, callbacks, ty)
+            }
+        };
+        let list: Vec<String> = params
+            .iter()
+            .map(|p| format!("{} {}", pick(p.ty), camel(p.name)))
+            .collect();
+        format!("{} Function({})", pick(ret), list.join(", "))
     }
 
     fn native_scalar(s: Scalar) -> &'static str {
@@ -252,128 +338,41 @@ pub mod dart {
         }
     }
 
+    fn dart_scalar(s: Scalar) -> &'static str {
+        match s {
+            Scalar::Bool => "bool",
+            Scalar::F32 | Scalar::F64 => "double",
+            _ => "int",
+        }
+    }
+
     /// `external` field declaration (with its `@ffi.*` annotation) of an `ffi.Struct` / `ffi.Union`.
-    pub fn field(aliases: &[AbiAliasDescriptor], f: &FieldLayout<'_>) -> String {
+    pub fn field(
+        aliases: &[AbiAliasDescriptor],
+        keep_aliases: &[AbiAliasDescriptor],
+        callbacks: &[&str],
+        f: &FieldLayout<'_>,
+    ) -> String {
         let name = camel(f.desc.name);
-        let resolved = resolve_alias(f.desc.abi_type(), aliases);
+        let resolved = resolve_alias(f.desc.abi_type(), aliases, keep_aliases, callbacks);
         match Ty::parse(resolved) {
             Ok(Ty::Scalar(s)) => {
-                let dart = match s {
-                    Scalar::Bool => "bool",
-                    Scalar::F32 | Scalar::F64 => "double",
-                    _ => "int",
-                };
-                format!("@{}()\n  external {dart} {name};", native_scalar(s))
+                format!(
+                    "@{}()\n  external {} {name};",
+                    native_scalar(s),
+                    dart_scalar(s)
+                )
             }
             Ok(Ty::Array { len, .. }) => {
                 format!(
                     "@ffi.Array({len})\n  external {} {name};",
-                    native(aliases, resolved)
+                    native(aliases, keep_aliases, callbacks, resolved)
                 )
             }
-            _ => format!("external {} {name};", native(aliases, resolved)),
-        }
-    }
-
-    /// The named C types a runtime signature may spell besides scalars and pointers.
-    pub struct CNames<'a> {
-        /// Records and opaque typedefs (`NveBufferSlice`, `NveRuntimeHandle`).
-        pub records: std::collections::BTreeSet<&'a str>,
-        /// Function-pointer typedefs (`NveRuntimeWakeFn`); each has a Dart `<Stem>Native` typedef.
-        pub callbacks: std::collections::BTreeSet<&'a str>,
-        /// Scalar / handle typedefs from the Core ABI (`NveNodeId` -> `u32`, `NveTableKey` -> `u64`).
-        pub aliases: BTreeMap<&'a str, &'a str>,
-    }
-
-    impl CNames<'_> {
-        /// `(dart:ffi native, Dart-side)` types of one C type spelling (`const NveMapEntry*`,
-        /// `uint32_t`, `NveRuntimeWakeFn`, `const char* const*`); `Err` for any type the runtime
-        /// ABI does not declare, so no signature silently renders as an unresolved Dart name.
-        pub fn c_type(&self, spelling: &str) -> Result<(String, String), String> {
-            let c = spelling.trim();
-            let c = c.strip_prefix("const ").unwrap_or(c).trim_start();
-            let c = c.strip_prefix("struct ").unwrap_or(c).trim_start();
-            if let Some(pointee) = c.strip_suffix('*') {
-                // `T* const*`: the `const` qualifies the inner pointer, not the pointee type.
-                let pointee = pointee.trim_end();
-                let pointee = match pointee.strip_suffix("const") {
-                    Some(inner) if inner.ends_with([' ', '*']) => inner,
-                    _ => pointee,
-                };
-                let ptr = format!("ffi.Pointer<{}>", self.c_type(pointee)?.0);
-                return Ok((ptr.clone(), ptr));
-            }
-            let pair = |native: &str, dart: &str| Ok((native.to_owned(), dart.to_owned()));
-            match c {
-                "void" => pair("ffi.Void", "void"),
-                "bool" => pair("ffi.Bool", "bool"),
-                "char" => pair("ffi.Char", "int"),
-                "int8_t" => pair("ffi.Int8", "int"),
-                "int16_t" => pair("ffi.Int16", "int"),
-                "int32_t" => pair("ffi.Int32", "int"),
-                "int64_t" => pair("ffi.Int64", "int"),
-                "uint8_t" => pair("ffi.Uint8", "int"),
-                "uint16_t" => pair("ffi.Uint16", "int"),
-                "uint32_t" => pair("ffi.Uint32", "int"),
-                "uint64_t" => pair("ffi.Uint64", "int"),
-                "size_t" => pair("ffi.Size", "int"),
-                "float" => pair("ffi.Float", "double"),
-                "double" => pair("ffi.Double", "double"),
-                callback if self.callbacks.contains(callback) => {
-                    let ty = format!("ffi.Pointer<ffi.NativeFunction<{}Native>>", callback_stem(callback));
-                    Ok((ty.clone(), ty))
-                }
-                named if self.records.contains(named) => pair(named, named),
-                alias if self.aliases.contains_key(alias) => match self.aliases[alias] {
-                    "bool" => pair("ffi.Bool", "bool"),
-                    "u8" => pair("ffi.Uint8", "int"),
-                    "u16" => pair("ffi.Uint16", "int"),
-                    "u32" => pair("ffi.Uint32", "int"),
-                    "u64" => pair("ffi.Uint64", "int"),
-                    "i32" => pair("ffi.Int32", "int"),
-                    "i64" => pair("ffi.Int64", "int"),
-                    "f32" => pair("ffi.Float", "double"),
-                    "f64" => pair("ffi.Double", "double"),
-                    "usize" => pair("ffi.Size", "int"),
-                    "*mut c_void" | "*const c_void" => pair("ffi.Pointer<ffi.Void>", "ffi.Pointer<ffi.Void>"),
-                    other => Err(format!("unsupported alias target `{other}` for `{alias}`")),
-                },
-                unknown => Err(format!("unknown C type `{unknown}`")),
-            }
-        }
-
-        /// `RET Function(T name, …)` of a C signature: `dart:ffi` native types, or the Dart-side
-        /// types of its `asFunction` form when `dart_side`. `params` is `void` or a list of named
-        /// parameters; a by-value `void` parameter or an unnamed one is an `Err`.
-        pub fn c_fn(&self, ret: &str, params: &str, dart_side: bool) -> Result<String, String> {
-            let pick = |c: &str| -> Result<String, String> {
-                let (native, dart) = self.c_type(c)?;
-                Ok(if dart_side { dart } else { native })
-            };
-            let params = params.trim();
-            let list = if params == "void" || params.is_empty() {
-                Vec::new()
-            } else {
-                params
-                    .split(',')
-                    .map(|p| {
-                        let p = p.trim();
-                        let split = p.rfind(|ch: char| ch.is_whitespace() || ch == '*').map_or(0, |i| i + 1);
-                        let (ty, name) = p.split_at(split);
-                        let named = name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-                            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-                        if !named || ty.trim().is_empty() {
-                            return Err(format!("parameter `{p}` needs a type and a name"));
-                        }
-                        // Resolved, so `const void x` is refused like `void x`.
-                        if self.c_type(ty)?.0 == "ffi.Void" {
-                            return Err(format!("parameter `{p}` is `void`"));
-                        }
-                        Ok(format!("{} {}", pick(ty)?, to_camel_case(name)))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
-            };
-            Ok(format!("{} Function({})", pick(ret)?, list.join(", ")))
+            _ => format!(
+                "external {} {name};",
+                native(aliases, keep_aliases, callbacks, resolved)
+            ),
         }
     }
 
@@ -386,9 +385,11 @@ pub mod dart {
     pub fn variant(name: &str) -> String {
         let id = camel(name);
         match id.as_str() {
-            "null" | "bool" | "default" | "true" | "false" | "switch" | "case" | "class" | "const"
-            | "final" | "in" | "is" | "new" | "this" | "var" | "void" | "with" | "enum" | "super"
-            | "return" | "do" | "if" | "else" | "for" | "while" => format!("{id}Value"),
+            "null" | "bool" | "default" | "true" | "false" | "switch" | "case" | "class"
+            | "const" | "final" | "in" | "is" | "new" | "this" | "var" | "void" | "with"
+            | "enum" | "super" | "return" | "do" | "if" | "else" | "for" | "while" => {
+                format!("{id}Value")
+            }
             _ => id,
         }
     }
@@ -409,7 +410,11 @@ pub mod swift {
             "typealias", "var", "where", "while",
         ];
         let id = camel(name);
-        if RESERVED.contains(&id.as_str()) { format!("{id}_") } else { id }
+        if RESERVED.contains(&id.as_str()) {
+            format!("{id}_")
+        } else {
+            id
+        }
     }
 }
 

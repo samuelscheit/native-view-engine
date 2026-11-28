@@ -21,23 +21,24 @@ NVE_EXTERN_C_BEGIN
 {%- endfor %}
 
 /* Modular interface IDs resolved once via `nve_get_interface(uint32_t)`. */
-{%- for iface in m.core.modules %}
-#define NVE_IFACE_{{ spell::screaming(iface.name) }} {{ iface.interface_id }}u /* const {{ iface.c_name }}* */
+{%- for iface in m.modules() %}
+#define NVE_IFACE_{{ spell::screaming(model::module_name(iface)) }} {{ model::interface_id(iface) }}u /* const {{ iface.name }}* */
 {%- endfor %}
 {% for e in m.enums() %}{% call records::enum_def(e) %}{% endcall %}{% endfor %}
 {%- call records::typedefs(m.records) %}{% endcall %}
-{% for a in m.value_aliases() %}
+{% for a in m.all_aliases() %}
 {%- if let Some(doc) = a.doc %}
 /* {{ spell::one_line(doc) }} */
 {%- endif %}
-typedef {{ c::ty(a.target) }} {{ a.name }};
+typedef {{ c::ty(m.all_aliases(), a.target) }} {{ a.name }};
 {%- endfor %}
-
-/* Host capability callbacks (`NveHostCallbacks`). */
-typedef int32_t (*NveHostInvokeFn)(void* host_ctx, uint32_t service_id, uint32_t method_id, uint64_t request_id,
-                                   NveBufferSlice request, uint8_t* out_buf, size_t out_cap, size_t* out_len);
-typedef int32_t (*NveHostChannelPublishFn)(void* host_ctx, uint32_t channel_id, uint32_t flags, NveBufferSlice payload);
-{%- call records::definitions(m.records) %}{% endcall %}
+{% for cb in m.core.callbacks %}
+{%- if let Some(doc) = cb.doc %}
+/* {{ spell::one_line(doc) }} */
+{%- endif %}
+typedef {{ c::ty(m.all_aliases(), cb.return_type) }} (*{{ cb.name }})({{ c::fn_params(m.all_aliases(), cb.params) }});
+{%- endfor %}
+{%- call records::definitions(m.records, m.all_aliases()) %}{% endcall %}
 /* Layouts on every data model NVE runs on, computed from the field types and checked against
  * `rustc`: 64-bit pointers; 32-bit pointers with 8-byte-aligned 64-bit fields (armv7, wasm32,
  * arm64_32, Windows x86); and i386 System V, where 64-bit fields are 4-byte aligned in structs. */
@@ -47,46 +48,42 @@ typedef struct NveDetailU64AlignProbe {
 } NveDetailU64AlignProbe;
 NVE_STATIC_ASSERT(sizeof(void*) == 4u || sizeof(void*) == 8u, "NVE supports 32-bit and 64-bit targets only");
 {%- call records::asserts(m.records) %}{% endcall %}
-{% for iface in m.core.modules %}
+{% for iface in m.modules() %}
 {%- if let Some(doc) = iface.doc %}
 /* {{ spell::one_line(doc) }} */
 {%- endif %}
-typedef struct {{ iface.c_name }} {
+typedef struct {{ iface.name }} {
 {%- for method in iface.methods %}
 {%- if let Some(doc) = method.doc %}
   /* {{ spell::one_line(doc) }} */
 {%- endif %}
-  {{ c::ty(method.return_type) }} (*{{ method.name }})(
-{%- if method.has_self %}NveAppHandle handle{% if !method.params.is_empty() %}, {% endif %}{% endif %}
-{%- for p in method.params %}{{ c::decl(p.ty, p.name) }}{% if !loop.last %}, {% endif %}{% endfor %}
-{%- if !method.has_self && method.params.is_empty() %}void{% endif %});
+  {{ c::ty(m.all_aliases(), method.return_type) }} (*{{ method.name }})({{ c::fn_params(m.all_aliases(), method.params) }});
 {%- endfor %}
-} {{ iface.c_name }};
-NVE_STATIC_ASSERT(sizeof({{ iface.c_name }}) == {{ iface.methods.len() }}u * sizeof(void*), "{{ iface.c_name }} size");
+} {{ iface.name }};
+NVE_STATIC_ASSERT(sizeof({{ iface.name }}) == {{ iface.methods.len() }}u * sizeof(void*), "{{ iface.name }} size");
 {%- for method in iface.methods %}
-NVE_STATIC_ASSERT(offsetof({{ iface.c_name }}, {{ method.name }}) == {{ loop.index0 }}u * sizeof(void*), "{{ iface.c_name }}.{{ method.name }} slot");
+NVE_STATIC_ASSERT(offsetof({{ iface.name }}, {{ method.name }}) == {{ loop.index0 }}u * sizeof(void*), "{{ iface.name }}.{{ method.name }} slot");
 {%- endfor %}
 {% endfor %}
 /* Single exported symbol per NVE module. */
-typedef const void* (*NveGetInterfaceFn)(uint32_t interface_id);
-NVE_API const void* nve_get_interface(uint32_t interface_id);
+NVE_API const void* nve_get_interface(NveInterfaceId interface_id);
 
 /* Host-side cache of resolved interface pointers (not an ABI struct). */
 typedef struct NveModule {
-{%- for iface in m.core.modules %}
-  const {{ iface.c_name }}* {{ spell::snake(iface.name) }};
+{%- for iface in m.modules() %}
+  const {{ iface.name }}* {{ spell::snake(model::module_name(iface)) }};
 {%- endfor %}
 } NveModule;
 
 static inline NveModule nve_resolve_module(NveGetInterfaceFn get_iface) {
   NveModule m = {
-{%- for iface in m.core.modules %}NULL{% if !loop.last %}, {% endif %}{% endfor -%}
+{%- for iface in m.modules() %}NULL{% if !loop.last %}, {% endif %}{% endfor -%}
   };
   if (!get_iface) {
     return m;
   }
-{%- for iface in m.core.modules %}
-  m.{{ spell::snake(iface.name) }} = (const {{ iface.c_name }}*)get_iface(NVE_IFACE_{{ spell::screaming(iface.name) }});
+{%- for iface in m.modules() %}
+  m.{{ spell::snake(model::module_name(iface)) }} = (const {{ iface.name }}*)get_iface(NVE_IFACE_{{ spell::screaming(model::module_name(iface)) }});
 {%- endfor %}
   return m;
 }

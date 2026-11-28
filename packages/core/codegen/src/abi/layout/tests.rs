@@ -28,9 +28,10 @@ const fn file(records: &'static [AbiRecordDescriptor]) -> AbiFileDescriptor {
         namespace: None,
         consts: &[],
         aliases: &[],
+        callbacks: &[],
         enums: &[],
         records,
-        modules: &[],
+        vtables: &[],
     }
 }
 
@@ -149,7 +150,9 @@ fn type_spellings() {
         })
     );
     assert_eq!(Ty::parse("()").ok(), Some(Ty::Unit));
+    assert_eq!(Ty::parse("Option<WakeFn>").ok(), Some(Ty::Nullable("WakeFn")));
     assert!(Ty::parse("Option<fn()>").is_err());
+    assert!(Ty::parse("Option<Option<WakeFn>>").is_err());
     assert!(Ty::parse("[u8; x]").is_err());
 }
 

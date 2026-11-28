@@ -19,8 +19,8 @@ export const {{ k.name }} = {{ spell::uint(k.value, k.hex) }};
 
 /** Modular interface IDs passed to `nve_get_interface(uint32_t)`. */
 export const NVE_IFACE = {
-{%- for iface in m.core.modules %}
-  {{ spell::screaming(iface.name) }}: {{ iface.interface_id }},
+{%- for iface in m.modules() %}
+  {{ spell::screaming(model::module_name(iface)) }}: {{ model::interface_id(iface) }},
 {%- endfor %}
 } as const;
 {%- for e in m.enums() %}

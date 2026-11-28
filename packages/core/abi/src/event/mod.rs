@@ -26,56 +26,87 @@ const _: () = assert!(
     "NveEvent inline UTF-8 packing and cross-language ABI require little-endian byte order"
 );
 
-/// Exact byte size of one uniform [`NveEvent`] record (one 64-byte cache line).
-pub const NVE_EVENT_SIZE: usize = 64;
-/// Cache-line alignment of [`NveEvent`] in Rust slabs.
-pub const NVE_EVENT_ALIGN: usize = 64;
-/// Maximum inline UTF-8 key byte length stored inside [`NveEvent::payload`]`[2..6]`.
-pub const NVE_EVENT_INLINE_KEY_CAP: usize = 16;
+nve_abi_macros::abi_consts! {
+    pub(crate) const EVENT_ABI_CONSTS;
 
-/// Canonical compile-time table key for `Interaction` (`nve.interaction`).
-pub const NVE_TABLE_INTERACTION: TableKey = Key64::of("nve.interaction");
-/// Canonical compile-time table key for `TextInput` (`nve.text_input`).
-pub const NVE_TABLE_TEXT_INPUT: TableKey = Key64::of("nve.text_input");
-/// Canonical compile-time table key for `Scroll` (`nve.scroll`).
-pub const NVE_TABLE_SCROLL: TableKey = Key64::of("nve.scroll");
-/// Canonical compile-time table key for `Layout` (`nve.layout`).
-pub const NVE_TABLE_LAYOUT: TableKey = Key64::of("nve.layout");
-/// Canonical compile-time table key for ad-hoc named custom host events (`nve.custom`).
-pub const NVE_TABLE_CUSTOM: TableKey = Key64::of("nve.custom");
+    /// Exact byte size of one uniform [`NveEvent`] record (one 64-byte cache line).
+    pub const NVE_EVENT_SIZE: usize = 64;
+    /// Cache-line alignment of [`NveEvent`] in Rust slabs.
+    pub const NVE_EVENT_ALIGN: usize = 64;
+    /// Maximum inline UTF-8 key byte length stored inside [`NveEvent::payload`]`[2..6]`.
+    pub const NVE_EVENT_INLINE_KEY_CAP: usize = 16;
+}
 
-impl EventFlags {
+nve_abi_macros::abi_consts! {
+    pub(crate) const EVENT_TABLE_ABI_CONSTS;
+
+    /// Canonical compile-time table key for `Interaction` (`nve.interaction`).
+    #[nve_abi(hex)]
+    pub const NVE_TABLE_INTERACTION: TableKey = Key64::of("nve.interaction");
+    /// Canonical compile-time table key for `TextInput` (`nve.text_input`).
+    #[nve_abi(hex)]
+    pub const NVE_TABLE_TEXT_INPUT: TableKey = Key64::of("nve.text_input");
+    /// Canonical compile-time table key for `Scroll` (`nve.scroll`).
+    #[nve_abi(hex)]
+    pub const NVE_TABLE_SCROLL: TableKey = Key64::of("nve.scroll");
+    /// Canonical compile-time table key for `Layout` (`nve.layout`).
+    #[nve_abi(hex)]
+    pub const NVE_TABLE_LAYOUT: TableKey = Key64::of("nve.layout");
+    /// Canonical compile-time table key for ad-hoc named custom host events (`nve.custom`).
+    #[nve_abi(hex)]
+    pub const NVE_TABLE_CUSTOM: TableKey = Key64::of("nve.custom");
+}
+
+nve_abi_macros::abi_consts! {
+    pub(crate) const EVENT_FLAG_ABI_CONSTS (impl EventFlags, prefix = "NVE_EVENT_FLAG_");
+
     /// Meta / Command modifier flag (bit 0).
+    #[nve_abi(hex)]
     pub const MOD_META: Self = Self(1 << 0);
     /// Control modifier flag (bit 1).
+    #[nve_abi(hex)]
     pub const MOD_CTRL: Self = Self(1 << 1);
     /// Shift modifier flag (bit 2).
+    #[nve_abi(hex)]
     pub const MOD_SHIFT: Self = Self(1 << 2);
     /// Alt / Option modifier flag (bit 3).
+    #[nve_abi(hex)]
     pub const MOD_ALT: Self = Self(1 << 3);
     /// Key auto-repeat flag (bit 4).
+    #[nve_abi(hex)]
     pub const MOD_REPEAT: Self = Self(1 << 4);
     /// Combined keyboard/pointer modifier bitmask (`bits 0..=4`).
+    #[nve_abi(skip)]
     pub const MOD_MASK: Self = Self(0x1F);
     /// Bit shift for pointer button index (`bits 8..=10`).
     pub const BUTTON_SHIFT: u32 = 8;
     /// Bitmask for pointer button index (`bits 8..=10`).
+    #[nve_abi(hex)]
     pub const BUTTON_MASK: Self = Self(0x07 << 8);
     /// Pointer capture active flag (bit 11).
+    #[nve_abi(hex)]
     pub const CAPTURE: Self = Self(1 << 11);
     /// IME composition active flag (bit 12).
+    #[nve_abi(hex)]
     pub const COMPOSING: Self = Self(1 << 12);
     /// Target-only (non-bubbling) dispatch flag (bit 13, e.g. DOM `close` / `toggle`).
+    #[nve_abi(hex)]
     pub const NO_BUBBLE: Self = Self(1 << 13);
     /// Ingress-validated flag: `NveEvent::bytes` slice is valid UTF-8 (bit 16).
+    #[nve_abi(hex)]
     pub const UTF8_BYTES: Self = Self(1 << 16);
     /// Ingress-validated flag: `payload[1]` holds `0..=16` inline UTF-8 key length in `payload[2..6]` (bit 17).
+    #[nve_abi(hex)]
     pub const INLINE_KEY_UTF8: Self = Self(1 << 17);
     /// Ingress-validated flag: `payload[0]` holds custom event name byte length prefixing `bytes` (bit 18).
+    #[nve_abi(hex)]
     pub const CUSTOM_NAMED: Self = Self(1 << 18);
     /// Ingress-validated flag: `payload[1]` splits `bytes` into UTF-8 `[key, code]` for keys `> 16 B` (bit 19).
+    #[nve_abi(hex)]
     pub const KEY_SPLIT_BYTES: Self = Self(1 << 19);
+}
 
+impl EventFlags {
     const INTERNAL_FRAMING_MASK: u32 = Self::UTF8_BYTES.0
         | Self::INLINE_KEY_UTF8.0
         | Self::CUSTOM_NAMED.0

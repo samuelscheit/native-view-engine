@@ -94,7 +94,8 @@ impl Model {
     }
 }
 
-/// One parsed ABI type spelling (`u32`, `*const NveValue`, `[u32; 5]`, `NveStrSlice`, `()`).
+/// One parsed ABI type spelling (`u32`, `*const NveValue`, `[u32; 5]`, `Option<NveHostInvokeFn>`,
+/// `NveStrSlice`, `()`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ty<'a> {
     Unit,
@@ -102,6 +103,9 @@ pub enum Ty<'a> {
     Scalar(Scalar),
     Ptr { mutable: bool, pointee: &'a str },
     Array { elem: &'a str, len: usize },
+    /// Nullable callback typedef (`Option<CallbackFn>`). Only valid when the inner name is a
+    /// declared `AbiCallbackDescriptor`.
+    Nullable(&'a str),
     Named(&'a str),
 }
 
@@ -129,6 +133,13 @@ impl<'a> Ty<'a> {
                 pointee: pointee.trim(),
             });
         }
+        if let Some(inner) = s.strip_prefix("Option<").and_then(|b| b.strip_suffix('>')) {
+            let inner = inner.trim();
+            if inner.is_empty() || inner.contains(['(', ')', '<', '>']) {
+                return Err(bad_type(spelling, "unsupported `Option<...>` ABI type"));
+            }
+            return Ok(Self::Nullable(inner));
+        }
         if let Some(body) = s.strip_prefix('[').and_then(|b| b.strip_suffix(']')) {
             let (elem, len) = body
                 .split_once(';')
@@ -143,28 +154,9 @@ impl<'a> Ty<'a> {
             });
         }
         if !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-            return Ok(Self::Named(canonical_handle_alias(s)));
+            return Ok(Self::Named(s));
         }
         Err(bad_type(spelling, "unsupported ABI type spelling"))
-    }
-}
-
-/// Maps Rust `#[repr(transparent)]` handle names used in `nve-abi` structs to their C typedef
-/// aliases in `CORE_ALIASES`.
-fn canonical_handle_alias(name: &str) -> &str {
-    match name {
-        "NodeId" => "NveNodeId",
-        "SurfaceId" => "NveSurfaceId",
-        "FrameId" => "NveFrameId",
-        "TableKey" => "NveTableKey",
-        "TimestampUs" => "NveTimestampUs",
-        "DurationUs" => "NveDurationUs",
-        "EventId" => "NveEventId",
-        "EventFlags" => "NveEventFlags",
-        "ArenaOffset" => "NveArenaOffset",
-        "ByteLen" => "NveByteLen",
-        "InterfaceId" => "NveInterfaceId",
-        other => other,
     }
 }
 
@@ -295,13 +287,15 @@ impl RecordLayout<'_> {
 pub fn layout_records<'a>(
     files: &[&'a AbiFileDescriptor],
 ) -> Result<Vec<RecordLayout<'a>>, CodegenError> {
-    layout_records_on(&[], files)
+    layout_records_on(&[], &[], files)
 }
 
-/// [`layout_records`] for files whose records may store records of an already laid out header
-/// they include (`base`), e.g. the runtime ABI storing `NveStrSlice` by value.
+/// [`layout_records`] for files whose records may store records, aliases, or callbacks of an
+/// already laid out header they include (`base`, `base_files`), e.g. the runtime ABI storing
+/// `NveStrSlice` by value.
 pub fn layout_records_on<'a>(
     base: &[RecordLayout<'a>],
+    base_files: &[&'a AbiFileDescriptor],
     files: &[&'a AbiFileDescriptor],
 ) -> Result<Vec<RecordLayout<'a>>, CodegenError> {
     let mut shapes: BTreeMap<&'a str, Shape> = base
@@ -309,21 +303,30 @@ pub fn layout_records_on<'a>(
         .map(|r| (r.name, Shape { size: r.size, align: r.align }))
         .collect();
     let mut enums: BTreeSet<&'a str> = BTreeSet::new();
-    let embedded = embedded_by_value(files);
+    let mut callbacks: BTreeSet<&'a str> = BTreeSet::new();
+    let embedded = embedded_by_value(base_files, files);
+
     // Enums have no storable shape (C enums are `int`-sized), so every by-value use, also through
     // an array or an alias, is rejected; they are collected before any alias is shaped.
-    for e in files.iter().flat_map(|f| f.enums) {
+    for e in base_files.iter().chain(files).flat_map(|f| f.enums) {
         Scalar::parse(e.repr).ok_or_else(|| bad_type(e.repr, "enum repr"))?;
         enums.insert(e.name);
     }
-    for alias in files.iter().flat_map(|f| f.aliases) {
-        let shape = shape_of(Ty::parse(alias.target)?, &shapes, &enums, alias.name)?;
+    for cb in base_files.iter().chain(files).flat_map(|f| f.callbacks) {
+        callbacks.insert(cb.name);
+        shapes.insert(cb.name, Shape::POINTER);
+    }
+    for alias in base_files.iter().chain(files).flat_map(|f| f.aliases) {
+        let shape = shape_of(Ty::parse(alias.target)?, &shapes, &enums, &callbacks, alias.name)?;
         shapes.insert(alias.name, shape);
+        if let Some(rn) = alias.rust_name {
+            shapes.insert(rn, shape);
+        }
     }
     let mut out = Vec::new();
     for file in files {
         for record in file.records {
-            let layout = layout_record(record, &shapes, &enums, &embedded)?;
+            let layout = layout_record(record, &shapes, &enums, &callbacks, &embedded)?;
             check_against_rustc(record, &layout)?;
             shapes.insert(
                 layout.name,
@@ -342,11 +345,18 @@ fn shape_of(
     ty: Ty<'_>,
     shapes: &BTreeMap<&str, Shape>,
     enums: &BTreeSet<&str>,
+    callbacks: &BTreeSet<&str>,
     ctx: &str,
 ) -> Result<Shape, CodegenError> {
     Ok(match ty {
         // A pointer's size does not depend on its pointee, so the pointee is not walked.
         Ty::Ptr { .. } => Shape::POINTER,
+        Ty::Nullable(inner) if callbacks.contains(inner) => Shape::POINTER,
+        Ty::Nullable(inner) => {
+            return Err(CodegenError::validation(format!(
+                "`{ctx}`: `Option<{inner}>` is only valid for declared callback typedefs"
+            )));
+        }
         Ty::Named(name) if enums.contains(name) => {
             return Err(CodegenError::validation(format!(
                 "`{ctx}` stores enum `{name}` by value: C enums are `int`-sized whatever the Rust repr; store its integer repr"
@@ -357,7 +367,7 @@ fn shape_of(
             return Err(bad_type(ctx, "zero-length arrays are not valid C"));
         }
         Ty::Array { elem, len } => {
-            let e = shape_of(Ty::parse(elem)?, shapes, enums, ctx)?;
+            let e = shape_of(Ty::parse(elem)?, shapes, enums, callbacks, ctx)?;
             let mut size = [0; 3];
             for (out, n) in size.iter_mut().zip(e.size.0) {
                 *out = n
@@ -380,12 +390,17 @@ fn shape_of(
 
 /// Names of records some other record stores by value (`T`, `[T; N]`, or through a type alias),
 /// so their alignment is part of a containing layout.
-fn embedded_by_value<'a>(files: &[&'a AbiFileDescriptor]) -> BTreeSet<&'a str> {
-    let aliases: BTreeMap<&str, &str> = files
-        .iter()
-        .flat_map(|f| f.aliases)
-        .map(|a| (a.name, a.target))
-        .collect();
+fn embedded_by_value<'a>(
+    base_files: &[&'a AbiFileDescriptor],
+    files: &[&'a AbiFileDescriptor],
+) -> BTreeSet<&'a str> {
+    let mut aliases: BTreeMap<&str, &str> = BTreeMap::new();
+    for a in base_files.iter().chain(files).flat_map(|f| f.aliases) {
+        aliases.insert(a.name, a.target);
+        if let Some(rn) = a.rust_name {
+            aliases.insert(rn, a.target);
+        }
+    }
     let mut out = BTreeSet::new();
     for record in files.iter().flat_map(|f| f.records) {
         let fields = match record {
@@ -394,8 +409,6 @@ fn embedded_by_value<'a>(files: &[&'a AbiFileDescriptor]) -> BTreeSet<&'a str> {
         };
         for f in fields {
             let mut ty = Ty::parse(f.abi_type());
-            // Alias chains are bounded by the alias count, so a cycle cannot loop; arrays are
-            // peeled without spending that budget.
             for _ in 0..=aliases.len() {
                 while let Ok(Ty::Array { elem, .. }) = ty {
                     ty = Ty::parse(elem);
@@ -418,6 +431,7 @@ fn layout_record<'a>(
     record: &'a AbiRecordDescriptor,
     shapes: &BTreeMap<&str, Shape>,
     enums: &BTreeSet<&str>,
+    callbacks: &BTreeSet<&str>,
     embedded: &BTreeSet<&str>,
 ) -> Result<RecordLayout<'a>, CodegenError> {
     let (name, doc, is_union, descs, explicit_align) = match record {
@@ -428,8 +442,8 @@ fn layout_record<'a>(
     let (mut end, mut align) = (Width::same(0), Width::same(1));
     for desc in descs {
         let ty = Ty::parse(desc.abi_type())?;
-        let ctx = name; // record-level context: no per-field allocation on the success path
-        let shape = shape_of(ty, shapes, enums, ctx)?;
+        let ctx = name;
+        let shape = shape_of(ty, shapes, enums, callbacks, ctx)?;
         let offset = if is_union {
             Width::same(0)
         } else {
@@ -452,14 +466,11 @@ fn layout_record<'a>(
         if align.0.iter().any(|&n| explicit > n) {
             let over = align.zip(Width::same(explicit), usize::max);
             if explicit <= MAX_C_ALIGNAS {
-                // C reproduces it exactly (Swift's ClangImporter imports `_Alignas` up to 16).
                 alignas = Some(explicit);
                 align = over;
             } else if natural_size.try_zip(over, round_up, name)? == natural_size
                 && !embedded.contains(name)
             {
-                // Larger alignments only align Rust-owned slabs (e.g. a 64-byte cache-line row type):
-                // allowed when they change no size and no containing layout.
                 slab_align = Some(explicit);
             } else {
                 return Err(bad_type(
@@ -512,7 +523,6 @@ fn check_against_rustc(
     if layout.size.at(host) != size {
         return fail(format!("size {} != rustc {size}", layout.size.at(host)));
     }
-    // C reproduces Rust's alignment, except a slab-only `align(N)` (`slab_align`).
     let c_align = layout.align.at(host);
     if c_align.max(layout.slab_align.unwrap_or(1)) != align {
         return fail(format!("alignment {c_align} != rustc {align}"));
