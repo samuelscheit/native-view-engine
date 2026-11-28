@@ -2980,6 +2980,7 @@ dependencies = [
 name = "nve-canvas"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-abi",
  "nve-codec",
  "nve-hash",
@@ -2990,11 +2991,14 @@ dependencies = [
 name = "nve-canvas-skia"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-abi",
  "nve-backend-skia",
  "nve-canvas",
  "nve-engine",
  "nve-store",
+ "nve-tables",
+ "skia-safe",
 ]
 
 [[package]]
@@ -3004,6 +3008,7 @@ dependencies = [
  "nve-abi",
  "nve-backend-web",
  "nve-canvas",
+ "nve-engine",
  "nve-store",
  "nve-tables",
  "wasm-bindgen",
