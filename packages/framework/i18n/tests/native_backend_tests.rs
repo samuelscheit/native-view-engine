@@ -119,6 +119,182 @@ fn native_backend_formats_diverse_locales_and_unicode_extensions() {
     assert!(jpy.contains("1,234") && !jpy.contains('.'), "expected 0-decimal JPY, got: {jpy}");
 }
 
+#[test]
+fn native_backend_percent_fraction_min_max_currency_and_rounding_contracts() {
+    let us = loc("en-US");
+    let de = loc("de-DE");
+
+    // Percent with `min = Some(2), max = None` must preserve fractional digits (`25.67%`, not `26.00%`).
+    let pct_min2 = NumberFormatOptions::default()
+        .with_style(NumberStyle::Percent)
+        .with_fraction_digits(Some(2), None);
+    let pct = format_number(&us, 0.2567, pct_min2);
+    assert_eq!(pct, "25.67%", "Percent with min=2, max=None must not round to 0 digits");
+
+    // Contradictory `min > max` aligns across all backends (`eff_max = max.max(min)`).
+    let dec_contradict = NumberFormatOptions::default().with_fraction_digits(Some(3), Some(1));
+    assert_eq!(format_number(&us, 1.2346, dec_contradict), "1.235");
+    assert_eq!(format_number(&us, 1.2, dec_contradict), "1.200");
+
+    let pct_contradict = NumberFormatOptions::default()
+        .with_style(NumberStyle::Percent)
+        .with_fraction_digits(Some(3), Some(1));
+    assert_eq!(format_number(&us, 0.25678, pct_contradict), "25.678%");
+
+    // Cross-locale currency formatting (falsifies removal of `kCFNumberFormatterCurrencyCode`).
+    let us_eur = format_currency(&us, 1234.56, Currency::Eur);
+    assert!(
+        (us_eur.contains('€') || us_eur.contains("EUR"))
+            && !us_eur.contains('$')
+            && us_eur.contains("1,234.56"),
+        "expected EUR symbol & US grouping for en-US + EUR, got: {us_eur}"
+    );
+    let us_jpy = format_currency(&us, 1234.0, Currency::Jpy);
+    assert!(
+        (us_jpy.contains('¥') || us_jpy.contains("JPY"))
+            && !us_jpy.contains('$')
+            && us_jpy.contains("1,234")
+            && !us_jpy.contains('.'),
+        "expected 0-decimal JPY in en-US, got: {us_jpy}"
+    );
+    let us_kwd = format_currency(&us, 12.345, Currency::Kwd);
+    assert!(
+        us_kwd.contains("KWD") && us_kwd.contains("12.345"),
+        "expected 3-decimal KWD in en-US, got: {us_kwd}"
+    );
+    let de_usd = format_currency(&de, 1234.56, Currency::Usd);
+    assert!(
+        (de_usd.contains('$') || de_usd.contains("USD"))
+            && !de_usd.contains('€')
+            && de_usd.contains("1.234,56"),
+        "expected USD symbol & German separators for de-DE + USD, got: {de_usd}"
+    );
+
+    // Exact-tie & directional rounding (falsifies removal of `kCFNumberFormatterRoundingMode`).
+    let int_opts = NumberFormatOptions::default().with_fraction_digits(Some(0), Some(0));
+    let half_even = int_opts.with_rounding_mode(RoundingMode::HalfEven);
+    let half_away = int_opts.with_rounding_mode(RoundingMode::HalfAwayFromZero);
+    let floor = int_opts.with_rounding_mode(RoundingMode::Floor);
+    let ceil = int_opts.with_rounding_mode(RoundingMode::Ceiling);
+    let trunc = int_opts.with_rounding_mode(RoundingMode::Truncate);
+
+    assert_eq!(format_number(&us, 2.5, half_even), "2");
+    assert_eq!(format_number(&us, 3.5, half_even), "4");
+    assert_eq!(format_number(&us, 2.5, half_away), "3");
+    assert_eq!(format_number(&us, 3.5, half_away), "4");
+    assert_eq!(format_number(&us, -1.1, floor), "-2");
+    assert_eq!(format_number(&us, 1.9, floor), "1");
+    assert_eq!(format_number(&us, 1.1, ceil), "2");
+    assert_eq!(format_number(&us, -1.9, ceil), "-1");
+    assert_eq!(format_number(&us, 1.9, trunc), "1");
+    assert_eq!(format_number(&us, -1.9, trunc), "-1");
+}
+
+#[test]
+fn native_backend_dates_times_long_strings_uncached_locale_and_worker_thread_tls() {
+    let us = loc("en-US");
+    let de = loc("de-DE");
+
+    // Pre-1970, epoch, leap-day, and pre-1582 proleptic Gregorian dates
+    let epoch = CalendarDate::new(1970, 1, 1).unwrap();
+    let pre_epoch = CalendarDate::new(1969, 12, 31).unwrap();
+    let leap = CalendarDate::new(2024, 2, 29).unwrap();
+    let pre_1582 = CalendarDate::new(1500, 3, 1).unwrap();
+
+    let epoch_str = format_date(&us, epoch, DateStyle::Long);
+    assert!(
+        epoch_str.contains("January") && epoch_str.contains("1") && epoch_str.contains("1970"),
+        "unexpected epoch date: {epoch_str}"
+    );
+    let pre_epoch_str = format_date(&us, pre_epoch, DateStyle::Long);
+    assert!(
+        pre_epoch_str.contains("December")
+            && pre_epoch_str.contains("31")
+            && pre_epoch_str.contains("1969"),
+        "unexpected pre-1970 date: {pre_epoch_str}"
+    );
+    let leap_str = format_date(&us, leap, DateStyle::Long);
+    assert!(
+        leap_str.contains("February") && leap_str.contains("29") && leap_str.contains("2024"),
+        "unexpected leap-day date: {leap_str}"
+    );
+    let pre_1582_str = format_date(&us, pre_1582, DateStyle::Long);
+    assert!(
+        pre_1582_str.contains("March") && pre_1582_str.contains("1") && pre_1582_str.contains("1500"),
+        "expected proleptic Gregorian date for 1500-03-01 (no Julian cutover shift), got: {pre_1582_str}"
+    );
+
+    // `TimeStyle::Medium`, `-u-hc-h11`, `-u-hc-h24`, and midnight edge cases
+    let afternoon = CalendarTime::new(14, 30, 5).unwrap();
+    let midnight = CalendarTime::new(0, 5, 9).unwrap();
+    let de_med = format_time(&de, afternoon, TimeStyle::Medium);
+    assert!(
+        de_med.contains("14:30:05"),
+        "expected seconds in de-DE TimeStyle::Medium, got: {de_med}"
+    );
+    let us_med = format_time(&us, afternoon, TimeStyle::Medium);
+    assert!(
+        us_med.contains("2:30:05"),
+        "expected seconds in en-US TimeStyle::Medium, got: {us_med}"
+    );
+    let h11_midnight = format_time(&loc("en-US-u-hc-h11"), midnight, TimeStyle::Short);
+    assert!(
+        h11_midnight.contains("0:05") && !h11_midnight.contains("12:05"),
+        "expected 0:05 for -u-hc-h11 midnight, got: {h11_midnight}"
+    );
+    let h24_midnight = format_time(&loc("en-US-u-hc-h24"), midnight, TimeStyle::Short);
+    assert!(
+        h24_midnight.contains("24:05"),
+        "expected 24:05 for -u-hc-h24 midnight, got: {h24_midnight}"
+    );
+    let h23_med = format_time(&loc("en-US-u-hc-h23"), midnight, TimeStyle::Medium);
+    assert!(
+        h23_med.contains("00:05:09"),
+        "expected 00:05:09 for -u-hc-h23 Medium midnight, got: {h23_med}"
+    );
+
+    // `append_cf_string` >256-byte heap fallback (grouped `1e300` exceeds 400 UTF-8 bytes)
+    let huge = format_number(&us, 1e300, NumberFormatOptions::default());
+    assert!(
+        huge.len() > 350 && huge.starts_with("1,000,000") && huge.ends_with(",000"),
+        "expected >256-byte grouped 1e300 string, got len={} prefix={:?}",
+        huge.len(),
+        &huge[..huge.len().min(32)]
+    );
+
+    // `create_uncached_locale` path (>96-byte ICU locale key with valid BCP-47 variants)
+    let long_loc = loc(
+        "en-US-1901-valencia-biske-boont-heploc-hepburn-nedis-njiva-osojs-rozaj-solba-fonipa-fonupa-alalc97-scotland",
+    );
+    assert!(long_loc.canonical_tag().len() > 96);
+    assert_eq!(format_decimal(&long_loc, 1234.56), "1,234.56");
+    assert_eq!(format_integer(&long_loc, 987_654), "987,654");
+    assert_eq!(format_currency(&long_loc, 42.5, Currency::Usd), "$42.50");
+    assert!(format_date(&long_loc, leap, DateStyle::Long).contains("2024"));
+    assert!(format_time(&long_loc, afternoon, TimeStyle::Medium).contains("30:05"));
+    assert_eq!(first_day_of_week(&long_loc), Weekday::Sunday);
+    assert_eq!(locale_metadata(&long_loc).decimal_separator, ".");
+
+    // Worker-thread TLS creation & clean thread-exit teardown
+    let handle = std::thread::spawn(move || {
+        let ja = loc("ja-JP-u-ca-japanese");
+        let num = format_decimal(&loc("de-DE"), 9876.54);
+        let cur = format_currency(&loc("en-US"), 12.34, Currency::Eur);
+        let dt = format_date(&ja, CalendarDate::new(2026, 3, 5).unwrap(), DateStyle::Long);
+        let tm = format_time(&loc("de-DE"), afternoon, TimeStyle::Medium);
+        let dow = first_day_of_week(&loc("sv-SE"));
+        let meta = locale_metadata(&loc("en-GB"));
+        (num, cur, dt, tm, dow, meta.measurement_system)
+    });
+    let (num, cur, dt, tm, dow, ms) = handle.join().expect("worker thread must exit cleanly");
+    assert!(num.contains("9.876,54"), "worker num: {num}");
+    assert!(cur.contains("12.34"), "worker cur: {cur}");
+    assert!(dt.contains("令和") && dt.contains('8'), "worker date: {dt}");
+    assert!(tm.contains("14:30:05"), "worker time: {tm}");
+    assert_eq!(dow, Weekday::Monday);
+    assert_eq!(ms, MeasurementSystem::Uk);
+}
+
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 #[test]
 fn apple_corefoundation_real_os_icu_locales_outside_builtin_tables() {

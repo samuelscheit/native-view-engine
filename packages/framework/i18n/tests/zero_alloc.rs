@@ -259,8 +259,10 @@ fn message_format_into_and_warm_cached_formatting_are_zero_alloc() {
         "Builtin MessagePattern::format_into must perform 0 heap allocs, did {builtin_allocs}"
     );
 
-    // Warm `NativeI18nBackend` `format_into` & cached formatters -> 0 Rust heap allocs.
-    let (first_dow, native_allocs) = measure_allocs(|| {
+    // Unconditional zero-alloc checks on ALL platforms (`pat.format_into` with `Int`,
+    // `format_integer_into`, `first_day_of_week` including `-u-fw-*` short-circuit).
+    let en_fw = LocaleId::parse("en-US-u-fw-mon").unwrap();
+    let ((first_dow, override_dow), uncond_allocs) = measure_allocs(|| {
         out.clear();
         pat.format_into(
             black_box(&en),
@@ -270,19 +272,35 @@ fn message_format_into_and_warm_cached_formatting_are_zero_alloc() {
         .unwrap();
         out.clear();
         NativeI18nBackend.format_integer_into(black_box(&de), 987_654, &mut out);
-        out.clear();
-        NativeI18nBackend.format_number_into(black_box(&en), 1234.56, opts, &mut out);
-        out.clear();
-        NativeI18nBackend.format_currency_into(black_box(&en), 49.99, "USD", &mut out);
-        out.clear();
-        NativeI18nBackend.format_date_into(black_box(&ja_ext), date, DateStyle::Long, &mut out);
-        out.clear();
-        NativeI18nBackend.format_time_into(black_box(&de_hc), time, TimeStyle::Short, &mut out);
-        NativeI18nBackend.first_day_of_week(black_box(&en))
+        let d1 = NativeI18nBackend.first_day_of_week(black_box(&en));
+        let d2 = NativeI18nBackend.first_day_of_week(black_box(&en_fw));
+        (d1, d2)
     });
     assert_eq!(first_dow, Weekday::Sunday);
-    assert!(
-        native_allocs == 0 || !cfg!(any(target_os = "macos", target_os = "ios")),
-        "Warm cached NativeI18nBackend formatting must perform 0 Rust heap allocs on Apple, did {native_allocs}"
+    assert_eq!(override_dow, Weekday::Monday);
+    assert_eq!(
+        uncond_allocs, 0,
+        "NativeI18nBackend message Int format_into, format_integer_into, and first_day_of_week must perform 0 Rust heap allocs on all platforms, did {uncond_allocs}"
     );
+
+    // Apple-only zero-Rust-heap-alloc checks for warm cached `CFNumberFormatter` /
+    // `CFDateFormatter` formatting paths (non-Apple builtin fallback currently formats
+    // via intermediate Rust `String`s).
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        let ((), apple_allocs) = measure_allocs(|| {
+            out.clear();
+            NativeI18nBackend.format_number_into(black_box(&en), 1234.56, opts, &mut out);
+            out.clear();
+            NativeI18nBackend.format_currency_into(black_box(&en), 49.99, "USD", &mut out);
+            out.clear();
+            NativeI18nBackend.format_date_into(black_box(&ja_ext), date, DateStyle::Long, &mut out);
+            out.clear();
+            NativeI18nBackend.format_time_into(black_box(&de_hc), time, TimeStyle::Short, &mut out);
+        });
+        assert_eq!(
+            apple_allocs, 0,
+            "Warm cached NativeI18nBackend CoreFoundation formatting must perform 0 Rust heap allocs on Apple, did {apple_allocs}"
+        );
+    }
 }
