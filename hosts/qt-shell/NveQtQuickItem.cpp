@@ -121,7 +121,7 @@ void NveQtQuickItem::Impl::Adapter::update(QuickNodeView*& v, const host::NodeDa
   host->update_record(*v, node);
 }
 
-void NveQtQuickItem::Impl::Adapter::move(QuickNodeView*& v, const host::NodeData& node) {
+void NveQtQuickItem::Impl::Adapter::move(QuickNodeView*& v, const host::NodeGeometry& node) {
   ++host->stats_.nodesMoved;
   host->move_record(*v, node);
 }
@@ -164,7 +164,7 @@ void NveQtQuickItem::Impl::Adapter::destroy(uint32_t id, QuickNodeView*& v) {
   if (!host->tearing_down_) host->owner_->update();
 }
 
-void NveQtQuickItem::Impl::Adapter::set_children(const host::NodeData&, QuickNodeView** parent_view,
+void NveQtQuickItem::Impl::Adapter::set_children(const host::NodeGeometry&, QuickNodeView** parent_view,
                                                  std::span<QuickNodeView** const> kids) {
   QuickNodeView& parent = parent_view != nullptr ? **parent_view : host->root_;
   parent.children.clear();
@@ -183,7 +183,7 @@ void NveQtQuickItem::Impl::Adapter::set_children(const host::NodeData&, QuickNod
   host->mark_dirty(parent);
 }
 
-void NveQtQuickItem::Impl::move_record(QuickNodeView& v, const host::NodeData& node) {
+void NveQtQuickItem::Impl::move_record(QuickNodeView& v, const host::NodeGeometry& node) {
   const QRectF local = qrect(node.local);
   const QRectF content = qrect(node.content);
   const bool repaint = local.size() != v.local.size() || content != v.paint.content_box;

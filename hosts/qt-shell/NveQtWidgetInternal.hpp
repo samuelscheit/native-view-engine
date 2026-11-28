@@ -192,10 +192,10 @@ class NveQtWidget::Impl final : public QtHost {
     Handle create(const host::NodeData& node);
     void update(Handle& view, const host::NodeData& node);
     /// Geometry-only change (`read_geometry` data): reposition and re-box, nothing decoded.
-    void move(Handle& view, const host::NodeData& node);
+    void move(Handle& view, const host::NodeGeometry& node);
     void update_root(const host::NodeData& node);
     void destroy(uint32_t id, Handle& view);
-    void set_children(const host::NodeData& parent, Handle* parent_view, std::span<Handle* const> kids);
+    void set_children(const host::NodeGeometry& parent, Handle* parent_view, std::span<Handle* const> kids);
     /// Canvas draw list: a republish under the same id re-runs `update`.
     uint32_t module_resource(const host::NodeData& node) const { return host->canvas_.at(node.index).draw_list; }
   };
@@ -229,8 +229,8 @@ class NveQtWidget::Impl final : public QtHost {
 
  private:
   friend struct Adapter;
-  void place(QtNodeView& v, const host::NodeData& node);
-  void apply_box(QtNodeView& v, const host::NodeData& node);
+  void place(QtNodeView& v, const host::NodeGeometry& node);
+  void apply_box(QtNodeView& v, const host::NodeGeometry& node);
   void update_geometry(QtNodeView& v, const host::NodeData& node);
   void update_visual(QtNodeView& v, const host::NodeData& node);
   void update_content(QtNodeView& v, const host::NodeData& node);

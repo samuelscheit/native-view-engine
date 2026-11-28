@@ -95,10 +95,10 @@ class NveQtQuickItem::Impl final : public QtHost {
     Handle create(const host::NodeData& node);
     void update(Handle& view, const host::NodeData& node);
     /// Geometry-only change (`read_geometry` data): new box, repainted only when its size changed.
-    void move(Handle& view, const host::NodeData& node);
+    void move(Handle& view, const host::NodeGeometry& node);
     void update_root(const host::NodeData& node);
     void destroy(uint32_t id, Handle& view);
-    void set_children(const host::NodeData& parent, Handle* parent_view, std::span<Handle* const> kids);
+    void set_children(const host::NodeGeometry& parent, Handle* parent_view, std::span<Handle* const> kids);
     /// Canvas draw list: a republish under the same id re-runs `update`.
     uint32_t module_resource(const host::NodeData& node) const { return host->canvas_.at(node.index).draw_list; }
   };
@@ -162,7 +162,7 @@ class NveQtQuickItem::Impl final : public QtHost {
   void after_sync() override;
 
  private:
-  void move_record(QuickNodeView& v, const host::NodeData& node);
+  void move_record(QuickNodeView& v, const host::NodeGeometry& node);
   void update_record(QuickNodeView& v, const host::NodeData& node);
   void update_content(QuickNodeView& v, const host::NodeData& node);
   void update_input(QuickNodeView& v, const host::NodeData& node);

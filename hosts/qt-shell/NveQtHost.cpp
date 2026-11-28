@@ -332,16 +332,12 @@ std::optional<NodeContent> QtHost::resolve_content(NodePaint& paint, AppliedReso
   return NodeContent::None;
 }
 
-void QtHost::measure_trampoline(void* ctx, NveStrSlice text, float font_size, uint32_t font_weight, float max_width,
+void QtHost::measure_trampoline(void* ctx, NveStrSlice text, const NveRuntimeTextStyle* style, float max_width,
                                 float* out_width, float* out_height) {
   const auto* self = static_cast<const QtHost*>(ctx);
-  if (!self->measurer_) {
-    measure_text_callback(nullptr, text, font_size, font_weight, max_width, out_width, out_height);
-    return;
-  }
-  const std::string_view sv(reinterpret_cast<const char*>(text.ptr), text.ptr != nullptr ? text.len : 0u);
+  const std::string_view sv = host::str_view(text);
   const NveIntrinsicSize size =
-      self->measurer_(sv, font_size, static_cast<uint16_t>(std::min<uint32_t>(font_weight, 1000u)), max_width);
+      self->measurer_ ? self->measurer_(sv, *style, max_width) : measure_text(sv, *style, max_width);
   *out_width = size.width;
   *out_height = size.height;
 }

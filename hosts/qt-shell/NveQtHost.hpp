@@ -43,8 +43,8 @@ struct QtHostConfig {
 class QtHost {
  public:
   using EventCallback = host::HostSession::EventSink;
-  /// Custom text measurer (`text`, font size px, CSS weight, max width or <= 0 / non-finite).
-  using TextMeasurer = std::function<NveIntrinsicSize(std::string_view, float, uint16_t, float)>;
+  /// Custom text measurer (`text`, the node's resolved typography, max width: `INFINITY` = unbounded).
+  using TextMeasurer = std::function<NveIntrinsicSize(std::string_view, const NveRuntimeTextStyle&, float)>;
 
   virtual ~QtHost();
   QtHost(const QtHost&) = delete;
@@ -144,7 +144,7 @@ class QtHost {
 
  private:
   void create_session();
-  static void measure_trampoline(void* ctx, NveStrSlice text, float font_size, uint32_t font_weight, float max_width,
+  static void measure_trampoline(void* ctx, NveStrSlice text, const NveRuntimeTextStyle* style, float max_width,
                                  float* out_width, float* out_height);
 
   QObject* ui_;

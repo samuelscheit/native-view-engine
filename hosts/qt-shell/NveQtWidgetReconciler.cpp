@@ -46,7 +46,7 @@ QString css_color(const QColor& c) {
 }
 
 /// Style sheet of a text input: the node's box visuals, padding (content insets) and text color.
-QString input_style_sheet(const BoxVisual& v, const host::NodeData& node, const QColor& text) {
+QString input_style_sheet(const BoxVisual& v, const host::NodeGeometry& node, const QColor& text) {
   const qreal bw = v.has_border() ? css_px(v.border_width) : 0.0;
   const qreal top = css_px(node.content.y - bw);
   const qreal left = css_px(node.content.x - bw);
@@ -197,7 +197,7 @@ void NveQtWidget::Impl::Adapter::update(QtNodeView*& v, const host::NodeData& no
   v->synced = true;
 }
 
-void NveQtWidget::Impl::Adapter::move(QtNodeView*& v, const host::NodeData& node) {
+void NveQtWidget::Impl::Adapter::move(QtNodeView*& v, const host::NodeGeometry& node) {
   ++host->reconcile_move_count_;
   host->place(*v, node);
   host->apply_box(*v, node);
@@ -251,7 +251,7 @@ void NveQtWidget::Impl::Adapter::destroy(uint32_t, QtNodeView*& v) {
   v = nullptr;
 }
 
-void NveQtWidget::Impl::Adapter::set_children(const host::NodeData&, QtNodeView** parent_view,
+void NveQtWidget::Impl::Adapter::set_children(const host::NodeGeometry&, QtNodeView** parent_view,
                                               std::span<QtNodeView** const> kids) {
   QWidget* container = parent_view != nullptr ? (*parent_view)->content : host->owner_;
   std::unordered_set<const QWidget*> wanted;
@@ -285,13 +285,13 @@ void NveQtWidget::Impl::Adapter::set_children(const host::NodeData&, QtNodeView*
 
 // --- Per-kind bindings -------------------------------------------------------------------------
 
-void NveQtWidget::Impl::place(QtNodeView& v, const host::NodeData& node) {
+void NveQtWidget::Impl::place(QtNodeView& v, const host::NodeGeometry& node) {
   v.local = node.local;
   v.widget->setGeometry(pixel_rect(node.local));
   if (v.scroll != nullptr) v.scroll->setGeometry(0, 0, v.widget->width(), v.widget->height());
 }
 
-void NveQtWidget::Impl::apply_box(QtNodeView& v, const host::NodeData& node) {
+void NveQtWidget::Impl::apply_box(QtNodeView& v, const host::NodeGeometry& node) {
   if (v.frame != nullptr) {
     v.frame->set_visual(v.visual, QRectF(node.content.x, node.content.y, node.content.width, node.content.height),
                         v.clips);

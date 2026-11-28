@@ -13,6 +13,7 @@
 #include <nve/host/testing/scratch_dir.hpp>
 
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -21,6 +22,9 @@ namespace {
 using namespace nve::qt;
 using namespace nve::qt::test;
 using nve::host::demo::CounterApp;
+namespace host = nve::host;
+
+constexpr float kInf = std::numeric_limits<float>::infinity();
 
 NveQtNodeWidget* frame(NveQtWidget& w, uint32_t id) { return dynamic_cast<NveQtNodeWidget*>(w.nativeWidgetForNodeId(id)); }
 
@@ -36,17 +40,18 @@ void test_counter_widgets_measurement_and_events() {
   NVE_CHECK(widget.width() == 480 && widget.height() == 360);
 
   // QTextLayout measurement: monotonic in size and weight, wraps under a width constraint.
-  const NveIntrinsicSize small = measure_text("Hello NVE", 16.0f, 400u, 0.0f);
-  const NveIntrinsicSize big = measure_text("Hello NVE", 32.0f, 400u, 0.0f);
-  const NveIntrinsicSize bold = measure_text("Hello NVE", 16.0f, 800u, 0.0f);
-  const NveIntrinsicSize wrapped = measure_text("Hello NVE wrapping text", 16.0f, 400u, 40.0f);
+  const NveIntrinsicSize small = measure_text("Hello NVE", host::text_style(16.0f), kInf);
+  const NveIntrinsicSize big = measure_text("Hello NVE", host::text_style(32.0f), kInf);
+  const NveIntrinsicSize bold = measure_text("Hello NVE", host::text_style(16.0f, 800u), kInf);
+  const NveIntrinsicSize wrapped = measure_text("Hello NVE wrapping text", host::text_style(16.0f), 40.0f);
   NVE_CHECK(small.width > 0.0f && small.height > 0.0f);
   NVE_CHECK(big.width > small.width * 1.5f && big.height > small.height);
   NVE_CHECK(bold.width >= small.width);
   NVE_CHECK(wrapped.width <= 41.0f && wrapped.height > small.height * 1.5f);
-  NVE_CHECK(measure_text("", 16.0f, 400u, 0.0f).width == 0.0f);
-  NVE_CHECK(measure_text("a\nb", 16.0f, 400u, 0.0f).height > small.height * 1.5f);  // hard breaks
-  NVE_CHECK(measure_text("Hello", 16.0f, 400u, std::nanf("")).width == measure_text("Hello", 16.0f, 400u, 0.0f).width);
+  NVE_CHECK(measure_text("", host::text_style(16.0f), kInf).width == 0.0f);
+  NVE_CHECK(measure_text("a\nb", host::text_style(16.0f), kInf).height > small.height * 1.5f);  // hard breaks
+  NVE_CHECK(measure_text("Hello", host::text_style(16.0f), std::nanf("")).width ==
+            measure_text("Hello", host::text_style(16.0f), kInf).width);  // NaN: unbounded
 
   std::vector<int64_t> counts;
   host.set_event_callback([&counts](std::span<const NveDirectEvent> evs) {
@@ -78,7 +83,7 @@ void test_counter_widgets_measurement_and_events() {
   NVE_CHECK((stack == std::vector<QWidget*>{title, inc, count, reset}));
 
   // The runtime laid out text with this host's measurer: the title is exactly its measured size.
-  const NveIntrinsicSize title_size = measure_text("NVE native host", 22.0f, 400u, 0.0f);
+  const NveIntrinsicSize title_size = measure_text("NVE native host", host::text_style(22.0f), kInf);
   NVE_CHECK(approx(title->width(), title_size.width, 1.0) && approx(title->height(), title_size.height, 1.0));
   NVE_CHECK(column->width() == 480 && column->height() > reset->y() + reset->height());
   NVE_CHECK(title->x() == 24 && title->y() == 24);  // column padding
@@ -154,11 +159,62 @@ void test_counter_widgets_measurement_and_events() {
   widget.hide();
 }
 
+// The measurer lays text out with exactly the font and paragraph metrics the label paints.
+void test_measurer_typography_matches_paint() {
+  NveQtWidget widget(QtHostConfig{.width = 300.0f, .height = 200.0f});
+  const NveRuntimeTextStyle base = host::text_style(16.0f);
+  constexpr std::string_view kNarrow = "iiiiiiiiiiiiiiii";
+  NveRuntimeTextStyle mono = base;
+  mono.font_family = NveStrSlice{reinterpret_cast<const uint8_t*>("NoSuchFontNve, monospace"), 24u};
+  NVE_CHECK(measure_text(kNarrow, mono, kInf).width > measure_text(kNarrow, base, kInf).width * 1.5f);
+  NVE_CHECK(text_style(mono).font.families().size() == 2);  // trimmed, split list (not one bogus name)
+  NveRuntimeTextStyle spaced = base;
+  spaced.letter_spacing = 3.0f;
+  NVE_CHECK(measure_text(kNarrow, spaced, kInf).width > measure_text(kNarrow, base, kInf).width + 30.0f);
+  const std::string_view sentence = "Hello wrapping text that is long";
+  const NveIntrinsicSize one_line = measure_text(sentence, base, kInf);
+  NveRuntimeTextStyle nowrap = base;
+  nowrap.white_space = NVE_WHITE_SPACE_NO_WRAP;
+  NVE_CHECK(measure_text(sentence, nowrap, 60.0f).height == one_line.height);
+  const NveIntrinsicSize min_content = measure_text(sentence, base, 0.0f);  // 0 wraps, it is not "unbounded"
+  NVE_CHECK(min_content.width < one_line.width && min_content.height > one_line.height);
+  NveRuntimeTextStyle tall = base;
+  tall.line_height = 250.0f;
+  tall.line_height_unit = NVE_LINE_HEIGHT_PERCENT;  // 40px line boxes
+  NVE_CHECK(approx(measure_text("a\nb", tall, kInf).height, 80.0, 1.0));
+  tall.max_lines = 1u;
+  NVE_CHECK(approx(measure_text(sentence, tall, 60.0f).height, 40.0, 1.0));
+
+  // Painted (`host::TextStyle`) and measured (`NveRuntimeTextStyle`) map to one Qt style.
+  host::TextStyle painted;
+  painted.font_size = 18.0f;
+  painted.font_weight = 700u;
+  painted.font_style = NVE_FONT_STYLE_ITALIC;
+  painted.font_family = "Courier, monospace";
+  painted.letter_spacing = 1.5f;
+  painted.line_height = host::LengthValue{NVE_LENGTH_PERCENT, 150.0f};
+  painted.white_space = NVE_WHITE_SPACE_PRE;
+  painted.max_lines = 3u;
+  NveRuntimeTextStyle measured = host::text_style(18.0f, 700u);
+  measured.font_style = NVE_FONT_STYLE_ITALIC;
+  measured.font_family = NveStrSlice{reinterpret_cast<const uint8_t*>(painted.font_family.data()),
+                                     painted.font_family.size()};
+  measured.letter_spacing = 1.5f;
+  measured.line_height = 150.0f;
+  measured.line_height_unit = NVE_LINE_HEIGHT_PERCENT;
+  measured.white_space = NVE_WHITE_SPACE_PRE;
+  measured.max_lines = 3u;
+  const QtTextStyle p = text_style(painted);
+  const QtTextStyle m = text_style(measured);
+  NVE_CHECK(p.font == m.font && p.wrap == m.wrap && !m.wrap && p.max_lines == m.max_lines);
+  NVE_CHECK(approx(p.line_height, 27.0, 0.01) && p.line_height == m.line_height);
+}
+
 void test_custom_measurer_and_surface_id() {
   NveQtWidget widget(QtHostConfig{.width = 300.0f, .height = 200.0f});
   QtHost& host = widget.host();
   int calls = 0;
-  host.set_text_measurer([&calls](std::string_view text, float, uint16_t, float) {
+  host.set_text_measurer([&calls](std::string_view text, const NveRuntimeTextStyle&, float) {
     ++calls;
     return NveIntrinsicSize{static_cast<float>(text.size()) * 10.0f, 17.0f};
   });
@@ -171,7 +227,7 @@ void test_custom_measurer_and_surface_id() {
   QWidget* t = widget.nativeWidgetForNodeId(2u);
   NVE_CHECK(calls > 0 && t->height() == 17);
   host.set_text_measurer({});  // back to QTextLayout: relayouts
-  NVE_CHECK(approx(t->height(), measure_text("abcd", 16.0f, 400u, 0.0f).height, 1.0));
+  NVE_CHECK(approx(t->height(), measure_text("abcd", host::text_style(16.0f), kInf).height, 1.0));
 
   // A new surface id recreates the session: the app and its views are dropped.
   host.set_surface_id(9u);
@@ -378,6 +434,7 @@ void nve_test_qt_window_manager();
 int main(int argc, char** argv) {
   QApplication qapp(argc, argv);
   test_counter_widgets_measurement_and_events();
+  test_measurer_typography_matches_paint();
   test_custom_measurer_and_surface_id();
   test_modules_hot_reload_and_state();
   test_queued_wakes_never_outlive_the_host();

@@ -353,7 +353,7 @@ void NveWinVisualTree::Adapter::update(Handle& handle, const host::NodeData& nod
   v.synced = true;
 }
 
-void NveWinVisualTree::Adapter::move(Handle& handle, const host::NodeData& node) {
+void NveWinVisualTree::Adapter::move(Handle& handle, const host::NodeGeometry& node) {
   WinNodeVisual& v = *handle;
   v.local = rect_of(node.local);
   tree->touched_.push_back(v.id);
@@ -380,7 +380,7 @@ void NveWinVisualTree::Adapter::destroy(uint32_t id, Handle& handle) {
   ++tree->revision_;
 }
 
-void NveWinVisualTree::Adapter::set_children(const host::NodeData& parent, Handle* parent_view,
+void NveWinVisualTree::Adapter::set_children(const host::NodeGeometry& parent, Handle* parent_view,
                                              std::span<Handle* const> kids) {
   std::vector<uint32_t>& out = parent_view != nullptr ? (*parent_view)->children : tree->root_children_;
   out.clear();

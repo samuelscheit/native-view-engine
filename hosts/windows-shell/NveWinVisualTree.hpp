@@ -232,10 +232,10 @@ class NveWinVisualTree {
     void update(Handle& view, const host::NodeData& node);
     /// Geometry-only change (`moved_indices`): the parent-relative rect. Absolute rects are never
     /// cached, so a moved container costs one update (its descendants follow in the walk).
-    void move(Handle& view, const host::NodeData& node);
+    void move(Handle& view, const host::NodeGeometry& node);
     void update_root(const host::NodeData& node);
     void destroy(uint32_t id, Handle& view);
-    void set_children(const host::NodeData& parent, Handle* parent_view, std::span<Handle* const> kids);
+    void set_children(const host::NodeGeometry& parent, Handle* parent_view, std::span<Handle* const> kids);
     /// Canvas draw list: a republish under the same id re-runs `update`.
     uint32_t module_resource(const host::NodeData& node) const { return tree->canvas_.at(node.index).draw_list; }
   };
