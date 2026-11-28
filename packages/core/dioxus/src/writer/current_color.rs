@@ -19,12 +19,12 @@ impl StoreMutationTx<'_, '_> {
     pub(crate) fn refresh_current_color_border(&mut self, node: NodeId) {
         let inline = self
             .inline_styles
-            .get(&node)
+            .get(node)
             .and_then(|&(_, mask)| mask_border_color_source(mask));
         let current = inline
             .or_else(|| {
                 self.standalone_style_attrs
-                    .get(&node)?
+                    .get(node)?
                     .iter()
                     .rev()
                     .find_map(|(k, v)| match v {
@@ -36,13 +36,13 @@ impl StoreMutationTx<'_, '_> {
         if current {
             self.current_color_borders.insert(node);
         } else {
-            self.current_color_borders.remove(&node);
+            self.current_color_borders.remove(node);
         }
     }
 
     /// Resolves every tracked `currentColor` border (O(k·depth), writes only on change).
     pub(crate) fn resolve_current_color_borders(&mut self) {
-        for &node in self.current_color_borders.iter() {
+        for node in self.current_color_borders.iter() {
             if self.tx.store().is_live(node) {
                 nve_tables::resolve_current_color_border(self.tx, node);
             }

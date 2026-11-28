@@ -8,9 +8,10 @@ use dioxus_core::{
     AttributeValue, ElementId, IntoAttributeValue, Template, TemplateAttribute, TemplateNode,
     WriteMutations,
 };
-use nve_tables::tables::Visual;
-use nve_dioxus::{NveMutationWriter, table_attr_fn};
+use nve_abi::ColorRgba;
+use nve_dioxus::{NveMutationWriter, TypedStyle, table_attr_fn};
 use nve_store::Rgba;
+use nve_tables::tables::Visual;
 
 pub const ITEMS: usize = 32;
 const CONTAINER: ElementId = ElementId(1);
@@ -79,6 +80,7 @@ pub struct Values {
     /// and adds `border-width`.
     pub style: [AttributeValue; 2],
     pub inner_style: [AttributeValue; 2],
+    pub typed_style: [AttributeValue; 2],
     pub table: [AttributeValue; 2],
 }
 
@@ -96,6 +98,16 @@ pub fn values() -> Values {
         inner_style: [
             AttributeValue::Text("width: 10px; opacity: 0.25".into()),
             AttributeValue::Text("width: 20px; opacity: 0.75; border-radius: 3px".into()),
+        ],
+        typed_style: [
+            TypedStyle::new()
+                .width_px(120.0)
+                .bg(ColorRgba::rgb(0x0f, 0x17, 0x2a))
+                .into_value(),
+            TypedStyle::new()
+                .width_px(160.0)
+                .bg(ColorRgba::rgb(0x1e, 0x29, 0x3b))
+                .into_value(),
         ],
         table: TABLE_BORDER.map(|c| {
             table_attr_fn(move |tx, node| {
@@ -145,6 +157,21 @@ pub fn changed_attributes(writer: &mut NveMutationWriter, v: &Values, frame: usi
             tx.set_attribute("padding", None, &v.padding[pick], item(k));
             tx.set_attribute("opacity", None, &v.opacity[pick], item(k));
             tx.set_attribute("style", None, &v.style[pick], item(k));
+        }
+    });
+}
+
+/// Alternates `nve_style` (`TypedStyle`), `accent` (`TableAttr`), standalone `padding`, and
+/// inline `style` on all 32 items — exercising all four dense side tables every frame.
+#[allow(dead_code)]
+pub fn all_side_tables_attributes(writer: &mut NveMutationWriter, v: &Values, frame: usize) {
+    let pick = frame % 2;
+    writer.with_transaction(|tx| {
+        for k in 0..ITEMS {
+            tx.set_attribute("nve_style", None, &v.typed_style[pick], item(k));
+            tx.set_attribute("padding", None, &v.padding[pick], item(k));
+            tx.set_attribute("style", None, &v.style[pick], item(k));
+            tx.set_attribute("accent", None, &v.table[pick], item(k));
         }
     });
 }

@@ -8,12 +8,14 @@ mod element_map;
 mod identity_attrs;
 mod listeners;
 mod mutations;
+mod node_slot_table;
 mod standalone_style;
+#[cfg(test)]
+mod style_tests;
 #[cfg(test)]
 mod tests;
 
 use dioxus_core::{ElementId, TemplateAttribute, TemplateNode};
-use nve_abi::hash::{HashMap, HashSet};
 use nve_abi::SurfaceId;
 use nve_tables::interaction::CursorKind;
 use nve_tables::tables::{
@@ -23,6 +25,7 @@ use nve_store::{ChangeSet, NodeId, NodeStore, Transaction};
 
 use crate::typed_style::TypedStyle;
 use element_map::ElementMap;
+use node_slot_table::{NodeSlotSet, NodeSlotTable};
 pub(crate) use standalone_style::{StandaloneStyleRef, StandaloneStyleVal};
 use standalone_style::{BufferPool, StandaloneStyleList, TableAttrList};
 
@@ -37,20 +40,18 @@ pub struct NveMutationWriter {
     pub(crate) stack: Vec<NodeId>,
     pub(crate) child_scratch: Vec<NodeId>,
     pub(crate) incoming_scratch: Vec<NodeId>,
-    // The four per-node `HashMap`s below are sparse (only nodes with table attrs or styles) and
-    // keyed by generation-tagged `NodeId`; dense per-slot tables would make them O(1) loads like
-    // `ElementMap` (docs/BACKLOG.md "Dense writer side tables").
-    /// Tracks active [`crate::TableAttr`] writers per `(node, attr_name)` so multiple table attrs can
-    /// coexist on one node and `AttributeValue::None` / replacement can call `clear_from`.
-    pub(crate) attached_tables: HashMap<NodeId, TableAttrList>,
+    /// Dense generation-checked per-node side tables (O(1) indexed access, zero hashing).
+    /// Tracks active [`crate::TableAttr`] writers per `(node, attr_name)` so multiple table attrs
+    /// can coexist on one node and `AttributeValue::None` / replacement can call `clear_from`.
+    pub(crate) attached_tables: NodeSlotTable<TableAttrList>,
     /// Tracks active [`TypedStyle`] so inline `style` overrides merge cleanly and restore on clear.
-    pub(crate) typed_styles: HashMap<NodeId, TypedStyle>,
+    pub(crate) typed_styles: NodeSlotTable<TypedStyle>,
     /// Tracks active inline `style="..."` override strings and their accepted CSS property bitmask.
-    pub(crate) inline_styles: HashMap<NodeId, (String, u64)>,
+    pub(crate) inline_styles: NodeSlotTable<(String, u64)>,
     /// Tracks standalone CSS/style attributes (`width`, `color`, `opacity`, etc.) per node.
-    pub(crate) standalone_style_attrs: HashMap<NodeId, StandaloneStyleList>,
+    pub(crate) standalone_style_attrs: NodeSlotTable<StandaloneStyleList>,
     /// Nodes whose winning border color is CSS `currentColor` (`current_color.rs`).
-    pub(crate) current_color_borders: HashSet<NodeId>,
+    pub(crate) current_color_borders: NodeSlotSet,
     /// Recycled style lists and strings of removed nodes.
     pub(crate) buffer_pool: BufferPool,
     /// Dense node-index flags for non-table Dioxus listeners (bit 0 = `ontableevent`, bit 1 = custom).
@@ -74,11 +75,11 @@ impl NveMutationWriter {
             stack: Vec::with_capacity(64),
             child_scratch: Vec::with_capacity(32),
             incoming_scratch: Vec::with_capacity(32),
-            attached_tables: HashMap::default(),
-            typed_styles: HashMap::default(),
-            inline_styles: HashMap::default(),
-            standalone_style_attrs: HashMap::default(),
-            current_color_borders: HashSet::default(),
+            attached_tables: NodeSlotTable::new(),
+            typed_styles: NodeSlotTable::new(),
+            inline_styles: NodeSlotTable::new(),
+            standalone_style_attrs: NodeSlotTable::new(),
+            current_color_borders: NodeSlotSet::new(),
             buffer_pool: BufferPool::default(),
             aux_event_flags: Vec::new(),
             #[cfg(test)]
@@ -116,6 +117,34 @@ impl NveMutationWriter {
     #[inline]
     pub fn element_id_of(&self, node_id: NodeId) -> Option<ElementId> {
         self.elements.element_of(node_id)
+    }
+
+    /// Resets the writer to an empty root-only store, recycling pooled style/table buffers and
+    /// releasing every per-node side table and element mapping.
+    pub fn reset(&mut self) {
+        let mut store = NodeStore::new();
+        store.set_realization_order(tables::core_realization_order());
+        self.store = store;
+        self.changes = ChangeSet::default();
+        self.elements.reset_to_root();
+        self.stack.clear();
+        self.child_scratch.clear();
+        self.incoming_scratch.clear();
+        let pool = &mut self.buffer_pool;
+        self.attached_tables
+            .reset_with(|list| pool.recycle_table_list(list));
+        self.typed_styles.reset();
+        self.inline_styles
+            .reset_with(|(inline, _)| pool.recycle_inline(inline));
+        self.standalone_style_attrs
+            .reset_with(|list| pool.recycle_list(list));
+        self.current_color_borders.reset();
+        self.aux_event_flags = Vec::new();
+        #[cfg(test)]
+        {
+            self.standalone_replay_count = 0;
+            self.inline_reapply_count = 0;
+        }
     }
 
     /// Runs `f` inside a single [`Transaction`] on the owned [`NodeStore`] and commits the
@@ -183,11 +212,11 @@ pub struct StoreMutationTx<'s, 'a> {
     pub(crate) stack: &'a mut Vec<NodeId>,
     pub(crate) child_scratch: &'a mut Vec<NodeId>,
     pub(crate) incoming_scratch: &'a mut Vec<NodeId>,
-    pub(crate) attached_tables: &'a mut HashMap<NodeId, TableAttrList>,
-    pub(crate) typed_styles: &'a mut HashMap<NodeId, TypedStyle>,
-    pub(crate) inline_styles: &'a mut HashMap<NodeId, (String, u64)>,
-    pub(crate) standalone_style_attrs: &'a mut HashMap<NodeId, StandaloneStyleList>,
-    pub(crate) current_color_borders: &'a mut HashSet<NodeId>,
+    pub(crate) attached_tables: &'a mut NodeSlotTable<TableAttrList>,
+    pub(crate) typed_styles: &'a mut NodeSlotTable<TypedStyle>,
+    pub(crate) inline_styles: &'a mut NodeSlotTable<(String, u64)>,
+    pub(crate) standalone_style_attrs: &'a mut NodeSlotTable<StandaloneStyleList>,
+    pub(crate) current_color_borders: &'a mut NodeSlotSet,
     pub(crate) buffer_pool: &'a mut BufferPool,
     pub(crate) aux_event_flags: &'a mut Vec<u8>,
     #[cfg(test)]
@@ -207,34 +236,9 @@ impl StoreMutationTx<'_, '_> {
         self.elements.node_of(id)
     }
 
-    #[inline]
-    pub(crate) fn record_standalone_style(
-        &mut self,
-        node: NodeId,
-        name: &str,
-        val: StandaloneStyleRef<'_>,
-    ) -> usize {
-        let pool = &mut *self.buffer_pool;
-        let list = self
-            .standalone_style_attrs
-            .entry(node)
-            .or_insert_with(|| pool.list());
-        if let Some(pos) = list.iter().position(|(k, _)| k == name) {
-            pool.assign(&mut list[pos].1, val);
-            return pos;
-        }
-        let rank = nve_tables::css_key_rank(name);
-        let pos = list
-            .iter()
-            .rposition(|(k, _)| nve_tables::css_key_rank(k) <= rank)
-            .map_or(0, |i| i + 1);
-        list.insert(pos, (pool.string(name), pool.value(val)));
-        pos
-    }
-
     /// Removes a recorded standalone style attribute. Returns `true` iff an entry was removed.
     pub(crate) fn remove_standalone_style(&mut self, node: NodeId, name: &str) -> bool {
-        let Some(list) = self.standalone_style_attrs.get_mut(&node) else {
+        let Some(list) = self.standalone_style_attrs.get_mut(node) else {
             return false;
         };
         let Some(pos) = list.iter().position(|(k, _)| k == name) else {
@@ -242,38 +246,11 @@ impl StoreMutationTx<'_, '_> {
         };
         self.buffer_pool.recycle_entry(list.remove(pos));
         if list.is_empty()
-            && let Some(list) = self.standalone_style_attrs.remove(&node)
+            && let Some(list) = self.standalone_style_attrs.remove(node)
         {
             self.buffer_pool.recycle_list(list);
         }
         true
-    }
-
-    #[inline]
-    fn replay_one_standalone_entry(
-        &mut self,
-        node: NodeId,
-        k: &str,
-        val: &StandaloneStyleVal,
-        layers: u8,
-    ) {
-        #[cfg(test)]
-        {
-            *self.standalone_replay_count += 1;
-        }
-        match val {
-            StandaloneStyleVal::Float(f) => {
-                let _ = self.apply_numeric_attr_untracked(node, k, *f);
-            }
-            StandaloneStyleVal::Int(i) => {
-                self.tx
-                    .edit::<tables::Visual>(node)
-                    .z_index((*i).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
-            }
-            StandaloneStyleVal::Str(s) => {
-                nve_tables::apply_css_attr_layers_to_tx(self.tx, node, k, s, layers);
-            }
-        }
     }
 
     /// Replays standalone style attributes and inline `style="..."` for the specified `layers`
@@ -282,16 +259,26 @@ impl StoreMutationTx<'_, '_> {
         if layers == 0 {
             return;
         }
-        if let Some(saved) = self.standalone_style_attrs.remove(&node) {
-            for (k, val) in &saved {
+        if let Some(saved) = self.standalone_style_attrs.get(node) {
+            for (k, val) in saved {
                 let entry_layer = nve_tables::css_attr_layer(k);
-                debug_assert!(entry_layer != 0, "standalone style key `{k}` must have a non-zero layer");
+                debug_assert!(
+                    entry_layer != 0,
+                    "standalone style key `{k}` must have a non-zero layer"
+                );
                 if (entry_layer & layers) == 0 {
                     continue;
                 }
-                self.replay_one_standalone_entry(node, k, val, layers);
+                replay_one_standalone_entry(
+                    self.tx,
+                    #[cfg(test)]
+                    self.standalone_replay_count,
+                    node,
+                    k,
+                    val,
+                    layers,
+                );
             }
-            self.standalone_style_attrs.insert(node, saved);
         }
         self.reapply_inline_style(node, layers);
     }
@@ -299,7 +286,7 @@ impl StoreMutationTx<'_, '_> {
     #[inline]
     pub(crate) fn reapply_inline_style(&mut self, node: NodeId, layers: u8) {
         if layers != 0
-            && let Some((inline, mask)) = self.inline_styles.get(&node)
+            && let Some((inline, mask)) = self.inline_styles.get(node)
             && (nve_tables::prop_bits_to_layers(*mask) & layers) != 0
         {
             #[cfg(test)]
@@ -317,78 +304,105 @@ impl StoreMutationTx<'_, '_> {
         name: &str,
         val: StandaloneStyleRef<'_>,
     ) {
-        let pos = self.record_standalone_style(node, name, val);
+        let pool = &mut *self.buffer_pool;
+        let Some(list) = self
+            .standalone_style_attrs
+            .get_or_insert_with(node, || pool.list())
+        else {
+            return;
+        };
+        let pos = if let Some(pos) = list.iter().position(|(k, _)| k == name) {
+            pool.assign(&mut list[pos].1, val);
+            pos
+        } else {
+            let rank = nve_tables::css_key_rank(name);
+            let pos = list
+                .iter()
+                .rposition(|(k, _)| nve_tables::css_key_rank(k) <= rank)
+                .map_or(0, |i| i + 1);
+            list.insert(pos, (pool.string(name), pool.value(val)));
+            pos
+        };
+
+        let bits = nve_tables::css_key_bits(name);
+        debug_assert!(
+            bits.is_some(),
+            "standalone style key `{name}` must have css_key_bits"
+        );
+        let mut affected_bits = bits.unwrap_or(0);
+
+        // Single-pass replay of trailing entries whose property bits transitively overlap;
+        // disjoint field borrows on `self.tx` avoid any remove/reinsert churn.
+        for (k, v) in list.get(pos + 1..).unwrap_or(&[]) {
+            let entry_bits = nve_tables::css_key_bits(k).unwrap_or(0);
+            if (entry_bits & affected_bits) == 0 {
+                continue;
+            }
+            affected_bits |= entry_bits;
+            let entry_layer = nve_tables::prop_bits_to_layers(entry_bits);
+            replay_one_standalone_entry(
+                self.tx,
+                #[cfg(test)]
+                self.standalone_replay_count,
+                node,
+                k,
+                v,
+                entry_layer,
+            );
+        }
+
         if current_color::key_sets_border_color(name) {
             self.refresh_current_color_border(node);
         }
-        let bits = nve_tables::css_key_bits(name);
-        debug_assert!(bits.is_some(), "standalone style key `{name}` must have css_key_bits");
-        let bits = bits.unwrap_or(0);
-        let mut affected_bits = bits;
 
-        // Read-only scan of trailing entries for transitive property-bit overlap; avoids HashMap
-        // churn and re-parsing unrelated trailing attrs on 120 Hz standalone updates.
-        let has_overlap = self.standalone_style_attrs.get(&node).is_some_and(|list| {
-            let mut scan_bits = bits;
-            let mut overlapped = false;
-            for (k, _) in list.get(pos + 1..).unwrap_or(&[]) {
-                let entry_bits = nve_tables::css_key_bits(k).unwrap_or(0);
-                if (entry_bits & scan_bits) != 0 {
-                    overlapped = true;
-                    scan_bits |= entry_bits;
+        if let Some((inline, mask)) = self.inline_styles.get(node) {
+            let inline_layers = nve_tables::prop_bits_to_layers(*mask & affected_bits);
+            if inline_layers != 0 {
+                #[cfg(test)]
+                {
+                    *self.inline_reapply_count += 1;
                 }
+                nve_tables::apply_css_attr_layers_to_tx(
+                    self.tx,
+                    node,
+                    "style",
+                    inline,
+                    inline_layers,
+                );
             }
-            overlapped
-        });
-
-        if has_overlap
-            && let Some(saved) = self.standalone_style_attrs.remove(&node)
-        {
-            for (k, val) in saved.get(pos + 1..).unwrap_or(&[]) {
-                let entry_bits = nve_tables::css_key_bits(k).unwrap_or(0);
-                if (entry_bits & affected_bits) == 0 {
-                    continue;
-                }
-                affected_bits |= entry_bits;
-                let entry_layer = nve_tables::prop_bits_to_layers(entry_bits);
-                self.replay_one_standalone_entry(node, k, val, entry_layer);
-            }
-            self.standalone_style_attrs.insert(node, saved);
-        }
-
-        let inline_layers = self.inline_styles.get(&node).map_or(0, |&(_, mask)| {
-            nve_tables::prop_bits_to_layers(mask & affected_bits)
-        });
-        if inline_layers != 0 {
-            self.reapply_inline_style(node, inline_layers);
         }
     }
 
     /// Updates `node`'s inline `style="..."` string in a single parse pass, preserving the
     /// `effect::COMPOSITE` fast lane whenever no previously accepted CSS property is dropped.
     pub(crate) fn apply_inline_style_attr(&mut self, node: NodeId, value: &str) {
-        let prev_mask = match self.inline_styles.get(&node) {
+        let (prev_mask, next_mask) = match self.inline_styles.get_mut(node) {
             Some((prev_str, _)) if prev_str == value => return,
-            Some(&(_, mask)) => mask,
-            None => 0,
-        };
-        let next_mask = nve_tables::apply_inline_style_layers_to_tx(
-            self.tx,
-            node,
-            value,
-            nve_tables::STYLE_LAYER_ALL,
-        );
-        match self.inline_styles.get_mut(&node) {
             Some((inline, mask)) => {
+                let prev_mask = *mask;
+                let next_mask = nve_tables::apply_inline_style_layers_to_tx(
+                    self.tx,
+                    node,
+                    value,
+                    nve_tables::STYLE_LAYER_ALL,
+                );
                 inline.clear();
                 inline.push_str(value);
                 *mask = next_mask;
+                (prev_mask, next_mask)
             }
             None => {
+                let next_mask = nve_tables::apply_inline_style_layers_to_tx(
+                    self.tx,
+                    node,
+                    value,
+                    nve_tables::STYLE_LAYER_ALL,
+                );
                 let inline = self.buffer_pool.inline(value);
                 self.inline_styles.insert(node, (inline, next_mask));
+                (0, next_mask)
             }
-        }
+        };
         if nve_tables::mask_border_color_source(prev_mask | next_mask).is_some() {
             self.refresh_current_color_border(node);
         }
@@ -413,7 +427,7 @@ impl StoreMutationTx<'_, '_> {
         if layers & nve_tables::STYLE_LAYER_TYPOGRAPHY != 0 {
             self.tx.detach::<tables::Typography>(node);
         }
-        if let Some(ts) = self.typed_styles.get(&node) {
+        if let Some(ts) = self.typed_styles.get(node) {
             ts.apply_style_layers_to_tx(self.tx, node, layers);
         }
         self.replay_standalone_and_inline(node, layers);
@@ -521,15 +535,15 @@ impl StoreMutationTx<'_, '_> {
             };
             self.stack.extend_from_slice(self.tx.store().children(nid));
             self.elements.unbind_node(nid);
-            if let Some(list) = self.attached_tables.remove(&nid) {
+            if let Some(list) = self.attached_tables.remove(nid) {
                 self.buffer_pool.recycle_table_list(list);
             }
-            self.typed_styles.remove(&nid);
-            self.current_color_borders.remove(&nid);
-            if let Some((inline, _)) = self.inline_styles.remove(&nid) {
+            self.typed_styles.remove(nid);
+            self.current_color_borders.remove(nid);
+            if let Some((inline, _)) = self.inline_styles.remove(nid) {
                 self.buffer_pool.recycle_inline(inline);
             }
-            if let Some(list) = self.standalone_style_attrs.remove(&nid) {
+            if let Some(list) = self.standalone_style_attrs.remove(nid) {
                 self.buffer_pool.recycle_list(list);
             }
             if let Some(slot) = self.aux_event_flags.get_mut(nid.index()) {
@@ -546,5 +560,32 @@ impl StoreMutationTx<'_, '_> {
             cur = *self.tx.store().children(cur).get(idx as usize)?;
         }
         Some(cur)
+    }
+}
+
+#[inline]
+fn replay_one_standalone_entry(
+    tx: &mut Transaction<'_>,
+    #[cfg(test)] standalone_replay_count: &mut usize,
+    node: NodeId,
+    k: &str,
+    val: &StandaloneStyleVal,
+    layers: u8,
+) {
+    #[cfg(test)]
+    {
+        *standalone_replay_count += 1;
+    }
+    match val {
+        StandaloneStyleVal::Float(f) => {
+            let _ = attributes::apply_numeric_attr_untracked(tx, node, k, *f);
+        }
+        StandaloneStyleVal::Int(i) => {
+            tx.edit::<tables::Visual>(node)
+                .z_index((*i).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+        }
+        StandaloneStyleVal::Str(s) => {
+            nve_tables::apply_css_attr_layers_to_tx(tx, node, k, s, layers);
+        }
     }
 }
