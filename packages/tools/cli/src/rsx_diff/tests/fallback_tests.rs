@@ -78,13 +78,13 @@ fn attribute_added_removed_renamed_or_unknown_rebuilds() {
 fn non_constant_or_ill_typed_values_rebuild_with_a_reason() {
     let cases = [
         (
-            "background_color: \"{c}\",",
-            "background_color: \"{d}\",",
+            "nve_style: TypedStyle::new().flex_direction_str(\"{c}\"),",
+            "nve_style: TypedStyle::new().flex_direction_str(\"{d}\"),",
             "baseline value is not a Tier-1 constant: interpolated",
         ),
         (
-            "background_color: \"#fff\",",
-            "background_color: \"{d}\",",
+            "nve_style: TypedStyle::new().flex_direction_str(\"row\"),",
+            "nve_style: TypedStyle::new().flex_direction_str(\"{d}\"),",
             "value is not a Tier-1 constant: interpolated",
         ),
         (
@@ -104,18 +104,18 @@ fn non_constant_or_ill_typed_values_rebuild_with_a_reason() {
         ("padding: 8.0,", "padding: 1e39,", "not finite"),
         ("padding: 8.0,", "padding: ,", "empty value"),
         (
-            "color: Rgba::rgb(1, 2, 3),",
-            "color: Rgba::rgb(1, 2, 300),",
+            "nve_style: TypedStyle::new().color(ColorRgba::rgb(1, 2, 3)),",
+            "nve_style: TypedStyle::new().color(ColorRgba::rgb(1, 2, 300)),",
             "0..=255",
         ),
         (
-            "color: Rgba::rgb(1, 2, 3),",
-            "color: rgb(1, 2, 3),",
+            "nve_style: TypedStyle::new().color(ColorRgba::rgb(1, 2, 3)),",
+            "nve_style: TypedStyle::new().color(rgb(1, 2, 3)),",
             "constructors",
         ),
         (
-            "width: Length::points(1.0),",
-            "width: Length::points(2),",
+            "nve_style: TypedStyle::new().width(Dimension::Points(1.0)),",
+            "nve_style: TypedStyle::new().width(Dimension::Points(2)),",
             "float literal",
         ),
         (
@@ -125,19 +125,18 @@ fn non_constant_or_ill_typed_values_rebuild_with_a_reason() {
         ),
         ("opacity: 0.5,", "opacity: true,", "value shape changed"),
         (
-            "font_family: \"Inter\",",
-            "font_family: FontFamily::Mono,",
-            "value shape changed",
-        ),
-        ("color: Rgba::WHITE,", "color: 4.0,", "value shape changed"),
-        (
-            "flex_direction: FlexDirection::Row,",
-            "flex_direction: AlignItems::Center,",
+            "nve_style: TypedStyle::new().color(ColorRgba::WHITE),",
+            "nve_style: TypedStyle::new().color(4.0),",
             "value shape changed",
         ),
         (
-            "display: Option::None,",
-            "display: Option::Some,",
+            "nve_style: TypedStyle::new().flex_direction(FlexDirection::Row),",
+            "nve_style: TypedStyle::new().flex_direction(AlignItems::Center),",
+            "value shape changed",
+        ),
+        (
+            "nve_style: TypedStyle::new().display(Option::None),",
+            "nve_style: TypedStyle::new().display(Option::Some),",
             "baseline value is not a Tier-1 constant",
         ),
     ];

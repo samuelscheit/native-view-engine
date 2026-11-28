@@ -3,6 +3,7 @@
 
 mod apply;
 mod builders;
+mod clear;
 mod layout_ext;
 mod merge;
 mod paint;
@@ -85,9 +86,9 @@ pub struct TypedStyle {
     pub text_decoration: Option<TextDecoration>,
     /// `Some(empty)` explicitly clears shadows; `None` leaves them untouched.
     pub box_shadows: Option<std::sync::Arc<[BoxShadow]>>,
-    pub overflow: Option<(Overflow, Overflow)>,
+    pub(crate) overflow: Option<(Overflow, Overflow)>,
     pub object_fit: Option<ImageFit>,
-    pub layout_ext: Option<Box<LayoutExt>>,
+    pub(crate) layout_ext: Option<Box<LayoutExt>>,
     pub transform: Option<Transform2D>,
     pub background_fill: Option<BackgroundFill>,
     pub show_on: Option<MediaQuery>,
@@ -163,6 +164,19 @@ impl TypedStyle {
     #[inline]
     pub const fn style(&self) -> &VisualSnapshot {
         &self.style
+    }
+
+    /// Read-only view of the `(overflow_x, overflow_y)` pair when either axis was set.
+    #[inline]
+    pub const fn overflow_value(&self) -> Option<(Overflow, Overflow)> {
+        self.overflow
+    }
+
+    /// Read-only view of extended layout properties (mutate via builder methods so field masks
+    /// stay in sync).
+    #[inline]
+    pub fn layout_ext(&self) -> Option<&LayoutExt> {
+        self.layout_ext.as_deref()
     }
 
     #[inline]

@@ -6,9 +6,9 @@ use std::fmt;
 use nve_engine::{hot_patch_template_key, HotPatchMsg};
 use nve_store::{FlatResource, Length, NveTable, Prop, RowPatch, ScalarField, WordValue};
 use nve_tables::tables::{
-    AlignItems, AlignSelf, BoxSizing, CursorKind, Display, FlexDirection, FlexWrap, FontStyle,
-    Interaction, JustifyContent, Layout, Overflow, OverflowWrap, Position, TextAlign,
-    Typography, VerticalAlign, Visibility, Visual, WhiteSpace, WordBreak,
+    AlignItems, AlignSelf, CursorKind, Display, FlexDirection, FlexWrap, FontStyle, Interaction,
+    JustifyContent, Layout, Overflow, OverflowWrap, Position, TextAlign, Typography, Visual,
+    WhiteSpace,
 };
 
 use super::attrs::{AttrKind, AttrSpec, KeywordEnum};
@@ -190,11 +190,6 @@ pub fn encode_attr_into_row_patch(
             "theme token `{path}` needs the running app's theme (Tier-2)"
         ));
     }
-    if matches!(spec.kind, AttrKind::Text) {
-        return Err(format!(
-            "`{name}` is a non-scalar string/resource attribute (Tier-2)"
-        ));
-    }
     match name {
         // Box sizing & flex lengths
         "width" => set_length(patch, Layout::WIDTH, spec, value),
@@ -247,11 +242,29 @@ pub fn encode_attr_into_row_patch(
                 .set(Layout::MARGIN_LEFT, l);
             Ok(())
         }
+        "margin-horizontal" => {
+            let l = eval_length(spec, value)?;
+            patch.set(Layout::MARGIN_LEFT, l).set(Layout::MARGIN_RIGHT, l);
+            Ok(())
+        }
+        "margin-vertical" => {
+            let l = eval_length(spec, value)?;
+            patch.set(Layout::MARGIN_TOP, l).set(Layout::MARGIN_BOTTOM, l);
+            Ok(())
+        }
         "margin-top" => set_length(patch, Layout::MARGIN_TOP, spec, value),
         "margin-right" => set_length(patch, Layout::MARGIN_RIGHT, spec, value),
         "margin-bottom" => set_length(patch, Layout::MARGIN_BOTTOM, spec, value),
         "margin-left" => set_length(patch, Layout::MARGIN_LEFT, spec, value),
         // Layout scalars
+        "flex-shorthand" => {
+            let grow = eval_unitless(spec, value)?;
+            patch
+                .set(Layout::FLEX_GROW, grow)
+                .set(Layout::FLEX_SHRINK, 1.0)
+                .set(Layout::FLEX_BASIS, Length::percent(0.0));
+            Ok(())
+        }
         "flex" | "flex-grow" => {
             patch.set(Layout::FLEX_GROW, eval_unitless(spec, value)?);
             Ok(())
@@ -277,7 +290,6 @@ pub fn encode_attr_into_row_patch(
         }
         "align-items" => set_kw::<Layout, AlignItems>(patch, Layout::ALIGN_ITEMS, spec, value),
         "align-self" => set_kw::<Layout, AlignSelf>(patch, Layout::ALIGN_SELF, spec, value),
-        "box-sizing" => set_kw::<Layout, BoxSizing>(patch, Layout::BOX_SIZING, spec, value),
         // Visual
         "background" | "background-color" => {
             patch.set(Visual::BACKGROUND, eval_color(spec, value)?);
@@ -291,9 +303,6 @@ pub fn encode_attr_into_row_patch(
             patch.set(Visual::BORDER_WIDTH, eval_px_scalar(spec, value)?);
             Ok(())
         }
-        "border-top-width" | "border-right-width" | "border-bottom-width" | "border-left-width" => {
-            Err(format!("`{name}` has no per-edge Visual column (Tier-2)"))
-        }
         "border-radius" => {
             patch.set(Visual::BORDER_RADIUS, eval_px_scalar(spec, value)?);
             Ok(())
@@ -306,7 +315,6 @@ pub fn encode_attr_into_row_patch(
             patch.set(Visual::Z_INDEX, eval_z_index(spec, value)?);
             Ok(())
         }
-        "visibility" => set_kw::<Visual, Visibility>(patch, Visual::VISIBILITY, spec, value),
         "overflow" => {
             let disc = eval_keyword(spec, value)?;
             let o = Overflow::from_bits(u32::from(disc));
@@ -324,16 +332,19 @@ pub fn encode_attr_into_row_patch(
             patch.set(Typography::FONT_SIZE, eval_px_scalar(spec, value)?);
             Ok(())
         }
-        "letter-spacing" => {
-            patch.set(Typography::LETTER_SPACING, eval_px_scalar(spec, value)?);
-            Ok(())
-        }
         "font-weight" => {
             patch.set(Typography::FONT_WEIGHT, eval_font_weight(spec, value)?);
             Ok(())
         }
         "line-height" => {
             patch.set(Typography::LINE_HEIGHT, eval_line_height(spec, value)?);
+            Ok(())
+        }
+        "line-height-px" => {
+            patch.set(
+                Typography::LINE_HEIGHT,
+                Length::points(eval_px_scalar(spec, value)?),
+            );
             Ok(())
         }
         "text-decoration" => {
@@ -350,10 +361,6 @@ pub fn encode_attr_into_row_patch(
         }
         "overflow-wrap" => {
             set_kw::<Typography, OverflowWrap>(patch, Typography::OVERFLOW_WRAP, spec, value)
-        }
-        "word-break" => set_kw::<Typography, WordBreak>(patch, Typography::WORD_BREAK, spec, value),
-        "vertical-align" => {
-            set_kw::<Typography, VerticalAlign>(patch, Typography::VERTICAL_ALIGN, spec, value)
         }
         // Interaction
         "cursor" => set_kw::<Interaction, CursorKind>(patch, Interaction::CURSOR, spec, value),
@@ -383,17 +390,20 @@ fn set_kw<T: NveTable, E: WordValue + ScalarField>(
 }
 
 fn eval_keyword(spec: &AttrSpec, value: &TypedAttrValue) -> Result<u8, String> {
-    let AttrKind::Keyword(kw) = spec.kind else {
-        return Err(format!("`{}` is not a keyword attribute", spec.name));
-    };
-    eval_keyword_from(kw, spec.name, value)
+    match spec.kind {
+        AttrKind::Keyword(kw) | AttrKind::KeywordStr(kw) => {
+            eval_keyword_from(kw, spec.name, value)
+        }
+        _ => Err(format!("`{}` is not a keyword attribute", spec.name)),
+    }
 }
 
 fn eval_keyword_from(kw: &KeywordEnum, name: &str, value: &TypedAttrValue) -> Result<u8, String> {
     match value {
-        TypedAttrValue::Enum { ty, variant } if ty.as_deref().is_none_or(|t| t == kw.ty) => kw
-            .discriminant(variant)
-            .ok_or_else(|| format!("`{name}` does not accept {value}")),
+        TypedAttrValue::Enum { ty, variant } if ty.as_deref().is_none_or(|t| kw.matches_ty(t)) => {
+            kw.discriminant(variant)
+                .ok_or_else(|| format!("`{name}` does not accept {value}"))
+        }
         TypedAttrValue::String(s) => kw
             .parse_keyword_str(s)
             .ok_or_else(|| format!("`{name}` cannot parse keyword {s:?}")),

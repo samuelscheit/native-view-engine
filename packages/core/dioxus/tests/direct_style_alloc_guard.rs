@@ -12,7 +12,9 @@ use dioxus_core::{
 use nve_abi::{ColorRgba, SurfaceId};
 use nve_dioxus::{NveMutationWriter, TypedStyle, NVE_TYPED_STYLE_ATTR};
 use nve_store::{Length, Rgba};
-use nve_tables::tables::{FlexDirection, Layout, Typography, Visual};
+use nve_tables::media::MediaQuery;
+use nve_tables::tables::{FlexDirection, Interaction, Layout, Responsive, Typography, Visual};
+use nve_tables::StylePatchExt;
 
 static VIEW_TEMPLATE: Template = Template {
     roots: &[TemplateNode::Element {
@@ -75,9 +77,12 @@ fn direct_typed_attribute_updates_perform_zero_heap_allocations() {
     let red = ColorRgba::rgb(239, 68, 68);
     let initial = Frame {
         typed_style: TypedStyle::col()
+            .flex_1()
             .color(blue)
             .border(1.0, blue)
             .padding_xy(4.0, 4.0)
+            .on_hover_with(|p| p.opacity(0.9))
+            .at_with(MediaQuery::compact(), |p| p.padding(8.0))
             .into_value(),
         width: AttributeValue::Float(100.0),
         padding: AttributeValue::Float(4.0),
@@ -88,9 +93,12 @@ fn direct_typed_attribute_updates_perform_zero_heap_allocations() {
     };
     let target = Frame {
         typed_style: TypedStyle::row()
+            .flex_1()
             .color(red)
             .border(2.0, red)
             .padding_xy(12.0, 8.0)
+            .on_hover_with(|p| p.opacity(0.9))
+            .at_with(MediaQuery::compact(), |p| p.padding(8.0))
             .into_value(),
         width: AttributeValue::Float(240.0),
         padding: AttributeValue::Float(8.0),
@@ -108,7 +116,7 @@ fn direct_typed_attribute_updates_perform_zero_heap_allocations() {
     let (_, allocs) = count_allocs(|| target.apply(&mut writer));
     assert_eq!(
         allocs, 0,
-        "warm direct-path TypedStyle + numeric standalone attrs must not allocate"
+        "warm direct-path heap-backed TypedStyle (flex_1 + state_rules + responsive) + numeric standalone attrs must not allocate"
     );
 
     let el1 = writer.resolve_el(EL1).expect("el1 bound");
@@ -119,6 +127,9 @@ fn direct_typed_attribute_updates_perform_zero_heap_allocations() {
     assert_eq!(layout.padding_top(), Length::points(8.0));
     assert_eq!(layout.padding_left(), Length::points(8.0));
     assert_eq!(layout.flex_direction(), FlexDirection::Row);
+    assert_eq!(layout.flex_basis(), Length::percent(0.0));
+    assert!(store.try_row::<Interaction>(el1).is_some_and(|i| !i.state_rules().is_none()));
+    assert!(store.try_row::<Responsive>(el1).is_some_and(|r| !r.rules().is_none()));
     let typography = store.try_row::<Typography>(el1).expect("el1 typography");
     assert_eq!(typography.color(), Rgba::rgb(239, 68, 68));
     assert_eq!(typography.font_size(), 16.0);

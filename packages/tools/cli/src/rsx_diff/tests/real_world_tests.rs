@@ -77,8 +77,8 @@ fn synthetic_5k_line_file_typed_edits_in_last_component_target_it_exactly() {
     let multi = replace_last(
         &replace_last(
             &replace_last(&edited, "FlexDirection::Row", "FlexDirection::Column"),
-            "Rgba::rgb(15, 23, 42)",
-            "Rgba::rgb(15, 23, 204)",
+            "ColorRgba::rgb(15, 23, 42)",
+            "ColorRgba::rgb(15, 23, 204)",
         ),
         "\"Press ",
         "\"Tap ",

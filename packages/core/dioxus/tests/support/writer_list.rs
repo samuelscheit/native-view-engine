@@ -10,7 +10,9 @@ use dioxus_core::{
 use nve_abi::ColorRgba;
 use nve_dioxus::{NveMutationWriter, TypedStyle, table_attr_fn, NVE_TYPED_STYLE_ATTR};
 use nve_store::Rgba;
+use nve_tables::media::MediaQuery;
 use nve_tables::tables::Visual;
+use nve_tables::StylePatchExt;
 
 pub const ITEMS: usize = 32;
 const CONTAINER: ElementId = ElementId(1);
@@ -81,14 +83,20 @@ pub fn values() -> Values {
         opacity: [AttributeValue::Float(0.5), AttributeValue::Float(0.75)],
         typed_style: [
             TypedStyle::new()
+                .flex_1()
                 .width_px(120.0)
                 .bg(ColorRgba::rgb(0x1e, 0x29, 0x3b))
                 .radius(4.0)
+                .on_hover_with(|p| p.opacity(0.9))
+                .at_with(MediaQuery::compact(), |p| p.padding(6.0))
                 .into_value(),
             TypedStyle::new()
+                .flex_1()
                 .width_px(160.0)
                 .bg(ColorRgba::rgb(0x33, 0x41, 0x55))
                 .border_width(2.0)
+                .on_hover_with(|p| p.opacity(0.9))
+                .at_with(MediaQuery::compact(), |p| p.padding(6.0))
                 .into_value(),
         ],
         inner_style: [

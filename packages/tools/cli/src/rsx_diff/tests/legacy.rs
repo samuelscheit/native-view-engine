@@ -1,4 +1,4 @@
-//! Static text and typed attribute Tier-1 behavior carried over to binary `RowPatch` lowering.
+//! Static text, standalone numeric, and `nve_style: TypedStyle::...` Tier-1 binary `RowPatch` tests.
 
 use std::path::PathBuf;
 
@@ -19,16 +19,16 @@ pub fn DemoCard() -> Element {
         view {
             test_id: "card-root",
             padding: 12.0,
-            background_color: "#0f172a",
+            nve_style: TypedStyle::col().bg(ColorRgba::rgb(15, 23, 42)),
             text {
                 test_id: "channel-title",
-                color: "#ffffff",
                 font_size: 16.0,
+                nve_style: TypedStyle::new().color(ColorRgba::rgb(255, 255, 255)),
                 "# engineering"
             }
             pressable {
                 test_id: "cta-btn",
-                background_color: "#2563eb",
+                nve_style: TypedStyle::new().bg(ColorRgba::rgb(37, 99, 235)),
                 onpress: move |_| count += 1,
                 text { "Count: {count}" }
                 text { "Ship It" }
@@ -62,18 +62,21 @@ fn tier1_text_only_edit_inside_rsx_emits_targeted_replacement() {
 }
 
 #[test]
-fn tier1_typed_attr_literal_edits_emit_binary_row_patch_words() {
+fn tier1_typed_attr_and_nve_style_literal_edits_emit_binary_row_patch_words() {
     let updated = SAMPLE_COMPONENT
         .replace("padding: 12.0,", "padding: 24.0,")
-        .replace("\"#0f172a\"", "\"#1e293b\"");
+        .replace("ColorRgba::rgb(15, 23, 42)", "ColorRgba::rgb(30, 41, 59)");
     let patch = expect_patch(diff_rsx_source("demo.rs", SAMPLE_COMPONENT, &updated, 3));
     assert_eq!(patch.prop(Layout::PADDING_TOP), Some(Length::points(24.0)));
-    assert_eq!(patch.prop(Visual::BACKGROUND), Some(Rgba::rgb(0x1e, 0x29, 0x3b)));
+    assert_eq!(patch.prop(Visual::BACKGROUND), Some(Rgba::rgb(30, 41, 59)));
     assert!(patch.text_replacements.is_empty());
     assert_eq!(patch.target_test_id.as_deref(), Some("card-root"));
     assert_eq!(patch.node_path, vec![0]);
 
-    let updated_attr = SAMPLE_COMPONENT.replace("\"#2563eb\"", "\"#16a34a\"");
+    let updated_attr = SAMPLE_COMPONENT.replace(
+        "ColorRgba::rgb(37, 99, 235)",
+        "ColorRgba::rgb(22, 163, 74)",
+    );
     let attr_patch = expect_patch(diff_rsx_source(
         "demo.rs",
         SAMPLE_COMPONENT,
@@ -82,7 +85,7 @@ fn tier1_typed_attr_literal_edits_emit_binary_row_patch_words() {
     ));
     assert_eq!(
         attr_patch.prop(Visual::BACKGROUND),
-        Some(Rgba::rgb(0x16, 0xa3, 0x4a))
+        Some(Rgba::rgb(22, 163, 74))
     );
     assert_eq!(attr_patch.target_test_id.as_deref(), Some("cta-btn"));
 }
@@ -90,7 +93,10 @@ fn tier1_typed_attr_literal_edits_emit_binary_row_patch_words() {
 #[test]
 fn tier1_multiple_edits_in_one_save_split_text_and_element_messages() {
     let updated = SAMPLE_COMPONENT
-        .replace("color: \"#ffffff\",", "color: \"#38bdf8\",")
+        .replace(
+            "ColorRgba::rgb(255, 255, 255)",
+            "ColorRgba::rgb(56, 189, 248)",
+        )
         .replace("font_size: 16.0,", "font_size: 18.0,")
         .replace("\"# engineering\"", "\"# platform\"")
         .replace("\"Ship It\"", "\"Deploy Now\"");
@@ -124,7 +130,7 @@ fn tier1_multiple_edits_in_one_save_split_text_and_element_messages() {
     assert!(messages[..2].iter().all(|m| m.row_patch_words.is_empty()));
 
     let attr = &messages[2];
-    assert_eq!(attr.prop(Typography::COLOR), Some(Rgba::rgb(0x38, 0xbd, 0xf8)));
+    assert_eq!(attr.prop(Typography::COLOR), Some(Rgba::rgb(56, 189, 248)));
     assert_eq!(attr.prop(Typography::FONT_SIZE), Some(18.0));
     assert_eq!(attr.target_test_id.as_deref(), Some("channel-title"));
     assert!(attr.text_replacements.is_empty() && attr.text_updates.is_empty());
@@ -186,7 +192,10 @@ fn interpolated_literal_structural_logic_handler_and_syntax_edits_fallback_to_ti
 fn attribute_edits_on_two_elements_emit_one_targeted_message_per_element() {
     let two_elems = SAMPLE_COMPONENT
         .replace("padding: 12.0,", "padding: 20.0,")
-        .replace("\"#2563eb\"", "\"#ef4444\"");
+        .replace(
+            "ColorRgba::rgb(37, 99, 235)",
+            "ColorRgba::rgb(239, 68, 68)",
+        );
     let (patch, messages) =
         expect_tier1(diff_rsx_source("demo.rs", SAMPLE_COMPONENT, &two_elems, 2));
     assert_eq!(patch.attr_changes.len(), 2);
@@ -198,7 +207,7 @@ fn attribute_edits_on_two_elements_emit_one_targeted_message_per_element() {
     assert_eq!(messages[1].node_path, vec![0, 1]);
     assert_eq!(
         messages[1].prop(Visual::BACKGROUND),
-        Some(Rgba::rgb(0xef, 0x44, 0x44))
+        Some(Rgba::rgb(239, 68, 68))
     );
 }
 
@@ -215,13 +224,13 @@ fn comment_and_whitespace_only_edits_are_noop() {
 }
 
 #[test]
-fn raw_string_literals_in_rsx_text_and_attrs() {
+fn raw_string_literals_in_rsx_text_and_typed_style_str_helpers() {
     let base = r###"
 pub fn RawDemo() -> Element {
     rsx! {
         view {
             test_id: "raw-card",
-            background_color: r#"#0f172a"#,
+            nve_style: TypedStyle::new().flex_direction_str(r#"row"#),
             text {
                 test_id: "raw-quote",
                 r#"Say "hello" with \slashes\ and {{braces}}"#
@@ -245,7 +254,7 @@ pub fn RawDemo() -> Element {
         )]
     );
 
-    let normalized = base.replace(r###"r#"#0f172a"#"###, r##""#0f172a""##);
+    let normalized = base.replace(r###"r#"row"#"###, r##""row""##);
     assert_eq!(
         diff_rsx_source("raw.rs", base, &normalized, 3),
         DiffOutcome::NoOp
@@ -253,7 +262,7 @@ pub fn RawDemo() -> Element {
 
     assert_tier2("raw.rs", base, &base.replace("{{braces}}", "{count}"), 4);
 
-    let unterminated = base.replace(r###"r#"#0f172a"#"###, r###"r#"#0f172a"###);
+    let unterminated = base.replace(r###"r#"row"#"###, r###"r#"row"###);
     assert_tier2("raw.rs", base, &unterminated, 5);
 }
 

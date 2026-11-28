@@ -342,7 +342,9 @@ fn recycled_node_and_element_slots_isolate_all_three_side_tables() {
     assert_ne!(gen1.generation(), gen0.generation(), "generation bumped");
 
     // Even if stale gen0 entries existed in every side table, gen1 must never observe or clear them.
-    writer.typed_styles.insert(gen0, TypedStyle::new().width_px(999.0));
+    writer
+        .typed_styles
+        .insert(gen0, super::StoredTypedStyle::from_style(TypedStyle::new().width_px(999.0)));
     writer.standalone_style_attrs.insert(
         gen0,
         vec![("padding", super::StandaloneStyleVal::Float(77.0))],

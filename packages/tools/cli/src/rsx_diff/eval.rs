@@ -290,6 +290,14 @@ fn path_constant(path: &[&str]) -> Result<TypedAttrValue, EvalError> {
             "TRANSPARENT" => Ok(rgba(0, 0, 0, 0)),
             _ => Err(EvalError::NotConstant),
         },
+        [.., "TextDecoration", konst]
+            if matches!(*konst, "EMPTY" | "UNDERLINE" | "OVERLINE" | "LINE_THROUGH") =>
+        {
+            Ok(TypedAttrValue::Enum {
+                ty: Some("TextDecoration".to_owned()),
+                variant: (*konst).to_owned(),
+            })
+        }
         // Structs, not enums: any other path is an unknown constant.
         [.., "Length", _] => Err(EvalError::NotConstant),
         // A bare variant needs a lowercase letter: `X`/`N` and SCREAMING consts are not variants.

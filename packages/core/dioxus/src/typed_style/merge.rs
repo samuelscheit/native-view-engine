@@ -44,17 +44,17 @@ impl BitOrAssign<u16> for StyleMask {
 /// Typed bitmask tracking which [`LayoutExt`] fields were set on a [`TypedStyle`].
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct LayoutExtMask(u16);
+pub(crate) struct LayoutExtMask(u32);
 
 impl LayoutExtMask {
     pub(crate) const EMPTY: Self = Self(0);
     #[inline]
-    pub(crate) const fn bits(self) -> u16 { self.0 }
+    pub(crate) const fn bits(self) -> u32 { self.0 }
 }
 
-impl BitOrAssign<u16> for LayoutExtMask {
+impl BitOrAssign<u32> for LayoutExtMask {
     #[inline]
-    fn bitor_assign(&mut self, rhs: u16) { self.0 |= rhs; }
+    fn bitor_assign(&mut self, rhs: u32) { self.0 |= rhs; }
 }
 
 // LayoutSnapshot field presence bits (`TypedStyle::layout_mask`).
@@ -102,23 +102,43 @@ pub(super) const S_VISUAL_BITS: u16 =
 pub(super) const S_TYPO_BITS: u16 = S_TEXT_COLOR | S_FONT_SIZE;
 
 // LayoutExt field presence bits (`TypedStyle::layout_ext_mask`).
-pub(super) const E_DISPLAY: u16 = 1 << 0;
-pub(super) const E_POSITION: u16 = 1 << 1;
-pub(super) const E_FLEX_BASIS: u16 = 1 << 2;
-pub(super) const E_INSET_TOP: u16 = 1 << 3;
-pub(super) const E_INSET_RIGHT: u16 = 1 << 4;
-pub(super) const E_INSET_BOTTOM: u16 = 1 << 5;
-pub(super) const E_INSET_LEFT: u16 = 1 << 6;
-pub(super) const E_ASPECT_RATIO: u16 = 1 << 7;
-pub(super) const E_DIRECTION: u16 = 1 << 8;
-pub(super) const E_PAD_INLINE: u16 = 1 << 9;
-pub(super) const E_MAR_INLINE: u16 = 1 << 10;
-pub(super) const E_GRID_COLS: u16 = 1 << 11;
-pub(super) const E_GRID_ROWS: u16 = 1 << 12;
-pub(super) const E_COL_GAP: u16 = 1 << 13;
-pub(super) const E_ROW_GAP: u16 = 1 << 14;
-pub(super) const E_GRID_ITEM: u16 = 1 << 15;
-pub(super) const E_ALL: u16 = u16::MAX;
+pub(super) const E_DISPLAY: u32 = 1 << 0;
+pub(super) const E_POSITION: u32 = 1 << 1;
+pub(super) const E_FLEX_BASIS: u32 = 1 << 2;
+pub(super) const E_INSET_TOP: u32 = 1 << 3;
+pub(super) const E_INSET_RIGHT: u32 = 1 << 4;
+pub(super) const E_INSET_BOTTOM: u32 = 1 << 5;
+pub(super) const E_INSET_LEFT: u32 = 1 << 6;
+pub(super) const E_ASPECT_RATIO: u32 = 1 << 7;
+pub(super) const E_DIRECTION: u32 = 1 << 8;
+pub(super) const E_PAD_INLINE_START: u32 = 1 << 9;
+pub(super) const E_PAD_INLINE_END: u32 = 1 << 10;
+pub(super) const E_MAR_INLINE_START: u32 = 1 << 11;
+pub(super) const E_MAR_INLINE_END: u32 = 1 << 12;
+pub(super) const E_GRID_COLS: u32 = 1 << 13;
+pub(super) const E_GRID_ROWS: u32 = 1 << 14;
+pub(super) const E_COL_GAP: u32 = 1 << 15;
+pub(super) const E_ROW_GAP: u32 = 1 << 16;
+pub(super) const E_GRID_COL_ITEM: u32 = 1 << 17;
+pub(super) const E_GRID_ROW_ITEM: u32 = 1 << 18;
+
+pub(super) const E_PAD_INLINE_ANY: u32 = E_PAD_INLINE_START | E_PAD_INLINE_END;
+pub(super) const E_MAR_INLINE_ANY: u32 = E_MAR_INLINE_START | E_MAR_INLINE_END;
+pub(super) const E_GRID_LAYOUT_ANY: u32 = E_GRID_COLS | E_GRID_ROWS;
+pub(super) const E_GRID_ITEM_ANY: u32 = E_GRID_COL_ITEM | E_GRID_ROW_ITEM;
+pub(super) const E_LAYOUT_TABLE_BITS: u32 = E_DISPLAY
+    | E_POSITION
+    | E_FLEX_BASIS
+    | E_INSET_TOP
+    | E_INSET_RIGHT
+    | E_INSET_BOTTOM
+    | E_INSET_LEFT
+    | E_ASPECT_RATIO
+    | E_DIRECTION
+    | E_PAD_INLINE_ANY
+    | E_MAR_INLINE_ANY
+    | E_COL_GAP
+    | E_ROW_GAP;
 
 // Overflow axis presence bits (`TypedStyle::overflow_axes`).
 pub(super) const OV_X: u8 = 1 << 0;
@@ -128,14 +148,16 @@ pub(super) const OV_BOTH: u8 = OV_X | OV_Y;
 impl TypedStyle {
     #[inline]
     pub(super) const fn any_layout(&self) -> bool {
-        !self.layout_mask.is_empty() || self.flex_wrap.is_some() || self.layout_ext.is_some()
+        !self.layout_mask.is_empty()
+            || self.flex_wrap.is_some()
+            || (self.layout_ext_mask.bits() & E_LAYOUT_TABLE_BITS) != 0
     }
 
     #[inline]
     pub(super) const fn any_visual(&self) -> bool {
         (self.style_mask.bits() & S_VISUAL_BITS) != 0
             || self.box_shadows.is_some()
-            || self.overflow.is_some()
+            || self.overflow_axes != 0
             || self.background_fill.is_some()
     }
 
@@ -150,28 +172,6 @@ impl TypedStyle {
             || self.white_space.is_some()
             || self.overflow_wrap.is_some()
             || self.text_decoration.is_some()
-    }
-
-    #[inline]
-    pub(super) const fn effective_overflow_axes(&self) -> u8 {
-        if self.overflow.is_none() {
-            0
-        } else if self.overflow_axes == 0 {
-            OV_BOTH
-        } else {
-            self.overflow_axes
-        }
-    }
-
-    #[inline]
-    pub(super) const fn effective_ext_mask(&self) -> u16 {
-        if self.layout_ext.is_none() {
-            0
-        } else if self.layout_ext_mask.bits() == 0 {
-            E_ALL
-        } else {
-            self.layout_ext_mask.bits()
-        }
     }
 
     /// Merges every property set on `other` on top of `self` (last-writer-wins per field).
@@ -229,22 +229,26 @@ impl TypedStyle {
         if let Some(ref v) = other.box_shadows { self.box_shadows = Some(v.clone()); }
 
         if let Some((ox, oy)) = other.overflow {
-            let other_axes = other.effective_overflow_axes();
-            let (mut cx, mut cy) = self
-                .overflow
-                .unwrap_or((nve_tables::tables::Overflow::Visible, nve_tables::tables::Overflow::Visible));
-            if other_axes & OV_X != 0 { cx = ox; }
-            if other_axes & OV_Y != 0 { cy = oy; }
-            self.overflow = Some((cx, cy));
-            self.overflow_axes = self.effective_overflow_axes() | other_axes;
+            let other_axes = other.overflow_axes;
+            if other_axes != 0 {
+                let (mut cx, mut cy) = self.overflow.unwrap_or((
+                    nve_tables::tables::Overflow::Visible,
+                    nve_tables::tables::Overflow::Visible,
+                ));
+                if other_axes & OV_X != 0 { cx = ox; }
+                if other_axes & OV_Y != 0 { cy = oy; }
+                self.overflow = Some((cx, cy));
+                self.overflow_axes |= other_axes;
+            }
         }
 
         if let Some(v) = other.object_fit { self.object_fit = Some(v); }
         if let Some(ref other_ext) = other.layout_ext {
-            let em = other.effective_ext_mask();
-            merge_layout_ext(self.ext_mut(), other_ext, em);
-            let combined = self.effective_ext_mask() | em;
-            self.layout_ext_mask = LayoutExtMask(combined);
+            let em = other.layout_ext_mask.bits();
+            if em != 0 {
+                merge_layout_ext(self.ext_mut(), other_ext, em);
+                self.layout_ext_mask |= em;
+            }
         }
         if let Some(v) = other.transform { self.transform = Some(v); }
         if let Some(ref v) = other.background_fill { self.background_fill = Some(v.clone()); }
@@ -276,7 +280,7 @@ impl TypedStyle {
     }
 }
 
-fn merge_layout_ext(dst: &mut LayoutExt, src: &LayoutExt, mask: u16) {
+fn merge_layout_ext(dst: &mut LayoutExt, src: &LayoutExt, mask: u32) {
     if mask & E_DISPLAY != 0 { dst.display = src.display; }
     if mask & E_POSITION != 0 { dst.position = src.position; }
     if mask & E_FLEX_BASIS != 0 { dst.flex_basis = src.flex_basis; }
@@ -286,22 +290,16 @@ fn merge_layout_ext(dst: &mut LayoutExt, src: &LayoutExt, mask: u16) {
     if mask & E_INSET_LEFT != 0 { dst.insets.left = src.insets.left; }
     if mask & E_ASPECT_RATIO != 0 { dst.aspect_ratio = src.aspect_ratio; }
     if mask & E_DIRECTION != 0 { dst.direction = src.direction; }
-    if mask & E_PAD_INLINE != 0 {
-        if src.padding_inline.start.is_some() { dst.padding_inline.start = src.padding_inline.start; }
-        if src.padding_inline.end.is_some() { dst.padding_inline.end = src.padding_inline.end; }
-    }
-    if mask & E_MAR_INLINE != 0 {
-        if src.margin_inline.start.is_some() { dst.margin_inline.start = src.margin_inline.start; }
-        if src.margin_inline.end.is_some() { dst.margin_inline.end = src.margin_inline.end; }
-    }
+    if mask & E_PAD_INLINE_START != 0 { dst.padding_inline.start = src.padding_inline.start; }
+    if mask & E_PAD_INLINE_END != 0 { dst.padding_inline.end = src.padding_inline.end; }
+    if mask & E_MAR_INLINE_START != 0 { dst.margin_inline.start = src.margin_inline.start; }
+    if mask & E_MAR_INLINE_END != 0 { dst.margin_inline.end = src.margin_inline.end; }
     if let Some(ref g) = src.grid {
         if mask & E_GRID_COLS != 0 { dst.grid_mut().template_columns = g.template_columns.clone(); }
         if mask & E_GRID_ROWS != 0 { dst.grid_mut().template_rows = g.template_rows.clone(); }
         if mask & E_COL_GAP != 0 { dst.grid_mut().column_gap = g.column_gap; }
         if mask & E_ROW_GAP != 0 { dst.grid_mut().row_gap = g.row_gap; }
     }
-    if mask & E_GRID_ITEM != 0 {
-        if !src.grid_item.column.is_auto() { dst.grid_item.column = src.grid_item.column; }
-        if !src.grid_item.row.is_auto() { dst.grid_item.row = src.grid_item.row; }
-    }
+    if mask & E_GRID_COL_ITEM != 0 { dst.grid_item.column = src.grid_item.column; }
+    if mask & E_GRID_ROW_ITEM != 0 { dst.grid_item.row = src.grid_item.row; }
 }

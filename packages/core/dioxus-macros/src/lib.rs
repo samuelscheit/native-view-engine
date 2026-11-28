@@ -16,9 +16,6 @@ use scanner::{is_native_tag, is_rust_keyword, templates_for_file, FileTemplates,
 /// Attribute name injected in debug builds and stripped by `NveMutationWriter::instantiate_template_node`.
 const NVE_TEMPLATE_ATTR: &str = "__nve_tpl";
 
-/// Maximum prefix path depth stored inline in `TemplateRootEntry`.
-const MAX_ANCHOR_PATH_LEN: usize = 8;
-
 /// NVE's `rsx!` proc macro.
 ///
 /// In debug builds (`#[cfg(debug_assertions)]` at the call site), injects static `"__nve_tpl"`
@@ -52,7 +49,7 @@ fn tag_if_resolvable(input: TokenStream, call_span: Span) -> Option<TokenStream>
     let mut path = Vec::with_capacity(8);
     Some(rewrite_rsx_children(
         &tokens,
-        file,
+        file.as_ref(),
         ordinal,
         &mut path,
         false,
@@ -237,9 +234,7 @@ fn rewrite_one_child(
                 *seen_dynamic = true;
             }
             path.push(my_idx);
-            let tag_value = (is_native
-                && (!parent_is_native || *seen_dynamic)
-                && path.len() <= MAX_ANCHOR_PATH_LEN)
+            let tag_value = (is_native && (!parent_is_native || *seen_dynamic))
                 .then(|| format_anchor_tag(&file.rel_file, ordinal, path));
             let body_tokens: Vec<TokenTree> = body_group.stream().into_iter().collect();
             let rewritten_body = rewrite_element_body(

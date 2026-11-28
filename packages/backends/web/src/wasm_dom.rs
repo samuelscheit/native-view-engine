@@ -434,8 +434,8 @@ fn set_or_remove_attr(el: &web_sys::Element, name: &str, value: &str) {
 }
 
 /// Applies `effect::COMPOSITE` properties (`opacity`, `z-index`, `transform`, `transform-origin`)
-/// directly via CSSOM `style.setProperty`/`removeProperty` so `inline_fallback`, plugin inline CSS
-/// (e.g. `backdrop-filter`), and `patch_css` are never clobbered on the 120 Hz fast lane.
+/// directly via CSSOM `style.setProperty`/`removeProperty` so `inline_fallback` and plugin inline
+/// CSS (e.g. `backdrop-filter`) are never clobbered on the 120 Hz fast lane.
 fn apply_compositor_properties_live(store: &NodeStore, id: NodeId, el: &web_sys::Element) {
     let style = if let Some(html_el) = el.dyn_ref::<web_sys::HtmlElement>() {
         html_el.style()

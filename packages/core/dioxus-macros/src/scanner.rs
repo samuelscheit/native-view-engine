@@ -3,7 +3,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::SystemTime;
 
 pub(crate) use crate::lexer::LineCol;
 use crate::lexer::{Lex, Tok};
@@ -38,21 +39,46 @@ impl FileTemplates {
     }
 }
 
-/// Returns the cached [`FileTemplates`] for `local_path` (normalized relative label from `raw_file`).
+struct CachedFile {
+    mtime: Option<SystemTime>,
+    len: u64,
+    templates: Arc<FileTemplates>,
+}
+
+/// Returns the cached [`FileTemplates`] for `local_path` (normalized relative label from `raw_file`),
+/// re-scanning whenever `(mtime, len)` changes so long-lived proc-macro servers (`rust-analyzer`)
+/// never observe stale ordinals and never leak memory via `Box::leak`.
 pub(crate) fn templates_for_file(
     local_path: &Path,
     raw_file: &str,
-) -> Option<&'static FileTemplates> {
-    static CACHE: OnceLock<Mutex<HashMap<PathBuf, &'static FileTemplates>>> = OnceLock::new();
+) -> Option<Arc<FileTemplates>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedFile>>> = OnceLock::new();
+    let meta = std::fs::metadata(local_path).ok()?;
+    let mtime = meta.modified().ok();
+    let len = meta.len();
+
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(&cached) = guard.get(local_path) {
-        return Some(cached);
+    {
+        let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = guard.get(local_path)
+            && entry.mtime == mtime
+            && entry.len == len
+        {
+            return Some(Arc::clone(&entry.templates));
+        }
     }
     let src = std::fs::read_to_string(local_path).ok()?;
     let rel_file = normalize_rel_file(local_path, raw_file);
-    let parsed = Box::leak(Box::new(scan_file(&src, rel_file)));
-    guard.insert(local_path.to_path_buf(), parsed);
+    let parsed = Arc::new(scan_file(&src, rel_file));
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    guard.insert(
+        local_path.to_path_buf(),
+        CachedFile {
+            mtime,
+            len,
+            templates: Arc::clone(&parsed),
+        },
+    );
     Some(parsed)
 }
 
@@ -289,6 +315,13 @@ impl FileScanner<'_> {
         let close = lex.close(open);
         let mut pos = open + 1;
         while pos < close {
+            // Attribute spread (`..expr,`): scan its expression for nested `rsx!` without counting as a child.
+            if pos + 1 < close && lex.is_punct(pos, b'.') && lex.is_punct(pos + 1, b'.') {
+                let val_end = value_span_end(lex, pos + 2, close);
+                self.scan_rust_range(pos + 2, val_end);
+                pos = val_end + usize::from(val_end < close && lex.is_punct(val_end, b','));
+                continue;
+            }
             if let Some((val_start, val_end, next)) = parse_rsx_attr(lex, pos, close) {
                 self.scan_rust_range(val_start, val_end);
                 pos = next;

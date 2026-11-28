@@ -2,25 +2,26 @@
 
 use std::sync::Arc;
 
-use nve_abi::{Dimension, FlexDirection};
+use nve_abi::Dimension;
 use nve_store::{Length, NodeId, Rgba, RowPatch, TempResources, Transaction};
-use nve_tables::interaction::{CursorKind, StateStyleRule};
+use nve_tables::interaction::StateStyleRule;
 use nve_tables::layout_ext::{LayoutDirection, PositionMode};
 use nve_tables::media::ResponsiveRule;
 use nve_tables::tables::{
-    AlignItems, AlignSelf, BackgroundFillRes, BoxShadows, Direction, Display, FlexWrap, GridItem,
-    GridLayout, GridTracks, Image, ImageFit, Interaction, JustifyContent, Layout, Overflow,
-    Position, Responsive, ResponsiveRules, StateRules, Transform, Typography, Visual,
+    BackgroundFillRes, BoxShadows, Direction, GridItem, GridLayout, GridTracks, Image, Interaction,
+    Layout, Position, Responsive, ResponsiveRules, StateRules, Transform, Typography, Visual,
 };
 
 use super::merge::{
-    E_ASPECT_RATIO, E_COL_GAP, E_DIRECTION, E_DISPLAY, E_FLEX_BASIS, E_INSET_BOTTOM, E_INSET_LEFT,
-    E_INSET_RIGHT, E_INSET_TOP, E_MAR_INLINE, E_PAD_INLINE, E_POSITION, E_ROW_GAP, L_ALIGN_ITEMS,
-    L_ALIGN_SELF, L_FLEX_DIR, L_FLEX_GROW, L_FLEX_SHRINK, L_GAP, L_HEIGHT, L_JUSTIFY, L_MAR_BOTTOM,
-    L_MAR_LEFT, L_MAR_RIGHT, L_MAR_TOP, L_MAX_HEIGHT, L_MAX_WIDTH, L_MIN_HEIGHT, L_MIN_WIDTH,
-    L_PAD_BOTTOM, L_PAD_LEFT, L_PAD_RIGHT, L_PAD_TOP, L_WIDTH, OV_X, OV_Y, S_BG, S_BORDER_COLOR,
-    S_BORDER_RADIUS, S_BORDER_WIDTH, S_FONT_SIZE, S_OPACITY, S_TEXT_COLOR, S_VISUAL_BITS,
-    S_Z_INDEX,
+    E_ASPECT_RATIO, E_COL_GAP, E_DIRECTION, E_DISPLAY, E_FLEX_BASIS, E_GRID_COLS, E_GRID_COL_ITEM,
+    E_GRID_ITEM_ANY, E_GRID_LAYOUT_ANY, E_GRID_ROWS, E_GRID_ROW_ITEM, E_INSET_BOTTOM, E_INSET_LEFT,
+    E_INSET_RIGHT, E_INSET_TOP, E_LAYOUT_TABLE_BITS, E_MAR_INLINE_ANY, E_MAR_INLINE_END,
+    E_MAR_INLINE_START, E_PAD_INLINE_ANY, E_PAD_INLINE_END, E_PAD_INLINE_START, E_POSITION,
+    E_ROW_GAP, L_ALIGN_ITEMS, L_ALIGN_SELF, L_FLEX_DIR, L_FLEX_GROW, L_FLEX_SHRINK, L_GAP,
+    L_HEIGHT, L_JUSTIFY, L_MAR_BOTTOM, L_MAR_LEFT, L_MAR_RIGHT, L_MAR_TOP, L_MAX_HEIGHT,
+    L_MAX_WIDTH, L_MIN_HEIGHT, L_MIN_WIDTH, L_PAD_BOTTOM, L_PAD_LEFT, L_PAD_RIGHT, L_PAD_TOP,
+    L_WIDTH, OV_X, OV_Y, S_BG, S_BORDER_COLOR, S_BORDER_RADIUS, S_BORDER_WIDTH, S_FONT_SIZE,
+    S_OPACITY, S_TEXT_COLOR, S_VISUAL_BITS, S_Z_INDEX,
 };
 use super::{pack_media_query, PendingStylePatch, TypedStyle};
 
@@ -28,14 +29,24 @@ impl TypedStyle {
     /// Writes only the `{Layout, Visual, Typography}` tables selected by `layers` into `node`
     /// without touching unselected style tables or unrelated tables (`Transform`, `Motion`, etc.).
     pub fn apply_style_layers_to_tx(&self, tx: &mut Transaction<'_>, node: NodeId, layers: u8) {
+        self.apply_style_layers_with_prev(None, tx, node, layers);
+    }
+
+    fn apply_style_layers_with_prev(
+        &self,
+        prev: Option<&TypedStyle>,
+        tx: &mut Transaction<'_>,
+        node: NodeId,
+        layers: u8,
+    ) {
         if layers & nve_tables::STYLE_LAYER_LAYOUT != 0 {
             self.apply_layout_layer(tx, node);
         }
         if layers & nve_tables::STYLE_LAYER_VISUAL != 0 {
-            self.apply_visual_layer(tx, node);
+            self.apply_visual_layer(prev, tx, node);
         }
         if layers & nve_tables::STYLE_LAYER_TYPOGRAPHY != 0 {
-            self.apply_typography_layer(tx, node);
+            self.apply_typography_layer(prev, tx, node);
         }
     }
 
@@ -73,8 +84,10 @@ impl TypedStyle {
             }
             let _ = row;
         }
-        if let Some(ref ext) = self.layout_ext {
-            let em = self.effective_ext_mask();
+        let em = self.layout_ext_mask.bits();
+        if (em & E_LAYOUT_TABLE_BITS) != 0
+            && let Some(ref ext) = self.layout_ext
+        {
             let mut row = tx.edit::<Layout>(node);
             if em & E_DISPLAY != 0 {
                 row = row.display(ext.display);
@@ -106,25 +119,29 @@ impl TypedStyle {
                     LayoutDirection::Rtl => Direction::Rtl,
                 });
             }
-            if em & E_PAD_INLINE != 0
-                && (ext.padding_inline.start.is_some() || ext.padding_inline.end.is_some())
-            {
+            if em & E_PAD_INLINE_ANY != 0 {
                 row = row.padding_inline_logical(true);
-                if let Some(v) = ext.padding_inline.start {
+                if em & E_PAD_INLINE_START != 0
+                    && let Some(v) = ext.padding_inline.start
+                {
                     row = row.padding_left(Length::points(v));
                 }
-                if let Some(v) = ext.padding_inline.end {
+                if em & E_PAD_INLINE_END != 0
+                    && let Some(v) = ext.padding_inline.end
+                {
                     row = row.padding_right(Length::points(v));
                 }
             }
-            if em & E_MAR_INLINE != 0
-                && (ext.margin_inline.start.is_some() || ext.margin_inline.end.is_some())
-            {
+            if em & E_MAR_INLINE_ANY != 0 {
                 row = row.margin_inline_logical(true);
-                if let Some(v) = ext.margin_inline.start {
+                if em & E_MAR_INLINE_START != 0
+                    && let Some(v) = ext.margin_inline.start
+                {
                     row = row.margin_left(Length::points(v));
                 }
-                if let Some(v) = ext.margin_inline.end {
+                if em & E_MAR_INLINE_END != 0
+                    && let Some(v) = ext.margin_inline.end
+                {
                     row = row.margin_right(Length::points(v));
                 }
             }
@@ -144,7 +161,12 @@ impl TypedStyle {
         }
     }
 
-    fn apply_visual_layer(&self, tx: &mut Transaction<'_>, node: NodeId) {
+    fn apply_visual_layer(
+        &self,
+        prev: Option<&TypedStyle>,
+        tx: &mut Transaction<'_>,
+        node: NodeId,
+    ) {
         let vm = self.style_mask.bits() & S_VISUAL_BITS;
         if vm != 0 {
             let s = &self.style;
@@ -157,24 +179,35 @@ impl TypedStyle {
             if vm & S_Z_INDEX != 0 { vis = vis.z_index(s.z_index); }
             let _ = vis;
         }
-        if let Some(ref shadows) = self.box_shadows {
+        if let Some(ref shadows) = self.box_shadows
+            && !prev.is_some_and(|p| p.box_shadows.as_ref() == Some(shadows))
+        {
             tx.edit::<Visual>(node)
                 .box_shadows((!shadows.is_empty()).then(|| BoxShadows(Arc::clone(shadows))));
         }
-        if let Some((ox, oy)) = self.overflow {
-            let axes = self.effective_overflow_axes();
+        let axes = self.overflow_axes;
+        if axes != 0
+            && let Some((ox, oy)) = self.overflow
+        {
             let mut vis = tx.edit::<Visual>(node);
             if axes & OV_X != 0 { vis = vis.overflow_x(ox); }
             if axes & OV_Y != 0 { vis = vis.overflow_y(oy); }
             let _ = vis;
         }
-        if let Some(ref fill) = self.background_fill {
+        if let Some(ref fill) = self.background_fill
+            && !prev.is_some_and(|p| p.background_fill.as_ref() == Some(fill))
+        {
             tx.edit::<Visual>(node)
                 .background_fill(Some(BackgroundFillRes(fill.clone())));
         }
     }
 
-    fn apply_typography_layer(&self, tx: &mut Transaction<'_>, node: NodeId) {
+    fn apply_typography_layer(
+        &self,
+        prev: Option<&TypedStyle>,
+        tx: &mut Transaction<'_>,
+        node: NodeId,
+    ) {
         if !self.any_typography() {
             return;
         }
@@ -186,7 +219,9 @@ impl TypedStyle {
         if sm & S_FONT_SIZE != 0 {
             typo = typo.font_size(self.style.font_size);
         }
-        if let Some(ref ff) = self.font_family {
+        if let Some(ref ff) = self.font_family
+            && !prev.is_some_and(|p| p.font_family.as_ref() == Some(ff))
+        {
             typo = typo.font_family(ff);
         }
         if let Some(lh) = self.line_height {
@@ -216,27 +251,65 @@ impl TypedStyle {
     /// Writes this [`TypedStyle`] directly into `node`'s `NodeStore` word tables with zero CSS
     /// string parsing.
     pub fn apply_to_tx(&self, tx: &mut Transaction<'_>, node: NodeId) {
-        self.apply_style_layers_to_tx(tx, node, nve_tables::STYLE_LAYER_ALL);
+        self.apply_to_tx_with_prev(None, tx, node);
+    }
 
+    /// Writes this [`TypedStyle`] into `node`, skipping heap-backed resource reallocations
+    /// (`GridTracks`, `BackgroundFill`, `StateRules`, `ResponsiveRules`) that are unchanged from
+    /// `prev`.
+    pub(crate) fn apply_to_tx_with_prev(
+        &self,
+        prev: Option<&TypedStyle>,
+        tx: &mut Transaction<'_>,
+        node: NodeId,
+    ) {
+        self.apply_style_layers_with_prev(prev, tx, node, nve_tables::STYLE_LAYER_ALL);
+
+        let em = self.layout_ext_mask.bits();
         if let Some(ref ext) = self.layout_ext {
-            if let Some(ref g) = ext.grid
-                && (!g.template_columns.is_empty() || !g.template_rows.is_empty())
+            if (em & E_GRID_LAYOUT_ANY) != 0
+                && let Some(ref g) = ext.grid
             {
-                let mut gl = tx.edit::<GridLayout>(node);
-                if !g.template_columns.is_empty() {
-                    gl = gl.template_columns(Some(GridTracks(g.template_columns.clone().into())));
+                let prev_grid = prev
+                    .and_then(|p| p.layout_ext.as_deref())
+                    .and_then(|e| e.grid.as_deref());
+                let prev_em = prev.map_or(0, |p| p.layout_ext_mask.bits());
+                let write_cols = (em & E_GRID_COLS) != 0
+                    && !((prev_em & E_GRID_COLS) != 0
+                        && prev_grid.is_some_and(|pg| pg.template_columns == g.template_columns));
+                let write_rows = (em & E_GRID_ROWS) != 0
+                    && !((prev_em & E_GRID_ROWS) != 0
+                        && prev_grid.is_some_and(|pg| pg.template_rows == g.template_rows));
+                if write_cols || write_rows {
+                    let mut gl = tx.edit::<GridLayout>(node);
+                    if write_cols {
+                        gl = gl.template_columns(
+                            (!g.template_columns.is_empty())
+                                .then(|| GridTracks(g.template_columns.clone().into())),
+                        );
+                    }
+                    if write_rows {
+                        gl = gl.template_rows(
+                            (!g.template_rows.is_empty())
+                                .then(|| GridTracks(g.template_rows.clone().into())),
+                        );
+                    }
+                    let _ = gl;
                 }
-                if !g.template_rows.is_empty() {
-                    gl = gl.template_rows(Some(GridTracks(g.template_rows.clone().into())));
-                }
-                let _ = gl;
             }
-            if !ext.grid_item.column.is_auto() || !ext.grid_item.row.is_auto() {
-                tx.edit::<GridItem>(node)
-                    .column_start(ext.grid_item.column.start)
-                    .column_end(ext.grid_item.column.end)
-                    .row_start(ext.grid_item.row.start)
-                    .row_end(ext.grid_item.row.end);
+            if (em & E_GRID_ITEM_ANY) != 0 {
+                let mut gi = tx.edit::<GridItem>(node);
+                if em & E_GRID_COL_ITEM != 0 {
+                    gi = gi
+                        .column_start(ext.grid_item.column.start)
+                        .column_end(ext.grid_item.column.end);
+                }
+                if em & E_GRID_ROW_ITEM != 0 {
+                    gi = gi
+                        .row_start(ext.grid_item.row.start)
+                        .row_end(ext.grid_item.row.end);
+                }
+                let _ = gi;
             }
         }
 
@@ -259,7 +332,9 @@ impl TypedStyle {
             if let Some(c) = self.cursor {
                 tx.edit::<Interaction>(node).cursor(c);
             }
-            if !self.state_rules.is_empty() {
+            if !self.state_rules.is_empty()
+                && !prev.is_some_and(|p| p.state_rules == self.state_rules)
+            {
                 if self.state_rules.iter().any(|r| r.patch.has_pending_resources()) {
                     tx.with_temp_resources(|scope| {
                         let rules: Arc<[StateStyleRule]> = self
@@ -291,7 +366,9 @@ impl TypedStyle {
                     .show_on_widths(w)
                     .show_on_env(env);
             }
-            if !self.responsive.is_empty() {
+            if !self.responsive.is_empty()
+                && !prev.is_some_and(|p| p.responsive == self.responsive)
+            {
                 if self.responsive.iter().any(|r| r.patch.has_pending_resources()) {
                     tx.with_temp_resources(|scope| {
                         let rules: Arc<[ResponsiveRule]> = self
@@ -315,187 +392,6 @@ impl TypedStyle {
                 }
             }
         }
-    }
-
-    /// Resets fields/tables that were written by `self` but are no longer set in `next` (or all
-    /// of them when `next` is `None`).
-    pub fn clear_diff_from(
-        &self,
-        next: Option<&TypedStyle>,
-        tx: &mut Transaction<'_>,
-        node: NodeId,
-    ) {
-        self.clear_layout_diff(next, tx, node);
-        self.clear_visual_diff(next, tx, node);
-        self.clear_typography_diff(next, tx, node);
-
-        if self.object_fit.is_some()
-            && next.is_none_or(|n| n.object_fit.is_none())
-            && tx.store().has::<Image>(node)
-        {
-            tx.edit::<Image>(node).fit(ImageFit::Cover);
-        }
-        if self.transform.is_some() && next.is_none_or(|n| n.transform.is_none()) {
-            tx.detach::<Transform>(node);
-        }
-        if self.cursor.is_some()
-            && next.is_none_or(|n| n.cursor.is_none())
-            && tx.store().has::<Interaction>(node)
-        {
-            tx.edit::<Interaction>(node).cursor(CursorKind::Auto);
-        }
-        if !self.state_rules.is_empty()
-            && next.is_none_or(|n| n.state_rules.is_empty())
-            && tx.store().has::<Interaction>(node)
-        {
-            tx.edit::<Interaction>(node).state_rules(None);
-        }
-        if self.show_on.is_some()
-            && next.is_none_or(|n| n.show_on.is_none())
-            && tx.store().has::<Responsive>(node)
-        {
-            tx.edit::<Responsive>(node)
-                .show_on_widths(0)
-                .show_on_env(0);
-        }
-        if !self.responsive.is_empty()
-            && next.is_none_or(|n| n.responsive.is_empty())
-            && tx.store().has::<Responsive>(node)
-        {
-            tx.edit::<Responsive>(node).rules(None);
-        }
-    }
-
-    fn clear_layout_diff(&self, next: Option<&TypedStyle>, tx: &mut Transaction<'_>, node: NodeId) {
-        if self.layout_ext.is_some() && next.is_none_or(|n| n.layout_ext.is_none()) {
-            tx.detach::<GridLayout>(node);
-            tx.detach::<GridItem>(node);
-        }
-        if self.any_layout() && next.is_none_or(|n| !n.any_layout()) {
-            tx.detach::<Layout>(node);
-            return;
-        }
-        let Some(next) = next else { return };
-        let dropped = self.layout_mask.bits() & !next.layout_mask.bits();
-        let dropped_wrap = self.flex_wrap.is_some() && next.flex_wrap.is_none();
-        let dropped_ext = self.effective_ext_mask() & !next.effective_ext_mask();
-        if dropped == 0 && !dropped_wrap && dropped_ext == 0 {
-            return;
-        }
-        let mut row = tx.edit::<Layout>(node);
-        if dropped & L_WIDTH != 0 { row = row.width(Length::AUTO); }
-        if dropped & L_HEIGHT != 0 { row = row.height(Length::AUTO); }
-        if dropped & L_MIN_WIDTH != 0 { row = row.min_width(Length::AUTO); }
-        if dropped & L_MIN_HEIGHT != 0 { row = row.min_height(Length::AUTO); }
-        if dropped & L_MAX_WIDTH != 0 { row = row.max_width(Length::AUTO); }
-        if dropped & L_MAX_HEIGHT != 0 { row = row.max_height(Length::AUTO); }
-        if dropped & L_FLEX_DIR != 0 { row = row.flex_direction(FlexDirection::Column); }
-        if dropped & L_JUSTIFY != 0 { row = row.justify_content(JustifyContent::FlexStart); }
-        if dropped & L_ALIGN_ITEMS != 0 { row = row.align_items(AlignItems::Stretch); }
-        if dropped & L_ALIGN_SELF != 0 { row = row.align_self(AlignSelf::Auto); }
-        if dropped & L_FLEX_GROW != 0 { row = row.flex_grow(0.0); }
-        if dropped & L_FLEX_SHRINK != 0 { row = row.flex_shrink(1.0); }
-        if dropped & L_GAP != 0 { row = row.row_gap(Length::ZERO).column_gap(Length::ZERO); }
-        if dropped & L_PAD_TOP != 0 { row = row.padding_top(Length::ZERO); }
-        if dropped & L_PAD_RIGHT != 0 { row = row.padding_right(Length::ZERO); }
-        if dropped & L_PAD_BOTTOM != 0 { row = row.padding_bottom(Length::ZERO); }
-        if dropped & L_PAD_LEFT != 0 { row = row.padding_left(Length::ZERO); }
-        if dropped & L_MAR_TOP != 0 { row = row.margin_top(Length::ZERO); }
-        if dropped & L_MAR_RIGHT != 0 { row = row.margin_right(Length::ZERO); }
-        if dropped & L_MAR_BOTTOM != 0 { row = row.margin_bottom(Length::ZERO); }
-        if dropped & L_MAR_LEFT != 0 { row = row.margin_left(Length::ZERO); }
-        if dropped_wrap { row = row.flex_wrap(FlexWrap::NoWrap); }
-        if dropped_ext & E_DISPLAY != 0 { row = row.display(Display::Flex); }
-        if dropped_ext & E_POSITION != 0 { row = row.position(Position::Relative); }
-        if dropped_ext & E_FLEX_BASIS != 0 { row = row.flex_basis(Length::AUTO); }
-        if dropped_ext & E_INSET_TOP != 0 { row = row.inset_top(Length::AUTO); }
-        if dropped_ext & E_INSET_RIGHT != 0 { row = row.inset_right(Length::AUTO); }
-        if dropped_ext & E_INSET_BOTTOM != 0 { row = row.inset_bottom(Length::AUTO); }
-        if dropped_ext & E_INSET_LEFT != 0 { row = row.inset_left(Length::AUTO); }
-        if dropped_ext & E_ASPECT_RATIO != 0 { row = row.aspect_ratio(None); }
-        if dropped_ext & E_DIRECTION != 0 { row = row.direction(Direction::Inherit); }
-        if dropped_ext & E_PAD_INLINE != 0 { row = row.padding_inline_logical(false); }
-        if dropped_ext & E_MAR_INLINE != 0 { row = row.margin_inline_logical(false); }
-        let _ = row;
-    }
-
-    fn clear_visual_diff(&self, next: Option<&TypedStyle>, tx: &mut Transaction<'_>, node: NodeId) {
-        if self.any_visual() && next.is_none_or(|n| !n.any_visual()) {
-            tx.detach::<Visual>(node);
-            return;
-        }
-        let Some(next) = next else { return };
-        if !tx.store().has::<Visual>(node) {
-            return;
-        }
-        let dropped =
-            (self.style_mask.bits() & S_VISUAL_BITS) & !(next.style_mask.bits() & S_VISUAL_BITS);
-        let dropped_ov = self.effective_overflow_axes() & !next.effective_overflow_axes();
-        let drop_shadows = self.box_shadows.is_some() && next.box_shadows.is_none();
-        let drop_fill = self.background_fill.is_some() && next.background_fill.is_none();
-        if dropped == 0 && dropped_ov == 0 && !drop_shadows && !drop_fill {
-            return;
-        }
-        let mut vis = tx.edit::<Visual>(node);
-        if dropped & S_BG != 0 { vis = vis.background(Rgba::TRANSPARENT); }
-        if dropped & S_BORDER_COLOR != 0 { vis = vis.border_color(Rgba::TRANSPARENT); }
-        if dropped & S_BORDER_WIDTH != 0 { vis = vis.border_width(0.0); }
-        if dropped & S_BORDER_RADIUS != 0 { vis = vis.border_radius(0.0); }
-        if dropped & S_OPACITY != 0 { vis = vis.opacity(1.0); }
-        if dropped & S_Z_INDEX != 0 { vis = vis.z_index(0); }
-        if dropped_ov & OV_X != 0 { vis = vis.overflow_x(Overflow::Visible); }
-        if dropped_ov & OV_Y != 0 { vis = vis.overflow_y(Overflow::Visible); }
-        if drop_shadows { vis = vis.box_shadows(None); }
-        if drop_fill { vis = vis.background_fill(None); }
-        let _ = vis;
-    }
-
-    fn clear_typography_diff(
-        &self,
-        next: Option<&TypedStyle>,
-        tx: &mut Transaction<'_>,
-        node: NodeId,
-    ) {
-        if self.any_typography() && next.is_none_or(|n| !n.any_typography()) {
-            tx.detach::<Typography>(node);
-            return;
-        }
-        let Some(next) = next else { return };
-        if !tx.store().has::<Typography>(node) {
-            return;
-        }
-        let mut typo = tx.edit::<Typography>(node);
-        if self.style_mask.bits() & S_TEXT_COLOR != 0 && next.style_mask.bits() & S_TEXT_COLOR == 0 {
-            typo = typo.clear_color();
-        }
-        if self.style_mask.bits() & S_FONT_SIZE != 0 && next.style_mask.bits() & S_FONT_SIZE == 0 {
-            typo = typo.clear_font_size();
-        }
-        if self.font_family.is_some() && next.font_family.is_none() {
-            typo = typo.clear_font_family();
-        }
-        if self.line_height.is_some() && next.line_height.is_none() {
-            typo = typo.clear_line_height();
-        }
-        if self.font_weight.is_some() && next.font_weight.is_none() {
-            typo = typo.clear_font_weight();
-        }
-        if self.font_style.is_some() && next.font_style.is_none() {
-            typo = typo.clear_font_style();
-        }
-        if self.text_align.is_some() && next.text_align.is_none() {
-            typo = typo.clear_text_align();
-        }
-        if self.white_space.is_some() && next.white_space.is_none() {
-            typo = typo.clear_white_space();
-        }
-        if self.overflow_wrap.is_some() && next.overflow_wrap.is_none() {
-            typo = typo.clear_overflow_wrap();
-        }
-        if self.text_decoration.is_some() && next.text_decoration.is_none() {
-            typo = typo.clear_text_decoration();
-        }
-        let _ = typo;
     }
 }
 

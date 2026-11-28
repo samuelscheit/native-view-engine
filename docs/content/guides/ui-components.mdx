@@ -1,6 +1,6 @@
 ---
 title: "UI Components (nve-ui)"
-description: "15 accessible, themeable, zero-external-CSS Dioxus UI components, OKLCH Theme tokens, zero-alloc StyleBuf, FocusTrap/RovingFocus, and 100k-row Fenwick VirtualList."
+description: "15 accessible, themeable, zero-external-CSS Dioxus UI components, OKLCH Theme tokens, zero-string-parse TypedStyle, FocusTrap/RovingFocus, and 100k-row Fenwick VirtualList."
 badge: "15"
 order: 2
 ---
@@ -70,9 +70,9 @@ pub fn SettingsCard() -> Element {
 }
 ```
 
-## Zero-Allocation `StyleBuf`
+## Zero-String-Parse `TypedStyle`
 
-Formatting inline styles with `format!(...)` on every render allocates short-lived heap `String`s. `nve-ui::StyleBuf` (`packages/framework/ui/src/style_buf.rs`) builds style strings in a single pre-sized buffer (`SurfaceStyle`, `TextStyle`) with zero intermediate allocations and deterministic key ordering — maximizing structural CSS cache hits on Web and minimizing string churn on native backends.
+Formatting inline CSS strings on every render wastes CPU and heap allocations. Every `nve-ui` component writes directly into `NodeStore` word tables via `nve_style: TypedStyle` and `SurfaceStyleExt` (`packages/framework/ui/src/surface.rs`, `TypedSurfaceStyle` / `TypedTextStyle`) with field-granular `merge_opt` override composition — zero runtime CSS parsing and zero steady-state heap allocations.
 
 ## Keyboard Accessibility: `FocusTrap` & `RovingFocus`
 

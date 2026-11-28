@@ -20,12 +20,17 @@ pub fn Card{i}(mut count: Signal<i32>, label: String) -> Element {{
         view {{
             test_id: "card-{i}",
             padding: 8.0,
-            gap: Length::points(4.0),
-            width: Length::percent(100.0),
-            background_color: Rgba::rgb(15, 23, 42),
-            flex_direction: FlexDirection::Row,
             opacity: 0.9,
-            text {{ font_size: 14.0, color: Rgba::new(248, 250, 252, 255), "Card title {i}" }}
+            nve_style: TypedStyle::new()
+                .gap(4.0)
+                .width_pct(100.0)
+                .bg(ColorRgba::rgb(15, 23, 42))
+                .flex_direction(FlexDirection::Row),
+            text {{
+                font_size: 14.0,
+                nve_style: TypedStyle::new().color(ColorRgba::rgba(248, 250, 252, 255)),
+                "Card title {i}"
+            }}
             if total > 3 {{
                 text {{ "Many items" }}
             }}
@@ -36,7 +41,7 @@ pub fn Card{i}(mut count: Signal<i32>, label: String) -> Element {{
                 test_id: "card-{i}-cta",
                 onpress: move |_| count += 1,
                 border_radius: 6.0,
-                cursor: CursorKind::Pointer,
+                nve_style: TypedStyle::new().cursor(CursorKind::Pointer),
                 "Press {i}"
             }}
         }}

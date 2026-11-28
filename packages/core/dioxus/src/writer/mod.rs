@@ -14,7 +14,9 @@ mod style_tests;
 #[cfg(test)]
 mod tests;
 
-use dioxus_core::{ElementId, TemplateAttribute, TemplateNode};
+use std::rc::Rc;
+
+use dioxus_core::{AnyValue, ElementId, TemplateAttribute, TemplateNode};
 use nve_abi::SurfaceId;
 use nve_tables::interaction::CursorKind;
 use nve_tables::tables::{
@@ -32,6 +34,40 @@ use standalone_style::{
     TableAttrList,
 };
 
+/// Compact 16-byte handle retaining Dioxus's `Rc<dyn AnyValue>` for a [`TypedStyle`] attribute so
+/// updates avoid deep-cloning heap-backed fields (`Box<LayoutExt>`, rule `Vec`s) and can O(1)
+/// short-circuit via `Rc::ptr_eq`.
+pub(crate) struct StoredTypedStyle(Rc<dyn AnyValue>);
+
+impl StoredTypedStyle {
+    #[inline]
+    pub(crate) fn from_rc(rc: &Rc<dyn AnyValue>) -> Self {
+        Self(Rc::clone(rc))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_style(style: TypedStyle) -> Self {
+        Self(Rc::new(style))
+    }
+
+    #[inline]
+    pub(crate) fn ptr_eq(&self, other: &Rc<dyn AnyValue>) -> bool {
+        Rc::ptr_eq(&self.0, other)
+    }
+
+    #[inline]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "StoredTypedStyle only wraps a validated TypedStyle AnyValue"
+    )]
+    pub(crate) fn as_style(&self) -> &TypedStyle {
+        self.0
+            .as_any()
+            .downcast_ref::<TypedStyle>()
+            .expect("StoredTypedStyle always contains TypedStyle")
+    }
+}
+
 /// Bridges Dioxus 0.7 `WriteMutations` straight into a single-owner [`NodeStore`].
 pub struct NveMutationWriter {
     pub(crate) surface_id: SurfaceId,
@@ -47,8 +83,11 @@ pub struct NveMutationWriter {
     /// Tracks active [`crate::TableAttr`] writers per `(node, attr_name)` so multiple table attrs
     /// can coexist on one node and `AttributeValue::None` / replacement can call `clear_from`.
     pub(crate) attached_tables: NodeSlotTable<TableAttrList>,
-    /// Tracks active [`TypedStyle`] so updates diff cleanly and standalone numeric attrs restore.
-    pub(crate) typed_styles: NodeSlotTable<TypedStyle>,
+    /// Tracks active [`TypedStyle`] by `Rc` so updates diff cleanly with zero deep clones.
+    pub(crate) typed_styles: NodeSlotTable<StoredTypedStyle>,
+    /// Tracks nodes whose static RSX tag (`pressable`/`button`/`a`) defaults to `CursorKind::Pointer`
+    /// so clearing an overriding `TypedStyle::cursor` restores the tag default instead of `Auto`.
+    pub(crate) default_pointer_nodes: NodeSlotTable<()>,
     /// Tracks numeric standalone style attributes (`width`, `padding`, `opacity`, `z-index`, ...).
     pub(crate) standalone_style_attrs: NodeSlotTable<StandaloneStyleList>,
     /// Recycled style/table lists of removed nodes.
@@ -76,6 +115,7 @@ impl NveMutationWriter {
             incoming_scratch: Vec::with_capacity(32),
             attached_tables: NodeSlotTable::new(),
             typed_styles: NodeSlotTable::new(),
+            default_pointer_nodes: NodeSlotTable::new(),
             standalone_style_attrs: NodeSlotTable::new(),
             buffer_pool: BufferPool::default(),
             aux_event_flags: Vec::new(),
@@ -130,6 +170,7 @@ impl NveMutationWriter {
         self.attached_tables
             .reset_with(|list| pool.recycle_table_list(list));
         self.typed_styles.reset();
+        self.default_pointer_nodes.reset();
         self.standalone_style_attrs
             .reset_with(|list| pool.recycle_list(list));
         self.aux_event_flags = Vec::new();
@@ -155,6 +196,7 @@ impl NveMutationWriter {
             incoming_scratch,
             attached_tables,
             typed_styles,
+            default_pointer_nodes,
             standalone_style_attrs,
             buffer_pool,
             aux_event_flags,
@@ -174,6 +216,7 @@ impl NveMutationWriter {
                 incoming_scratch,
                 attached_tables,
                 typed_styles,
+                default_pointer_nodes,
                 standalone_style_attrs,
                 buffer_pool,
                 aux_event_flags,
@@ -202,7 +245,8 @@ pub struct StoreMutationTx<'s, 'a> {
     pub(crate) child_scratch: &'a mut Vec<NodeId>,
     pub(crate) incoming_scratch: &'a mut Vec<NodeId>,
     pub(crate) attached_tables: &'a mut NodeSlotTable<TableAttrList>,
-    pub(crate) typed_styles: &'a mut NodeSlotTable<TypedStyle>,
+    pub(crate) typed_styles: &'a mut NodeSlotTable<StoredTypedStyle>,
+    pub(crate) default_pointer_nodes: &'a mut NodeSlotTable<()>,
     pub(crate) standalone_style_attrs: &'a mut NodeSlotTable<StandaloneStyleList>,
     pub(crate) buffer_pool: &'a mut BufferPool,
     pub(crate) aux_event_flags: &'a mut Vec<u8>,
@@ -333,9 +377,20 @@ impl StoreMutationTx<'_, '_> {
             self.tx.detach::<tables::Typography>(node);
         }
         if let Some(ts) = self.typed_styles.get(node) {
-            ts.apply_style_layers_to_tx(self.tx, node, layers);
+            ts.as_style().apply_style_layers_to_tx(self.tx, node, layers);
         }
         self.replay_standalone_styles(node, layers);
+    }
+
+    /// Restores the tag's default pointer cursor (`pressable`/`button`/`a`) after a `TypedStyle`
+    /// update or clear dropped an explicit cursor override.
+    #[inline]
+    pub(crate) fn restore_tag_default_cursor(&mut self, node: NodeId) {
+        if self.default_pointer_nodes.get(node).is_some()
+            && self.tx.store().has::<Interaction>(node)
+        {
+            self.tx.edit::<Interaction>(node).cursor(CursorKind::Pointer);
+        }
     }
 
     /// Attaches initial core word tables for a static RSX tag name (zero `ComponentKind`).
@@ -364,12 +419,14 @@ impl StoreMutationTx<'_, '_> {
                 self.tx
                     .edit::<tables::Accessibility>(node)
                     .role(Some(AriaRole::Button));
+                self.default_pointer_nodes.insert(node, ());
             }
             "a" => {
                 let _ = self.tx.edit::<Link>(node);
                 self.tx
                     .edit::<Interaction>(node)
                     .cursor(CursorKind::Pointer);
+                self.default_pointer_nodes.insert(node, ());
             }
             _ => {}
         }
@@ -449,6 +506,7 @@ impl StoreMutationTx<'_, '_> {
                 self.buffer_pool.recycle_table_list(list);
             }
             self.typed_styles.remove(nid);
+            self.default_pointer_nodes.remove(nid);
             if let Some(list) = self.standalone_style_attrs.remove(nid) {
                 self.buffer_pool.recycle_list(list);
             }

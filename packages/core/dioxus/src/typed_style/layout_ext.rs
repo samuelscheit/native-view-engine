@@ -9,9 +9,10 @@ use nve_tables::tables::Display;
 use nve_tables::transform::Transform2D;
 
 use super::merge::{
-    E_ASPECT_RATIO, E_COL_GAP, E_DIRECTION, E_DISPLAY, E_FLEX_BASIS, E_GRID_COLS, E_GRID_ITEM,
-    E_GRID_ROWS, E_INSET_BOTTOM, E_INSET_LEFT, E_INSET_RIGHT, E_INSET_TOP, E_MAR_INLINE,
-    E_PAD_INLINE, E_POSITION, E_ROW_GAP,
+    E_ASPECT_RATIO, E_COL_GAP, E_DIRECTION, E_DISPLAY, E_FLEX_BASIS, E_GRID_COLS, E_GRID_COL_ITEM,
+    E_GRID_ROWS, E_GRID_ROW_ITEM, E_INSET_BOTTOM, E_INSET_LEFT, E_INSET_RIGHT, E_INSET_TOP,
+    E_MAR_INLINE_END, E_MAR_INLINE_START, E_PAD_INLINE_END, E_PAD_INLINE_START, E_POSITION,
+    E_ROW_GAP,
 };
 use super::TypedStyle;
 
@@ -161,14 +162,14 @@ impl TypedStyle {
     #[inline]
     pub fn grid_column(mut self, placement: GridTrackPlacement) -> Self {
         self.ext_mut().grid_item.column = placement;
-        self.layout_ext_mask |= E_GRID_ITEM;
+        self.layout_ext_mask |= E_GRID_COL_ITEM;
         self
     }
 
     #[inline]
     pub fn grid_row(mut self, placement: GridTrackPlacement) -> Self {
         self.ext_mut().grid_item.row = placement;
-        self.layout_ext_mask |= E_GRID_ITEM;
+        self.layout_ext_mask |= E_GRID_ROW_ITEM;
         self
     }
 
@@ -204,28 +205,28 @@ impl TypedStyle {
     #[inline]
     pub fn padding_inline_start(mut self, v: f32) -> Self {
         self.ext_mut().padding_inline.start = Some(Self::sanitize(v).max(0.0));
-        self.layout_ext_mask |= E_PAD_INLINE;
+        self.layout_ext_mask |= E_PAD_INLINE_START;
         self
     }
 
     #[inline]
     pub fn padding_inline_end(mut self, v: f32) -> Self {
         self.ext_mut().padding_inline.end = Some(Self::sanitize(v).max(0.0));
-        self.layout_ext_mask |= E_PAD_INLINE;
+        self.layout_ext_mask |= E_PAD_INLINE_END;
         self
     }
 
     #[inline]
     pub fn margin_inline_start(mut self, v: f32) -> Self {
         self.ext_mut().margin_inline.start = Some(Self::sanitize(v));
-        self.layout_ext_mask |= E_MAR_INLINE;
+        self.layout_ext_mask |= E_MAR_INLINE_START;
         self
     }
 
     #[inline]
     pub fn margin_inline_end(mut self, v: f32) -> Self {
         self.ext_mut().margin_inline.end = Some(Self::sanitize(v));
-        self.layout_ext_mask |= E_MAR_INLINE;
+        self.layout_ext_mask |= E_MAR_INLINE_END;
         self
     }
 

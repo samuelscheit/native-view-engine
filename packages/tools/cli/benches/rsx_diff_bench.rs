@@ -139,8 +139,8 @@ fn scenarios() -> Vec<Scenario> {
             replace_last(
                 &replace_last(
                     &replace_last(&big, "FlexDirection::Row", "FlexDirection::Column"),
-                    "Rgba::rgb(15, 23, 42)",
-                    "Rgba::rgb(15, 23, 204)",
+                    "ColorRgba::rgb(15, 23, 42)",
+                    "ColorRgba::rgb(15, 23, 204)",
                 ),
                 "\"Press ",
                 "\"Tap ",

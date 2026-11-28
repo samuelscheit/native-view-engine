@@ -63,7 +63,7 @@ fn typed_style_surface_and_merge_preserve_unset_base_fields() {
     assert_eq!(merged.layout().padding, EdgeInsets::all(20.0));
     assert_eq!(merged.style().border_radius, 22.0);
     assert_eq!(merged.style().background, ColorRgba::rgb(0x1e, 0x29, 0x3b));
-    assert_eq!(merged.overflow, Some((Overflow::Auto, Overflow::Hidden)));
+    assert_eq!(merged.overflow_value(), Some((Overflow::Auto, Overflow::Hidden)));
     assert_eq!(merged.flex_wrap, Some(FlexWrap::Wrap));
     assert_eq!(merged.font_family.as_deref(), Some("monospace"));
     assert_eq!(merged.line_height, Some(Length::percent(150.0)));

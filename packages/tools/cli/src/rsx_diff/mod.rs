@@ -21,6 +21,7 @@ mod matcher;
 mod parser;
 pub(crate) mod patch;
 mod strings;
+mod typed_style_chain;
 mod value_lower;
 
 #[cfg(test)]

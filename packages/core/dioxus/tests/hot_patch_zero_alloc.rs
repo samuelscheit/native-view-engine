@@ -1,56 +1,22 @@
 //! Zero-allocation `CountingAlloc` integration tests for Tier-1 binary `RowPatch` hot reload:
+//! - Uses thread-local `support/counting_alloc.rs` with positive + isolation probes.
 //! - Patches an un-tagged (`test_id: None`) `rsx!` element via `(template_key, node_path)` with
-//!   0 heap allocations, leaving identical sibling nodes untouched.
+//!   0 heap allocations on BOTH `apply_hot_patch_now` AND the queued `apply_hot_patch` path,
+//!   leaving identical sibling nodes untouched.
 //! - Patches every live instance of a `for`-loop template AND a sibling following the `for` loop
 //!   with 0 heap allocations, including after loop shrinkage / node eviction.
+//! - Verifies depth > 8 anchors after a dynamic `for` sibling resolve to the exact target node
+//!   (no silent wrong-node patching when nesting exceeds 8 levels).
 
-use std::alloc::{GlobalAlloc, Layout as AllocLayout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+#[path = "support/counting_alloc.rs"]
+mod counting_alloc;
 
+use counting_alloc::count_allocs;
 use nve_abi::{FrameId, SurfaceId};
 use nve_dioxus::prelude::*;
 use nve_engine::{hot_patch_template_key, HotPatchMsg};
 use nve_store::{FlatResource, Length, NodeId, NodeStore, Rgba, RowPatch};
 use nve_tables::tables::{Layout, TextContent, Visual};
-
-struct CountingAlloc;
-
-static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
-static ALLOC_BYTES: AtomicUsize = AtomicUsize::new(0);
-
-// SAFETY: Delegates directly to `std::alloc::System` while incrementing atomic counters.
-unsafe impl GlobalAlloc for CountingAlloc {
-    unsafe fn alloc(&self, layout: AllocLayout) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-        ALLOC_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
-        // SAFETY: Caller upholds `GlobalAlloc::alloc` preconditions; delegated to `System`.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: AllocLayout) {
-        // SAFETY: Caller upholds `GlobalAlloc::dealloc` preconditions; delegated to `System`.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, layout: AllocLayout, new_size: usize) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-        ALLOC_BYTES.fetch_add(new_size, Ordering::Relaxed);
-        // SAFETY: Caller upholds `GlobalAlloc::realloc` preconditions; delegated to `System`.
-        unsafe { System.realloc(ptr, layout, new_size) }
-    }
-}
-
-#[global_allocator]
-static GLOBAL: CountingAlloc = CountingAlloc;
-
-fn measure_allocs<R>(f: impl FnOnce() -> R) -> (R, usize, usize) {
-    let c0 = ALLOC_COUNT.load(Ordering::SeqCst);
-    let b0 = ALLOC_BYTES.load(Ordering::SeqCst);
-    let out = f();
-    let dc = ALLOC_COUNT.load(Ordering::SeqCst) - c0;
-    let db = ALLOC_BYTES.load(Ordering::SeqCst) - b0;
-    (out, dc, db)
-}
 
 fn encode_patch(rp: &RowPatch) -> Vec<u32> {
     let mut words = Vec::new();
@@ -104,6 +70,42 @@ fn loop_and_after_app() -> Element {
     }
 }
 
+// Template ordinal 3: outer `rsx!` with 10 levels of nesting + a dynamic `for` loop at depth 9
+// followed by a sibling at depth 10 (exceeding the 8-element inline anchor buffer).
+// Template ordinal 4: inner `for`-loop body.
+fn deep_anchor_app() -> Element {
+    rsx! {
+        view { // [0]
+            view { // [0, 0]
+                view { // [0, 0, 0]
+                    view { // [0, 0, 0, 0]
+                        view { // [0, 0, 0, 0, 0]
+                            view { // [0, 0, 0, 0, 0, 0]
+                                view { // [0, 0, 0, 0, 0, 0, 0]
+                                    view { // [0, 0, 0, 0, 0, 0, 0, 0]
+                                        view { // [0, 0, 0, 0, 0, 0, 0, 0, 0] (depth 9)
+                                            for i in 0..3 {
+                                                view { key: "{i}", padding: 2.0, text { "Dyn {i}" } }
+                                            }
+                                            // Path in template: [0,0,0,0,0,0,0,0,0,1] (depth 10!)
+                                            // Live child index in parent is 3 (after 3 loop items),
+                                            // so without an anchor stamp walking [..., 1] would hit Dyn 1!
+                                            view {
+                                                padding: 5.0,
+                                                text { "Deep Target" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn first_text_in(store: &NodeStore, root: NodeId) -> Option<String> {
     let mut stack = vec![root];
     while let Some(id) = stack.pop() {
@@ -120,7 +122,15 @@ fn first_text_in(store: &NodeStore, root: NodeId) -> Option<String> {
 }
 
 #[test]
-fn hot_patch_untagged_element_and_for_loop_instances_with_zero_allocs() {
+fn counting_alloc_probe_fires_on_this_thread_only() {
+    counting_alloc::assert_counts_only_this_thread();
+}
+
+#[test]
+fn hot_patch_untagged_element_for_loops_queued_path_and_deep_anchors() {
+    let (_, sanity) = count_allocs(|| std::hint::black_box(Vec::<u8>::with_capacity(64)));
+    assert!(sanity > 0, "CountingAlloc probe must observe a Vec allocation");
+
     // 1. Un-tagged (`test_id: None`) `rsx!` element patched via `(template_key, node_path)` + `RowPatchView`.
     let mut surface = DioxusSurface::new(SurfaceId::ROOT, untagged_card_app);
     surface.reconcile(FrameId(1));
@@ -178,18 +188,16 @@ fn hot_patch_untagged_element_and_for_loop_instances_with_zero_allocs() {
     assert_eq!(alpha_l.padding_top(), Length::points(24.0));
     assert!((alpha_v.opacity() - 0.65).abs() < 1e-5);
     assert_eq!(alpha_v.background(), Rgba::rgb(37, 99, 235));
-    // Identical sibling remains completely untouched.
     assert_eq!(
         surface.store().try_row::<Layout>(beta).unwrap().padding_top(),
         Length::points(8.0)
     );
     assert!((surface.store().try_row::<Visual>(beta).unwrap().opacity() - 1.0).abs() < 1e-5);
 
-    let (ok, allocs, bytes) = measure_allocs(|| surface.apply_hot_patch_now(&patch_b));
+    let (ok, allocs) = count_allocs(|| surface.apply_hot_patch_now(&patch_b));
     assert!(ok);
     assert_eq!(
-        (allocs, bytes),
-        (0, 0),
+        allocs, 0,
         "steady-state apply_hot_patch_now on untagged element must perform 0 allocations"
     );
     assert_eq!(
@@ -203,6 +211,28 @@ fn hot_patch_untagged_element_and_for_loop_instances_with_zero_allocs() {
     assert_eq!(
         surface.store().try_row::<Layout>(beta).unwrap().padding_top(),
         Length::points(8.0)
+    );
+
+    // Production queued path (`DioxusSurface::apply_hot_patch` + `reconcile`): warm once, then 0 allocs.
+    assert!(surface.apply_hot_patch(&patch_a));
+    surface.reconcile(FrameId(2));
+    assert_eq!(
+        surface.store().try_row::<Layout>(alpha).unwrap().padding_top(),
+        Length::points(24.0)
+    );
+    let (queued_ok, queued_allocs) = count_allocs(|| {
+        let ok = surface.apply_hot_patch(&patch_b);
+        surface.reconcile(FrameId(3));
+        ok
+    });
+    assert!(queued_ok);
+    assert_eq!(
+        queued_allocs, 0,
+        "steady-state queued apply_hot_patch + reconcile must perform 0 allocations"
+    );
+    assert_eq!(
+        surface.store().try_row::<Layout>(alpha).unwrap().padding_top(),
+        Length::points(18.0)
     );
 
     // 2. Multi-instance `for`-loop template + sibling after `for` loop (still zero `test_id`s).
@@ -263,7 +293,6 @@ fn hot_patch_untagged_element_and_for_loop_instances_with_zero_allocs() {
         text_replacements: vec![],
     };
 
-    // Warm once, verify all 4 loop instances patched while footer stays at 6px.
     assert!(loop_surface.apply_hot_patch_now(&loop_patch1));
     for &item in &outer_children[..4] {
         assert_eq!(
@@ -277,12 +306,10 @@ fn hot_patch_untagged_element_and_for_loop_instances_with_zero_allocs() {
         Length::points(6.0)
     );
 
-    // Steady-state 0-alloc patch across all 4 `for`-loop instances.
-    let (ok, allocs, bytes) = measure_allocs(|| loop_surface.apply_hot_patch_now(&loop_patch2));
+    let (ok, allocs) = count_allocs(|| loop_surface.apply_hot_patch_now(&loop_patch2));
     assert!(ok);
     assert_eq!(
-        (allocs, bytes),
-        (0, 0),
+        allocs, 0,
         "steady-state apply_hot_patch_now across for-loop instances must perform 0 allocations"
     );
     for &item in &outer_children[..4] {
@@ -292,11 +319,9 @@ fn hot_patch_untagged_element_and_for_loop_instances_with_zero_allocs() {
         );
     }
 
-    // Patching the sibling AFTER the `for` loop targets `footer` directly with 0 allocs despite
-    // `for` expanding to 4 children in NodeStore!
-    let (ok, allocs, bytes) = measure_allocs(|| loop_surface.apply_hot_patch_now(&footer_patch));
+    let (ok, allocs) = count_allocs(|| loop_surface.apply_hot_patch_now(&footer_patch));
     assert!(ok);
-    assert_eq!((allocs, bytes), (0, 0));
+    assert_eq!(allocs, 0);
     assert_eq!(
         loop_surface.store().try_row::<Layout>(footer).unwrap().padding_top(),
         Length::points(32.0)
@@ -308,8 +333,7 @@ fn hot_patch_untagged_element_and_for_loop_instances_with_zero_allocs() {
         );
     }
 
-    // Shrink the `for` loop from 4 -> 2 items: unmounted anchors are evicted cleanly and
-    // subsequent patches touch only the 2 surviving items with 0 allocations.
+    // Shrink the `for` loop from 4 -> 2 items: O(1) eviction keeps remaining items intact with 0 allocs.
     loop_surface.in_root_scope(|| {
         let mut s = count_sig;
         s.set(2);
@@ -318,13 +342,51 @@ fn hot_patch_untagged_element_and_for_loop_instances_with_zero_allocs() {
     let remaining = loop_surface.store().children(outer).to_vec();
     assert_eq!(remaining.len(), 3, "2 surviving loop items + 1 footer");
 
-    let (ok, allocs, bytes) = measure_allocs(|| loop_surface.apply_hot_patch_now(&loop_patch1));
+    let (ok, allocs) = count_allocs(|| loop_surface.apply_hot_patch_now(&loop_patch1));
     assert!(ok);
-    assert_eq!((allocs, bytes), (0, 0));
+    assert_eq!(allocs, 0);
     for &item in &remaining[..2] {
         assert_eq!(
             loop_surface.store().try_row::<Layout>(item).unwrap().padding_top(),
             Length::points(20.0)
         );
     }
+
+    // 3. Depth 10 anchor after a dynamic `for` sibling must hit `Deep Target`, NOT `Dyn 1`!
+    let mut deep = DioxusSurface::new(SurfaceId::ROOT, deep_anchor_app);
+    deep.reconcile(FrameId(1));
+    let mut cur = NodeId::ROOT;
+    for _ in 0..9 {
+        cur = deep.store().children(cur)[0];
+    }
+    let deep_kids = deep.store().children(cur).to_vec();
+    assert_eq!(deep_kids.len(), 4, "3 dynamic loop items + 1 deep sibling");
+    let dyn1 = deep_kids[1];
+    let deep_target = deep_kids[3];
+    assert_eq!(first_text_in(deep.store(), dyn1).as_deref(), Some("Dyn 1"));
+    assert_eq!(first_text_in(deep.store(), deep_target).as_deref(), Some("Deep Target"));
+
+    let deep_key = hot_patch_template_key(file!(), 3);
+    let mut deep_rp = RowPatch::new();
+    deep_rp.set(Layout::PADDING_TOP, Length::points(44.0));
+    let deep_patch = HotPatchMsg::TemplatePatch {
+        generation: 7,
+        template_key: deep_key,
+        node_path: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+        target_test_id: None,
+        row_patch_words: encode_patch(&deep_rp),
+        text_updates: vec![],
+        text_replacements: vec![],
+    };
+    assert!(deep.apply_hot_patch_now(&deep_patch));
+    assert_eq!(
+        deep.store().try_row::<Layout>(deep_target).unwrap().padding_top(),
+        Length::points(44.0),
+        "depth-10 sibling after dynamic for-loop must receive the patch"
+    );
+    assert_eq!(
+        deep.store().try_row::<Layout>(dyn1).unwrap().padding_top(),
+        Length::points(2.0),
+        "preceding dynamic sibling must NOT be clobbered"
+    );
 }
