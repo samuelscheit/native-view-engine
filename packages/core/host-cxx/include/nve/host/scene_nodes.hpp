@@ -69,6 +69,24 @@ enum class NodeKind : uint8_t { View, Text, Image, TextInput, Scroll, Link };
   return NveLayoutRect{finite_or(r.x, 0.0f), finite_or(r.y, 0.0f), extent(r.width), extent(r.height)};
 }
 
+/// How a line breaker wraps text at the available width, from CSS `white-space`, `word-break`
+/// and `overflow-wrap` (matching the runtime measurer's contract).
+enum class TextWrap : uint8_t {
+  None,            // `white-space: nowrap | pre`: lines break only at `\n`
+  Word,            // at word boundaries; an over-long word overflows (min-content = longest word)
+  Anywhere,        // `word-break: break-all`: between any two characters
+  WordOrAnywhere,  // `overflow-wrap: anywhere | break-word`, `word-break: break-word`
+};
+
+[[nodiscard]] constexpr TextWrap text_wrap(uint32_t white_space, uint32_t word_break, uint32_t overflow_wrap) noexcept {
+  if (white_space == NVE_WHITE_SPACE_NO_WRAP || white_space == NVE_WHITE_SPACE_PRE) return TextWrap::None;
+  if (word_break == NVE_WORD_BREAK_BREAK_ALL) return TextWrap::Anywhere;
+  if (word_break == NVE_WORD_BREAK_BREAK_WORD || overflow_wrap != NVE_OVERFLOW_WRAP_NORMAL) {
+    return TextWrap::WordOrAnywhere;
+  }
+  return TextWrap::Word;
+}
+
 /// Fully resolved (inherited) text style.
 struct TextStyle {
   uint32_t color = 0xFF000000u;
@@ -80,9 +98,13 @@ struct TextStyle {
   uint16_t font_weight = 400u;
   uint8_t font_style = NVE_FONT_STYLE_NORMAL;
   uint8_t white_space = NVE_WHITE_SPACE_NORMAL;
+  uint8_t word_break = NVE_WORD_BREAK_NORMAL;
+  uint8_t overflow_wrap = NVE_OVERFLOW_WRAP_NORMAL;
   uint8_t text_align = NVE_TEXT_ALIGN_START;
   uint8_t text_decoration = 0u;
   uint8_t vertical_align = NVE_VERTICAL_ALIGN_BASELINE;
+
+  [[nodiscard]] constexpr TextWrap wrap() const noexcept { return text_wrap(white_space, word_break, overflow_wrap); }
 
   friend bool operator==(const TextStyle&, const TextStyle&) noexcept = default;
 };
@@ -255,14 +277,19 @@ struct SceneTables {
   const uint32_t set = r.bits(NVE_TABLE_TYPOGRAPHY_SET);
   TextStyle s = parent;
   if ((set & NVE_TYPOGRAPHY_SET_COLOR) != 0u) s.color = r.bits(NVE_TABLE_TYPOGRAPHY_COLOR);
-  // Invalid values keep the inherited one.
+  // Invalid values keep the inherited one (as the runtime's `resolve_inherited_text`: a `0`
+  // size is valid, an explicit `auto` line height resets to `normal`).
   if ((set & NVE_TYPOGRAPHY_SET_FONT_SIZE) != 0u) {
     const float size = r.f32(NVE_TABLE_TYPOGRAPHY_FONT_SIZE);
-    if (extent(size) > 0.0f) s.font_size = size;
+    if (std::isfinite(size) && size >= 0.0f) s.font_size = size;
   }
   if ((set & NVE_TYPOGRAPHY_SET_LINE_HEIGHT) != 0u) {
     const LengthValue lh = r.length(NVE_TABLE_TYPOGRAPHY_LINE_HEIGHT);
-    if (std::isfinite(lh.value) && lh.value >= 0.0f) s.line_height = lh;
+    if (lh.unit == NVE_LENGTH_AUTO) {
+      s.line_height = LengthValue{NVE_LENGTH_AUTO, 0.0f};
+    } else if (std::isfinite(lh.value) && lh.value >= 0.0f) {
+      s.line_height = lh;
+    }
   }
   if ((set & NVE_TYPOGRAPHY_SET_LETTER_SPACING) != 0u) {
     s.letter_spacing = finite_or(r.f32(NVE_TABLE_TYPOGRAPHY_LETTER_SPACING), s.letter_spacing);
@@ -277,6 +304,12 @@ struct SceneTables {
   }
   if ((set & NVE_TYPOGRAPHY_SET_WHITE_SPACE) != 0u) {
     s.white_space = static_cast<uint8_t>(r.bits(NVE_TABLE_TYPOGRAPHY_WHITE_SPACE));
+  }
+  if ((set & NVE_TYPOGRAPHY_SET_WORD_BREAK) != 0u) {
+    s.word_break = static_cast<uint8_t>(r.bits(NVE_TABLE_TYPOGRAPHY_WORD_BREAK));
+  }
+  if ((set & NVE_TYPOGRAPHY_SET_OVERFLOW_WRAP) != 0u) {
+    s.overflow_wrap = static_cast<uint8_t>(r.bits(NVE_TABLE_TYPOGRAPHY_OVERFLOW_WRAP));
   }
   if ((set & NVE_TYPOGRAPHY_SET_TEXT_ALIGN) != 0u) {
     s.text_align = static_cast<uint8_t>(r.bits(NVE_TABLE_TYPOGRAPHY_TEXT_ALIGN));

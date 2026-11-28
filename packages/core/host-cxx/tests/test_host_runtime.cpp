@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <limits>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -285,7 +286,7 @@ void test_read_node_seals_floats() {
   Nve2Writer& w = h.w;
   const float nan = std::numeric_limits<float>::quiet_NaN();
   const float inf = std::numeric_limits<float>::infinity();
-  for (uint32_t id = 1u; id <= 3u; ++id) w.create(id);
+  for (uint32_t id = 1u; id <= 4u; ++id) w.create(id);
   w.set_f32(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OPACITY, nan);
   w.set_f32(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_WIDTH, -inf);
   w.set_f32(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_RADIUS, inf);
@@ -305,7 +306,15 @@ void test_read_node_seals_floats() {
   w.set_f32(2u, NVE_TABLE_SCROLL_DESC, NVE_TABLE_SCROLL_REQUESTED_SCROLL_Y, 12.0f);
   w.set_f32(2u, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_VALUE_NOW, -inf);
   w.set_f32(3u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OPACITY, 7.0f);
-  w.set_children(1u, std::vector<uint32_t>{2u, 3u});
+  // As the runtime resolves typography: size 0 is valid, an explicit `auto` line height resets
+  // the inherited one; `word-break` / `overflow-wrap` are inherited text style.
+  w.set(4u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET,
+        kTypoSet | NVE_TYPOGRAPHY_SET_WORD_BREAK | NVE_TYPOGRAPHY_SET_OVERFLOW_WRAP);
+  w.set_f32(4u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, 0.0f);
+  w.set(4u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_LINE_HEIGHT, kLengthAuto);
+  w.set(4u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_WORD_BREAK, NVE_WORD_BREAK_BREAK_ALL);
+  w.set(4u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_OVERFLOW_WRAP, NVE_OVERFLOW_WRAP_ANYWHERE);
+  w.set_children(1u, std::vector<uint32_t>{2u, 3u, 4u});
   CHECK(h.submit());
   auto guard = h.host->runtime().acquire_scene();
   CHECK(guard.has_value());
@@ -326,6 +335,11 @@ void test_read_node_seals_floats() {
   CHECK(ok.visual.opacity == 1.0f);  // 7 clamped
   CHECK(ok.text_style.font_size == 30.0f && ok.text_style.letter_spacing == 2.0f);
   CHECK(ok.text_style.line_height == (LengthValue{NVE_LENGTH_POINTS, 40.0f}));
+  CHECK(ok.text_style.wrap() == TextWrap::Word);
+  const NodeData four = read_node(guard->reader(), t, 4u, inherit_text_style(parent, t, guard->reader(), 4u));
+  CHECK(four.text_style.font_size == 0.0f && four.text_style.line_height.unit == NVE_LENGTH_AUTO);
+  CHECK(four.text_style.word_break == NVE_WORD_BREAK_BREAK_ALL &&
+        four.text_style.overflow_wrap == NVE_OVERFLOW_WRAP_ANYWHERE && four.text_style.wrap() == TextWrap::Anywhere);
 
   // Box-shadow resources are sealed the same way.
   const BoxShadow bad[] = {{nan, inf, -inf, -2.0f, 7u, false}};
@@ -409,6 +423,64 @@ void test_controlled_text() {
   }
   CHECK(!paired.writing() && !paired.app_published("X", "X"));
   CHECK(paired.app_published("", "X"));      // the app clears the field
+}
+
+/// `dispatch_controlled_edit`: the whole edit path every host shares, over a fake field whose
+/// "app" accepts, transforms, rejects, or removes the field during the dispatch.
+void test_dispatch_controlled_edit() {
+  struct Field {
+    ControlledText text;
+    std::string shown;
+    std::string app;  // the app's value, as the host's scene would hold it
+    int writes = 0;
+  };
+  enum class App { Accept, Upper, Reject, Remove, Paired };
+  const auto edit = [](std::optional<Field>& slot, std::string typed, App app) {
+    slot->shown = typed;
+    return dispatch_controlled_edit<Field>(
+        slot->text, slot->shown,
+        [&](std::string_view sent) {
+          CHECK(sent == typed);
+          switch (app) {
+            case App::Accept: slot->app = std::string(sent); break;
+            case App::Upper:
+              slot->app.clear();
+              for (const char c : sent) slot->app.push_back(c >= 'a' && c <= 'z' ? static_cast<char>(c - 32) : c);
+              break;
+            case App::Reject: break;
+            case App::Remove: slot.reset(); break;  // the app removes the input: `text` dies
+            case App::Paired: break;
+          }
+          return true;
+        },
+        [&]() -> ControlledAnswer<Field> {
+          if (!slot || app == App::Paired) return {};
+          return {&*slot, &slot->text, slot->app};
+        },
+        [](Field& f, std::string_view value) {
+          CHECK(f.text.writing());  // inside a host write: the widget's change is not an edit
+          CHECK(!f.text.user_edited(value));
+          f.shown = std::string(value);
+          ++f.writes;
+        });
+  };
+  std::optional<Field> f(std::in_place);
+  CHECK(f->text.app_published("", ""));
+  ControlledEdit r = edit(f, "a", App::Accept);
+  CHECK(r.dispatched && r.changed && r.alive && !r.written && f->shown == "a" && f->writes == 0);
+  r = edit(f, "ab", App::Upper);
+  CHECK(r.alive && r.written && f->shown == "AB" && f->writes == 1 && f->text.app_value() == "AB");
+  r = edit(f, "ABc", App::Reject);
+  CHECK(r.alive && r.written && f->shown == "AB" && f->writes == 2);
+  // The widget's own change notification after a write is no edit.
+  r = dispatch_controlled_edit<Field>(
+      f->text, f->shown, [](std::string_view) { return true; }, []() { return ControlledAnswer<Field>{}; },
+      [](Field&, std::string_view) {});
+  CHECK(!r.dispatched);
+  r = edit(f, "ABx", App::Paired);
+  CHECK(r.dispatched && !r.alive && !r.written && f->shown == "ABx");  // async: typing is never undone
+  r = edit(f, "ABxy", App::Remove);
+  CHECK(r.dispatched && !r.alive && !f.has_value());
 }
 
 void test_host_session_counter() {
@@ -520,6 +592,7 @@ int main() {
   test_source_change_runs_a_full_pass();
   test_dense_table_rows_follow_table_set();
   test_controlled_text();
+  test_dispatch_controlled_edit();
   test_host_session_counter();
   if (g_failures != 0) {
     fprintf(stderr, "nve_host_runtime_test: %d failure(s)\n", g_failures);

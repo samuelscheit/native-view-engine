@@ -78,11 +78,6 @@ struct RuntimeResource {
   return 0.0;
 }
 
-/// `white-space: nowrap | pre` never wrap at the available width.
-[[nodiscard]] inline bool white_space_wraps(uint32_t white_space) noexcept {
-  return white_space != NVE_WHITE_SPACE_NO_WRAP && white_space != NVE_WHITE_SPACE_PRE;
-}
-
 /// Move-only RAII read guard pairing `scene_acquire` with `scene_release`.
 class RuntimeSceneGuard {
  public:

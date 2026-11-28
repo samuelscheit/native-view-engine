@@ -19,6 +19,7 @@
 #include "nve/host/font_family.hpp"
 #include "nve/host/runtime_session.hpp"
 #include "nve/host/nve2_builder.hpp"
+#include "nve/host/scene_nodes.hpp"
 
 namespace {
 
@@ -28,7 +29,10 @@ using nve::host::line_height_points;
 using nve::host::str_slice;
 using nve::host::str_view;
 using nve::host::text_style;
-using nve::host::white_space_wraps;
+using nve::host::GenericFamily;
+using nve::host::generic_font_family;
+using nve::host::text_wrap;
+using nve::host::TextWrap;
 using nve::host::RuntimeResource;
 using nve::host::RuntimeSceneGuard;
 using nve::host::SceneReader;
@@ -123,26 +127,52 @@ void test_text_style_helpers() {
   for (const float bad : {0.0f, -4.0f, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()}) {
     CHECK(line_height_points(NVE_LINE_HEIGHT_POINTS, bad, 13.0f) == 0.0);
   }
-  CHECK(!white_space_wraps(NVE_WHITE_SPACE_NO_WRAP) && !white_space_wraps(NVE_WHITE_SPACE_PRE));
-  CHECK(white_space_wraps(NVE_WHITE_SPACE_NORMAL) && white_space_wraps(NVE_WHITE_SPACE_PRE_WRAP) &&
-        white_space_wraps(NVE_WHITE_SPACE_PRE_LINE) && white_space_wraps(NVE_WHITE_SPACE_BREAK_SPACES));
+  // Wrap modes (`word-break` / `overflow-wrap` refine wrapping `white-space` values only).
+  for (const uint32_t ws : {NVE_WHITE_SPACE_NO_WRAP, NVE_WHITE_SPACE_PRE}) {
+    CHECK(text_wrap(ws, NVE_WORD_BREAK_BREAK_ALL, NVE_OVERFLOW_WRAP_ANYWHERE) == TextWrap::None);
+  }
+  for (const uint32_t ws : {NVE_WHITE_SPACE_NORMAL, NVE_WHITE_SPACE_PRE_WRAP, NVE_WHITE_SPACE_PRE_LINE,
+                            NVE_WHITE_SPACE_BREAK_SPACES}) {
+    CHECK(text_wrap(ws, NVE_WORD_BREAK_NORMAL, NVE_OVERFLOW_WRAP_NORMAL) == TextWrap::Word);
+    CHECK(text_wrap(ws, NVE_WORD_BREAK_KEEP_ALL, NVE_OVERFLOW_WRAP_NORMAL) == TextWrap::Word);
+    CHECK(text_wrap(ws, NVE_WORD_BREAK_BREAK_ALL, NVE_OVERFLOW_WRAP_NORMAL) == TextWrap::Anywhere);
+    CHECK(text_wrap(ws, NVE_WORD_BREAK_BREAK_ALL, NVE_OVERFLOW_WRAP_ANYWHERE) == TextWrap::Anywhere);
+    CHECK(text_wrap(ws, NVE_WORD_BREAK_BREAK_WORD, NVE_OVERFLOW_WRAP_NORMAL) == TextWrap::WordOrAnywhere);
+    CHECK(text_wrap(ws, NVE_WORD_BREAK_NORMAL, NVE_OVERFLOW_WRAP_ANYWHERE) == TextWrap::WordOrAnywhere);
+    CHECK(text_wrap(ws, NVE_WORD_BREAK_NORMAL, NVE_OVERFLOW_WRAP_BREAK_WORD) == TextWrap::WordOrAnywhere);
+  }
 
-  std::vector<std::string_view> names;
-  for_each_font_family(" 'Fira Code' ,\t\"Segoe UI\",, monospace ,", [&](std::string_view n) {
-    names.push_back(n);
-    return true;
-  });
-  CHECK((names == std::vector<std::string_view>{"Fira Code", "Segoe UI", "monospace"}));
+  using Entry = std::pair<std::string_view, bool>;
+  std::vector<Entry> names;
+  const auto collect = [&](std::string_view list) {
+    names.clear();
+    for_each_font_family(list, [&](std::string_view n, bool quoted) {
+      names.emplace_back(n, quoted);
+      return true;
+    });
+    return names;
+  };
+  CHECK((collect(" 'Fira Code' ,\t\"Segoe UI\",, monospace ,") ==
+         std::vector<Entry>{{"Fira Code", true}, {"Segoe UI", true}, {"monospace", false}}));
+  // Quoted names keep their commas and spaces; an unterminated quote runs to the end.
+  CHECK((collect("\"Foo, Bar\", 'Baz Qux' , serif") ==
+         std::vector<Entry>{{"Foo, Bar", true}, {"Baz Qux", true}, {"serif", false}}));
+  CHECK((collect("'Open, Sans") == std::vector<Entry>{{"Open, Sans", true}}));
+  CHECK((collect("\"A\" junk, B") == std::vector<Entry>{{"A", true}, {"B", false}}));
   names.clear();
-  for_each_font_family("a,b,c", [&](std::string_view n) {
-    names.push_back(n);
+  for_each_font_family("a,b,c", [&](std::string_view n, bool) {
+    names.emplace_back(n, false);
     return n != "b";  // stops after `b`
   });
-  CHECK((names == std::vector<std::string_view>{"a", "b"}));
-  names.clear();
-  for_each_font_family("", [&](std::string_view n) { names.push_back(n); return true; });
-  for_each_font_family(" , '' ,", [&](std::string_view n) { names.push_back(n); return true; });
-  CHECK(names.empty());
+  CHECK(names.size() == 2u && names.back().first == "b");
+  CHECK(collect("").empty() && collect(" , '' ,").empty());
+
+  // Generics: ASCII case-insensitive, `ui-*` aliases; names are never generics.
+  CHECK(generic_font_family("MONOSPACE") == GenericFamily::Monospace);
+  CHECK(generic_font_family("Sans-Serif") == GenericFamily::SansSerif);
+  CHECK(generic_font_family("ui-serif") == GenericFamily::Serif);
+  CHECK(generic_font_family("System-UI") == GenericFamily::SystemUi);
+  CHECK(generic_font_family("Menlo") == GenericFamily::None && generic_font_family("monospaced") == GenericFamily::None);
 }
 
 bool same_bytes(std::span<const uint8_t> a, std::span<const uint8_t> b) {

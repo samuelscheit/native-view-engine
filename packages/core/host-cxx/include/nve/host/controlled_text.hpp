@@ -14,11 +14,15 @@
 //   React.
 // - Asynchronous (paired thin client): answers arrive later, while the user may keep typing. The
 //   host only calls `app_published`; values that lag behind the user's typing are not written.
+//
+// `dispatch_controlled_edit` is that whole edit path, shared by every host: detect the edit,
+// dispatch it (which may destroy the field), re-find the field, apply the synchronous answer.
 #pragma once
 
 #include <algorithm>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace nve::host {
@@ -57,12 +61,13 @@ class ControlledText {
   /// current value is `value` (republished or not). `true` when the host must write `value`
   /// into the widget (the app transformed or rejected the edit).
   [[nodiscard]] bool app_answered(std::string_view value) {
-    app_value_.assign(value);
+    std::string answer(value);  // `value` may view `app_value_` itself
     synced_ = true;
     in_flight_.clear();
-    if (value == dispatched_) return false;
-    dispatched_.assign(value);
-    return true;
+    const bool write = answer != dispatched_;
+    if (write) dispatched_ = answer;
+    app_value_ = std::move(answer);
+    return write;
   }
 
   [[nodiscard]] const std::string& app_value() const noexcept { return app_value_; }
@@ -92,5 +97,49 @@ class ControlledText {
   bool synced_ = false;
   bool writing_ = false;
 };
+
+/// A controlled field re-found after a `TextChange` dispatch, with the app's current value.
+template <class Field>
+struct ControlledAnswer {
+  Field* field = nullptr;            // null: the field is gone, or the app answers asynchronously
+  ControlledText* text = nullptr;    // `field`'s controller
+  std::string_view value;            // the app's value now (republished or kept)
+};
+
+/// Outcome of `dispatch_controlled_edit`.
+struct ControlledEdit {
+  bool dispatched = false;  // the widget's text was a user edit, sent as `TextChange`
+  bool changed = false;     // the dispatch changed the scene
+  bool alive = false;       // the field survived the dispatch (and the app answered synchronously)
+  bool written = false;     // the app transformed or rejected the edit: its value was written back
+};
+
+/// The one edit path of a controlled native field showing `current` after a change
+/// notification, shared by every host:
+///  1. `text.user_edited(current)`: host writes and repeats are not edits;
+///  2. `dispatch(sent)` sends `TextChange` and pumps. It may destroy the field (the app removes
+///     the input), so neither `text` nor `current` is touched afterwards;
+///  3. `refind()` returns the field by node id as a `ControlledAnswer` (null when gone, or when
+///     the app answers asynchronously: a paired client);
+///  4. a transformed or rejected edit (`ControlledText::app_answered`) is shown again through
+///     `write(field, value)`, inside a host write.
+template <class Field, class Dispatch, class Refind, class Write>
+ControlledEdit dispatch_controlled_edit(ControlledText& text, std::string_view current, Dispatch&& dispatch,
+                                        Refind&& refind, Write&& write) {
+  ControlledEdit out;
+  if (!text.user_edited(current)) return out;
+  const std::string sent(current);  // `current` may view the field's own storage
+  out.dispatched = true;
+  out.changed = dispatch(std::string_view(sent));
+  const ControlledAnswer<Field> answer = refind();
+  if (answer.field == nullptr || answer.text == nullptr) return out;
+  out.alive = true;
+  if (answer.text->app_answered(answer.value)) {
+    const auto scope = answer.text->host_write();
+    write(*answer.field, std::string_view(answer.text->app_value()));
+    out.written = true;
+  }
+  return out;
+}
 
 }  // namespace nve::host

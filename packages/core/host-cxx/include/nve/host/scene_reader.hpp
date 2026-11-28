@@ -6,6 +6,7 @@
 // that never re-validate.
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -26,7 +27,8 @@ enum class SceneError : uint8_t {
   NullSlab,        ///< a slab pointer is null while its count is non-zero
   MisalignedSlab,  ///< a non-empty slab pointer violates its element type alignment
   InvalidUtf8,     ///< `text_slab` is not well-formed UTF-8
-  InvalidTable,    ///< a published `NveTableView` is malformed
+  InvalidTable,    ///< a published `NveTableView` is malformed, its slot >= 128 or repeated
+  InvalidIndex,    ///< a `dirty_indices` / `moved_indices` entry is >= `node_capacity`
   UnsortedScrollOffsets,  ///< `scroll_offsets` node ids are not strictly ascending
   UnsortedDirtyResources,  ///< `dirty_resources` ids are not strictly ascending
 };
@@ -116,12 +118,10 @@ class SceneReader {
     return children(rows_[index].child_off, rows_[index].child_len);
   }
 
-  /// Visits `(index, row, rect)` for every in-range dirty node index in O(dirty).
+  /// Visits `(index, row, rect)` for every dirty node index in O(dirty) (in range: checked on open).
   template <class Fn>
   void for_each_dirty(Fn&& visit) const {
-    for (const uint32_t index : dirty_) {
-      if (index < rows_.size()) visit(index, rows_[index], rects_[index]);
-    }
+    for (const uint32_t index : dirty_) visit(index, rows_[index], rects_[index]);
   }
 
   [[nodiscard]] std::optional<TableReader> table(uint32_t index) const noexcept {
@@ -183,8 +183,20 @@ class SceneReader {
     if (v->text_slab_len > 0u && nve_utf8_valid(v->text_slab, v->text_slab_len) == 0) {
       return SceneError::InvalidUtf8;
     }
+    // Slots index the 128-bit `table_set` of every row: in range and published once.
+    uint32_t slots[4]{};
     for (uint32_t i = 0u; i < v->table_count; ++i) {
+      const uint32_t slot = v->tables[i].slot;
+      if (slot >= 128u || (slots[slot >> 5u] & (uint32_t{1} << (slot & 31u))) != 0u) return SceneError::InvalidTable;
+      slots[slot >> 5u] |= uint32_t{1} << (slot & 31u);
       if (!TableReader::from_view(v->tables[i])) return SceneError::InvalidTable;
+    }
+    const auto in_range = [cap = v->node_capacity](const uint32_t* p, uint32_t n) noexcept {
+      return std::all_of(p, p + n, [cap](uint32_t index) { return index < cap; });
+    };
+    if ((v->dirty_count > 0u && !in_range(v->dirty_indices, v->dirty_count)) ||
+        (v->moved_count > 0u && !in_range(v->moved_indices, v->moved_count))) {
+      return SceneError::InvalidIndex;
     }
     // `scroll_offset()` and `resource_dirty()` binary-search: ids must be strictly ascending.
     for (uint32_t i = 1u; i < v->scroll_count; ++i) {

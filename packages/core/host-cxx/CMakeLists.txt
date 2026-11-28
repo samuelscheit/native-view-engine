@@ -15,7 +15,11 @@ if(NVE_HOST_CXX_BUILD_BENCH)
   add_executable(nve_host_cxx_bench bench/host_bench.cpp)
   set_target_properties(nve_host_cxx_bench PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
   target_link_libraries(nve_host_cxx_bench PRIVATE nve_host_cxx)
-  target_compile_options(nve_host_cxx_bench PRIVATE -Wall -Wextra -Werror -pedantic -Wconversion -Wsign-conversion -Wshadow)
+  if(MSVC)
+    target_compile_options(nve_host_cxx_bench PRIVATE /W4 /WX)
+  else()
+    target_compile_options(nve_host_cxx_bench PRIVATE -Wall -Wextra -Werror -pedantic -Wconversion -Wsign-conversion -Wshadow)
+  endif()
 endif()
 
 if(NVE_HOST_CXX_BUILD_TESTS)
@@ -55,6 +59,20 @@ if(NVE_HOST_CXX_BUILD_TESTS)
   foreach(_case BAD_FIELD_BITS BAD_FIELD_ZERO BAD_FIELD_WORD BAD_KEY)
     add_test(NAME nve_host_compile_fail_${_case} COMMAND ${_nve_host_syntax_only} -DNVE_EXPECT_${_case})
     set_tests_properties(nve_host_compile_fail_${_case} PROPERTIES WILL_FAIL TRUE)
+  endforeach()
+
+  # Every public header compiles on its own (includes what it uses), warnings as errors. `jni.hpp`
+  # needs a JDK's `jni.h` and is covered by the Android host build.
+  file(GLOB _nve_host_headers RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/include"
+       "${CMAKE_CURRENT_SOURCE_DIR}/include/nve/host/*.hpp")
+  list(REMOVE_ITEM _nve_host_headers nve/host/jni.hpp)
+  foreach(_header ${_nve_host_headers})
+    string(MAKE_C_IDENTIFIER "${_header}" _header_id)
+    set(_header_tu "${CMAKE_CURRENT_BINARY_DIR}/header_checks/${_header_id}.cpp")
+    file(WRITE "${_header_tu}" "#include <${_header}>\n")
+    add_test(NAME nve_host_header_${_header_id}
+             COMMAND ${CMAKE_CXX_COMPILER} -std=c++20 -fsyntax-only ${_nve_host_warnings}
+                     -I${CMAKE_CURRENT_SOURCE_DIR}/include ${_header_tu})
   endforeach()
 
   if(NVE_HOST_CXX_WITH_RUNTIME)
