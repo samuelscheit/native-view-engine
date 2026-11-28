@@ -15,6 +15,7 @@ mod legacy_tables;
 mod normalize;
 mod normalize_helpers;
 mod patterns;
+mod repr_enum_body;
 mod repr_enum_guard;
 mod scope;
 #[cfg(test)]
@@ -40,7 +41,9 @@ pub use fingerprint::{
     MatchDuplicate, MIN_DUPLICATE_ARMS,
 };
 pub use legacy_tables::scan_match_tables;
-pub use repr_enum_guard::scan_manual_repr_enum_converters;
+pub use repr_enum_guard::{
+    scan_manual_repr_enum_converters, scan_manual_repr_enum_converters_with_crates,
+};
 
 use extract::MatchSite;
 use fingerprint::find_duplicate_match_sites;

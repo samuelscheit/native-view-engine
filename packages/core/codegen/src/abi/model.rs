@@ -8,7 +8,10 @@ use nve_abi::schema::{
 };
 use nve_hash::{PRIME1, xxh64};
 
-use super::layout::{RecordLayout, layout_records, layout_records_on};
+use super::layout::{
+    FieldLayout, RecordLayout, VtableHeaderLayout, Width, layout_records, layout_records_on,
+    layout_vtable_headers_on,
+};
 use crate::error::CodegenError;
 
 /// Empty alias slice for Askama templates that need an explicitly typed `&[AbiAliasDescriptor]`.
@@ -87,6 +90,7 @@ pub struct AbiModel<'a> {
 impl<'a> AbiModel<'a> {
     pub fn new(core: &'a AbiFileDescriptor) -> Result<Self, CodegenError> {
         let records = layout_records(&[core])?;
+        let _ = layout_vtable_headers_on(&[], &[], &[core], &records)?;
         super::validate::abi(&[core], &records)?;
         let table_view = find_record(&records, "NveTableView")?;
         let callbacks = core.callbacks.iter().map(|c| c.name).collect();
@@ -139,6 +143,8 @@ pub struct RuntimeAbiModel<'a> {
     all_aliases: Vec<AbiAliasDescriptor>,
     /// Combined Core + Runtime callback names for Dart `NativeFunction` spelling.
     all_callbacks: Vec<&'a str>,
+    /// Validated target-independent / cross-model layouts of runtime vtable header fields.
+    vtable_headers: Vec<VtableHeaderLayout<'a>>,
     /// Index into `file.vtables` of `NveRuntimeApi`.
     vtable: usize,
     /// Index into `records` of `NveSceneView` (the scene every host reads).
@@ -150,6 +156,7 @@ impl<'a> RuntimeAbiModel<'a> {
     /// records/aliases/callbacks the runtime ABI may reference.
     pub fn new(file: &'a AbiFileDescriptor, base: &AbiModel<'a>) -> Result<Self, CodegenError> {
         let records = layout_records_on(&base.records, &[base.core], &[file])?;
+        let vtable_headers = layout_vtable_headers_on(&base.records, &[base.core], &[file], &records)?;
         super::validate::abi_on(&[base.core], &base.records, &[file], &records)?;
         if let Some(r) = records
             .iter()
@@ -184,6 +191,7 @@ impl<'a> RuntimeAbiModel<'a> {
             records,
             all_aliases,
             all_callbacks,
+            vtable_headers,
             vtable,
             scene_view,
         })
@@ -197,8 +205,20 @@ impl<'a> RuntimeAbiModel<'a> {
         &self.file.vtables[self.vtable]
     }
 
+    pub fn vtable_header_fields(&self) -> &[FieldLayout<'a>] {
+        &self.vtable_headers[self.vtable].header_fields
+    }
+
+    pub fn vtable_slots_offset(&self) -> &Width {
+        &self.vtable_headers[self.vtable].slots_offset
+    }
+
     pub fn slots(&self) -> &'a [AbiMethodDescriptor] {
         self.vtable().methods
+    }
+
+    pub fn required_slots(&self) -> Vec<&'a AbiMethodDescriptor> {
+        self.slots().iter().filter(|m| !m.optional).collect()
     }
 
     pub fn all_aliases(&self) -> &[AbiAliasDescriptor] {

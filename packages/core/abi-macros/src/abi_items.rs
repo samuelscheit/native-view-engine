@@ -12,8 +12,8 @@ use crate::emit::{opt_str, quote_str};
 use crate::fn_sig::{format_type, parse_fn_ptr_sig, strip_raw};
 use crate::parse::parse_string_literal;
 use crate::tok::{
-    expect_ident, from_stream, is_colon2, is_ident, is_punct, paren_inner, render_tokens, Delim,
-    Tok,
+    attr_name, check_no_cfg_attr, expect_ident, from_stream, is_punct, paren_inner,
+    render_expr_tokens, render_tokens, skip_vis, Delim, Tok,
 };
 
 #[cfg(test)]
@@ -62,12 +62,7 @@ pub(crate) fn expand_callbacks(input: TokenStream) -> Result<String, String> {
 
 fn parse_vis(tokens: &[Tok], pos: &mut usize) -> String {
     let start = *pos;
-    if is_ident(tokens, *pos, "pub") {
-        *pos += 1;
-        if matches!(tokens.get(*pos), Some(Tok::Group(Delim::Paren, _))) {
-            *pos += 1;
-        }
-    }
+    skip_vis(tokens, pos);
     render_tokens(&tokens[start..*pos])
 }
 
@@ -86,7 +81,7 @@ fn parse_header(tokens: &[Tok], pos: &mut usize, macro_name: &str) -> Result<Ite
         *pos += 1;
         let mut i = 0;
         while i < opts.len() {
-            if is_ident(opts, i, "impl") {
+            if crate::tok::is_ident(opts, i, "impl") {
                 i += 1;
                 let start = i;
                 while i < opts.len() && !is_punct(opts, i, ',') {
@@ -142,20 +137,16 @@ fn collect_helper_attrs(tokens: &[Tok], pos: &mut usize) -> Result<HelperAttrs, 
         let Some(Tok::Group(Delim::Bracket, inner)) = tokens.get(*pos + 1) else {
             return Err("expected `[...]` after `#`".to_owned());
         };
-        let raw_attr = format!("#[{}]", render_tokens(inner));
         *pos += 2;
-        let (mut i, mut name) = (0usize, String::new());
-        while let Some(Tok::Ident(id)) = inner.get(i) {
-            name = id.clone();
-            i += 1;
-            if is_colon2(inner, i) {
-                i += 2;
-            } else {
-                break;
-            }
-        }
-        let rest = &inner[i..];
-        match name.as_str() {
+        let (name, rest) = attr_name(inner);
+        check_no_cfg_attr(
+            name,
+            rest,
+            true,
+            &["nve_abi", "cfg"],
+            "`abi_{consts,aliases,callbacks}!`",
+        )?;
+        match name {
             "nve_abi" => {
                 let args = paren_inner(rest).ok_or("expected `#[nve_abi(...)]`")?;
                 let mut k = 0;
@@ -192,9 +183,9 @@ fn collect_helper_attrs(tokens: &[Tok], pos: &mut usize) -> Result<HelperAttrs, 
                     out.doc_lines
                         .push(s.strip_prefix(' ').unwrap_or(&s).to_owned());
                 }
-                out.pass_attrs.push(raw_attr);
+                out.pass_attrs.push(format!("#[{}]", render_tokens(inner)));
             }
-            _ => out.pass_attrs.push(raw_attr),
+            _ => out.pass_attrs.push(format!("#[{}]", render_tokens(inner))),
         }
     }
     Ok(out)
@@ -290,7 +281,7 @@ pub(crate) fn expand_consts_tokens(tokens: &[Tok]) -> Result<String, String> {
             items_out,
             "{item_vis} const {rust_ident}: {} = {};",
             render_tokens(ty_toks),
-            render_tokens(expr_toks)
+            render_expr_tokens(expr_toks)
         );
 
         if !attrs.skip {
@@ -305,7 +296,7 @@ pub(crate) fn expand_consts_tokens(tokens: &[Tok]) -> Result<String, String> {
             } else {
                 strip_raw(&rust_ident)
             };
-            let ty_short = format_type(ty_toks);
+            let ty_short = format_type(ty_toks)?;
             let (abi_ty, val_expr, maybe_assert) =
                 const_abi_mapping(&ty_short, &qual_name, hdr.impl_ty.as_deref())?;
             if let Some(a) = maybe_assert {
@@ -386,10 +377,10 @@ pub(crate) fn expand_aliases_tokens(tokens: &[Tok]) -> Result<String, String> {
             let stripped = strip_raw(&rust_ident);
             let abi_name = attrs.name_override.clone().unwrap_or_else(|| stripped.clone());
             let rust_name = (stripped != abi_name).then_some(stripped);
-            let target = attrs
-                .target_override
-                .clone()
-                .unwrap_or_else(|| format_type(rhs_toks));
+            let target = match &attrs.target_override {
+                Some(ov) => ov.clone(),
+                None => format_type(rhs_toks)?,
+            };
             let doc = attrs.doc();
             let _ = writeln!(
                 descs_out,

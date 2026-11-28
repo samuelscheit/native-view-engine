@@ -90,22 +90,23 @@ typedef NveRuntime{{ spell::pascal(method.name) }}Dart = {{ dart::fn_sig(m.all_a
 
 /// Single `NveRuntimeApi` vtable returned by `nve_runtime_get_interface(abi_version)`.
 final class {{ m.vtable().name }} extends ffi.Struct {
-  @ffi.Uint32()
-  external int abiVersion;
-  @ffi.Uint32()
-  external int structSize;
-  @ffi.Uint64()
-  external int schemaHash;
+{%- for f in m.vtable_header_fields() %}
+  {{ dart::field(m.all_aliases(), m.file.aliases, m.all_callbacks(), f) }}
+{%- endfor %}
 {%- for method in m.slots() %}
   external ffi.Pointer<ffi.NativeFunction<NveRuntime{{ spell::pascal(method.name) }}Native>> {{ spell::camel(method.name) }};
 {%- endfor %}
 }
 
-/// `true` when `api` is non-null and every slot is set (version / hash are checked separately);
+/// `true` when `api` is non-null and every required slot is set (version / hash are checked separately);
 /// mirrors C `nve_runtime_api_slots_complete`.
 bool runtimeApiSlotsComplete(ffi.Pointer<NveRuntimeApi> api) {
   if (api == ffi.nullptr) return false;
   final a = api.ref;
-  return {% for method in m.slots() %}a.{{ spell::camel(method.name) }} != ffi.nullptr{% if !loop.last %} &&
+{%- if m.required_slots().is_empty() %}
+  return true;
+{%- else %}
+  return {% for method in m.required_slots() %}a.{{ spell::camel(method.name) }} != ffi.nullptr{% if !loop.last %} &&
       {% endif %}{% endfor %};
+{%- endif %}
 }

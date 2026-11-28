@@ -160,7 +160,13 @@ pub mod c {
             Ok(Ty::Ptr {
                 mutable: false,
                 pointee,
-            }) => format!("const {}*", ty(aliases, pointee)),
+            }) => {
+                if matches!(Ty::parse(pointee), Ok(Ty::Ptr { .. })) {
+                    format!("{} const*", ty(aliases, pointee))
+                } else {
+                    format!("const {}*", ty(aliases, pointee))
+                }
+            }
             Ok(Ty::Ptr {
                 mutable: true,
                 pointee,
@@ -378,7 +384,7 @@ pub mod dart {
 
     /// Dart typedef stem of a C callback typedef (`NveRuntimeWakeFn` -> `NveRuntimeWake`).
     pub fn callback_stem(name: &str) -> &str {
-        name.trim_end_matches("Fn")
+        name.strip_suffix("Fn").unwrap_or(name)
     }
 
     /// Dart enum constant name; Dart keywords get a `Value` suffix.

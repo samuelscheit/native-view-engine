@@ -1,0 +1,15 @@
+error: #[derive(NveAbi)] vtable `AlignedVtable` requires plain `#[repr(C)]` (no `align`/`packed`/int repr)
+ --> tests/ui/vtable_repr_align.rs:4:10
+  |
+4 | #[derive(NveAbi)]
+  |          ^^^^^^
+  |
+  = note: this error originates in the derive macro `NveAbi` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: #[derive(NveAbi)] enum `AlignedEnum` requires plain `#[repr(u8|u16|u32|i32)]` (no `C`/`transparent`/`align`/`packed`)
+  --> tests/ui/vtable_repr_align.rs:11:10
+   |
+11 | #[derive(NveAbi)]
+   |          ^^^^^^
+   |
+   = note: this error originates in the derive macro `NveAbi` (in Nightly builds, run with -Z macro-backtrace for more info)

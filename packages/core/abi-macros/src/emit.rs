@@ -145,6 +145,7 @@ fn emit_alias(al: &ParsedAlias) -> String {
          \x20   const ITEM: {cp}::AbiItemDescriptor = {cp}::AbiItemDescriptor::Alias(<Self as {cp}::NveAliasSchema>::SCHEMA);\n\
          }}\n\
          const _: () = {{\n\
+         \x20   ::core::assert!(::core::mem::size_of::<{ty}>() > 0usize);\n\
          \x20   ::core::assert!(::core::mem::size_of::<{ty}>() == ::core::mem::size_of::<{}>());\n\
          \x20   ::core::assert!(::core::mem::align_of::<{ty}>() == ::core::mem::align_of::<{}>());\n\
          }};\n",

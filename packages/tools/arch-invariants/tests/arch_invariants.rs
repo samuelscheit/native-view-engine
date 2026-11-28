@@ -124,11 +124,17 @@ fn no_manual_repr_enum_converters() {
     let all_owned = ast_enums::collect_workspace_prod_rs(idx);
     let all_refs: Vec<_> = all_owned
         .iter()
-        .map(|f| (f.rel.clone(), f.parsed.raw.as_str(), &f.parsed.ast))
+        .map(|f| {
+            let crate_key = f
+                .crate_name
+                .clone()
+                .unwrap_or_else(|| f.rel.clone());
+            (f.rel.clone(), crate_key, f.parsed.raw.as_str(), &f.parsed.ast)
+        })
         .collect();
     assert!(!all_refs.is_empty());
     let mut violations = Vec::new();
-    ast_enums::scan_manual_repr_enum_converters(&all_refs, &mut violations);
+    ast_enums::scan_manual_repr_enum_converters_with_crates(&all_refs, &mut violations);
     assert_no_violations(
         "Zero hand-written integer-to-enum converters for #[repr(<int>)] unit enums (derive ReprEnum / WordEnum / NveCodec)",
         &violations,

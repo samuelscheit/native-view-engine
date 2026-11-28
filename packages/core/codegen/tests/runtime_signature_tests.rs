@@ -3,12 +3,12 @@
 //! ensuring every C and Dart binding resolves cleanly.
 
 use nve_abi::schema::{
-    AbiFileDescriptor, AbiMethodDescriptor, AbiParamDescriptor, AbiVtableDescriptor,
-    runtime_abi_descriptor,
+    AbiFieldDescriptor, AbiFileDescriptor, AbiMethodDescriptor, AbiParamDescriptor,
+    AbiVtableDescriptor, runtime_abi_descriptor,
 };
 use nve_codegen::CodegenError;
 use nve_codegen::abi::model::RuntimeAbiModel;
-use nve_codegen::abi::spell::dart;
+use nve_codegen::abi::spell::{c, dart};
 
 const fn method(
     name: &'static str,
@@ -33,7 +33,11 @@ fn with_methods(
 ) -> Result<RuntimeAbiModel<'static>, CodegenError> {
     let base = nve_codegen::abi::abi_model().expect("ABI model");
     let rt = runtime_abi_descriptor();
+    let align = rt.vtables[0].align;
+    let raw_size = rt.vtables[0].slots_offset + methods.len() * std::mem::size_of::<*const ()>();
+    let size = raw_size.div_ceil(align) * align;
     let vtables: &'static [AbiVtableDescriptor] = Box::leak(Box::new([AbiVtableDescriptor {
+        size,
         methods,
         ..rt.vtables[0]
     }]));
@@ -141,6 +145,9 @@ fn unknown_or_malformed_signatures_are_refused() {
     static UNKNOWN_POINTEE: [AbiMethodDescriptor; 1] =
         [method("f", &[param("m", "*const *const Mystery")], "()")];
     static EMPTY_NAME: [AbiMethodDescriptor; 1] = [method("h", &[param("", "u32")], "()")];
+    static WILDCARD_NAME: [AbiMethodDescriptor; 1] = [method("w", &[param("_", "u32")], "()")];
+    static DUP_NAME: [AbiMethodDescriptor; 1] =
+        [method("dup", &[param("x", "u32"), param("x", "u32")], "()")];
     for (slots, why) in [
         (&UNKNOWN_PARAM, "uses `Mystery`"),
         (&UNKNOWN_RET, "uses `Mystery`"),
@@ -150,6 +157,8 @@ fn unknown_or_malformed_signatures_are_refused() {
         (&VOID_PARAM, "only valid behind a pointer"),
         (&UNKNOWN_POINTEE, "uses `Mystery`"),
         (&EMPTY_NAME, "must be a valid identifier"),
+        (&WILDCARD_NAME, "must be a valid identifier"),
+        (&DUP_NAME, "duplicate parameter"),
     ] {
         match with_methods(slots) {
             Err(CodegenError::Validation(m)) => {
@@ -180,5 +189,65 @@ fn dart_runtime_bindings_check_every_slot() {
     for s in rt.vtables[0].methods {
         let field = nve_codegen::abi::spell::camel(s.name);
         assert!(check.contains(&format!("a.{field} != ffi.nullptr")), "{field}");
+    }
+}
+
+#[test]
+fn c_spelling_handles_multilevel_const_pointers() {
+    let base = nve_codegen::abi::abi_model().expect("ABI model");
+    let aliases = base.all_aliases();
+    assert_eq!(c::ty(aliases, "*const u8"), "const uint8_t*");
+    assert_eq!(c::ty(aliases, "*mut u8"), "uint8_t*");
+    assert_eq!(c::ty(aliases, "*const *const u8"), "const uint8_t* const*");
+    assert_eq!(c::ty(aliases, "*const *mut u8"), "uint8_t* const*");
+    assert_eq!(c::ty(aliases, "*mut *const u8"), "const uint8_t**");
+    assert_eq!(c::ty(aliases, "*mut *mut u8"), "uint8_t**");
+    assert_eq!(
+        c::ty(aliases, "*const *const *mut u8"),
+        "uint8_t* const* const*"
+    );
+}
+
+#[test]
+fn optional_vtable_slot_is_omitted_from_required_slots() {
+    static SLOTS: [AbiMethodDescriptor; 2] = [
+        method("req", &[], "()"),
+        AbiMethodDescriptor {
+            optional: true,
+            ..method("opt", &[], "()")
+        },
+    ];
+    let m = with_methods(&SLOTS).expect("valid optional slot");
+    assert_eq!(m.slots().len(), 2);
+    let required: Vec<&str> = m.required_slots().into_iter().map(|s| s.name).collect();
+    assert_eq!(required, vec!["req"]);
+}
+
+#[test]
+fn vtable_header_field_rejects_callback_typedef() {
+    let base = nve_codegen::abi::abi_model().expect("ABI model");
+    let rt = runtime_abi_descriptor();
+    let header_fields: &'static [AbiFieldDescriptor] =
+        Box::leak(Box::new([AbiFieldDescriptor {
+            ty: "NveRuntimeWakeFn",
+            c_type: None,
+            ..rt.vtables[0].header_fields[0]
+        }]));
+    let vtables: &'static [AbiVtableDescriptor] = Box::leak(Box::new([AbiVtableDescriptor {
+        header_fields,
+        ..rt.vtables[0]
+    }]));
+    let file: &'static AbiFileDescriptor = Box::leak(Box::new(AbiFileDescriptor {
+        vtables,
+        ..rt
+    }));
+    match RuntimeAbiModel::new(file, &base) {
+        Err(CodegenError::Validation(msg)) => {
+            assert!(
+                msg.contains("callback typedef `NveRuntimeWakeFn`"),
+                "unexpected message: {msg}"
+            );
+        }
+        other => panic!("expected callback typedef header rejection, got {other:?}"),
     }
 }

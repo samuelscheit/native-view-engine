@@ -568,5 +568,9 @@ fn check_against_rustc(
     Ok(())
 }
 
+mod vtable;
+
+pub use vtable::{VtableHeaderLayout, layout_vtable_headers_on};
+
 #[cfg(test)]
 mod tests;

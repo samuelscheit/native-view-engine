@@ -1,0 +1,49 @@
+error: `#[cfg(...)]` is not supported inside `abi_{consts,aliases,callbacks}!`
+ --> tests/ui/abi_items_invalid.rs:1:1
+  |
+1 | / nve_abi_macros::abi_consts! {
+2 | |     const BAD_CONSTS;
+3 | |
+4 | |     #[cfg(unix)]
+5 | |     pub const CFG_CONST: u32 = 1;
+6 | | }
+  | |_^
+  |
+  = note: this error originates in the macro `nve_abi_macros::abi_consts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: abi_aliases!: `hex` is only valid in `abi_consts!`
+  --> tests/ui/abi_items_invalid.rs:8:1
+   |
+ 8 | / nve_abi_macros::abi_aliases! {
+ 9 | |     const BAD_ALIASES;
+10 | |
+11 | |     #[nve_abi(hex)]
+12 | |     pub type BadAlias = u32;
+13 | | }
+   | |_^
+   |
+   = note: this error originates in the macro `nve_abi_macros::abi_aliases` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: `BadCb` does not allow `Option<...>` wrapper around function pointer
+  --> tests/ui/abi_items_invalid.rs:15:1
+   |
+15 | / nve_abi_macros::abi_callbacks! {
+16 | |     const BAD_CBS;
+17 | |
+18 | |     pub type BadCb = Option<extern "C" fn(x: u32)>;
+19 | | }
+   | |_^
+   |
+   = note: this error originates in the macro `nve_abi_macros::abi_callbacks` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: `DupParamCb`: duplicate parameter name `x`
+  --> tests/ui/abi_items_invalid.rs:21:1
+   |
+21 | / nve_abi_macros::abi_callbacks! {
+22 | |     const BAD_DUP_PARAM_CBS;
+23 | |
+24 | |     pub type DupParamCb = extern "C" fn(x: u32, x: u32);
+25 | | }
+   | |_^
+   |
+   = note: this error originates in the macro `nve_abi_macros::abi_callbacks` (in Nightly builds, run with -Z macro-backtrace for more info)

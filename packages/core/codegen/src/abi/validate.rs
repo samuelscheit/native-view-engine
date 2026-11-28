@@ -183,19 +183,19 @@ pub(super) fn abi_on(
             check_type(a.target, Position::AliasTarget, &known, "alias", a.name)?;
         }
         for cb in file.callbacks {
+            check_param_names(cb.params, "callback", cb.name)?;
             for p in cb.params {
-                check_param_name(p.name, "callback", cb.name)?;
                 check_type(p.ty, Position::Param, &known, "callback", cb.name)?;
             }
             check_type(cb.return_type, Position::Return, &known, "callback", cb.name)?;
         }
         for v in file.vtables {
             for h in v.header_fields {
-                check_type(h.abi_type(), Position::Param, &known, v.name, h.name)?;
+                check_type(h.abi_type(), Position::Field, &known, v.name, h.name)?;
             }
             for f in v.methods {
+                check_param_names(f.params, v.name, f.name)?;
                 for p in f.params {
-                    check_param_name(p.name, v.name, f.name)?;
                     check_type(p.ty, Position::Param, &known, v.name, f.name)?;
                 }
                 check_type(f.return_type, Position::Return, &known, v.name, f.name)?;
@@ -217,27 +217,42 @@ pub(super) fn abi_on(
     Ok(())
 }
 
-fn check_param_name(name: &str, owner: &str, fn_name: &str) -> Result<(), CodegenError> {
-    let valid = name
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-    if !valid {
-        return Err(invalid(format!(
-            "`{owner}::{fn_name}` parameter `{name}` must be a valid identifier"
-        )));
+fn check_param_names(
+    params: &[nve_abi::schema::AbiParamDescriptor],
+    owner: &str,
+    fn_name: &str,
+) -> Result<(), CodegenError> {
+    let mut seen = BTreeSet::new();
+    for p in params {
+        let name = p.name;
+        let valid = name != "_"
+            && name
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !valid {
+            return Err(invalid(format!(
+                "`{owner}::{fn_name}` parameter `{name}` must be a valid identifier"
+            )));
+        }
+        if !seen.insert(name) {
+            return Err(invalid(format!(
+                "`{owner}::{fn_name}` declares duplicate parameter `{name}`"
+            )));
+        }
     }
     Ok(())
 }
 
-/// Where a type appears in a C signature.
+/// Where a type appears in a C signature or vtable header.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Position {
     Param,
     Return,
     Pointee,
     AliasTarget,
+    Field,
 }
 
 /// The record, vtable, alias, and callback names the ABI declares, its enums (rejected in
@@ -298,6 +313,9 @@ fn check_type(
             "`{}` uses `{n}`, which the ABI does not declare",
             ctx()
         ))),
+        Ty::Array { elem, .. } if pos == Position::Field => {
+            check_type(elem, Position::Field, known, owner, name)
+        }
         Ty::Array { .. } => Err(invalid(format!(
             "`{}`: arrays cannot cross a C signature by value",
             ctx()

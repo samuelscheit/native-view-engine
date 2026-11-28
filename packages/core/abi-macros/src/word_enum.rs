@@ -23,7 +23,7 @@
 use proc_macro::TokenStream;
 
 use crate::parse::{parse_i128_literal, parse_string_literal};
-use crate::tok::{expect_ident, from_stream, is_colon2, is_ident, is_punct, skip_vis, Delim, Tok};
+use crate::tok::{attr_name, expect_ident, from_stream, is_ident, is_punct, skip_vis, Delim, Tok};
 
 #[cfg(test)]
 #[path = "word_enum_tests.rs"]
@@ -68,7 +68,7 @@ fn parse(tokens: &[Tok]) -> Result<ParsedWordEnum, String> {
         };
         pos += 2;
         let (name, rest) = attr_name(inner);
-        match name.as_str() {
+        match name {
             "repr" => {
                 if let Some(Tok::Group(Delim::Paren, rtoks)) = rest.first() {
                     for t in rtoks {
@@ -143,21 +143,6 @@ fn parse(tokens: &[Tok]) -> Result<ParsedWordEnum, String> {
         variants,
         default_idx,
     })
-}
-
-fn attr_name(inner: &[Tok]) -> (String, &[Tok]) {
-    let mut i = 0;
-    let mut name = String::new();
-    while let Some(Tok::Ident(id)) = inner.get(i) {
-        name = id.clone();
-        i += 1;
-        if is_colon2(inner, i) {
-            i += 2;
-        } else {
-            break;
-        }
-    }
-    (name, &inner[i..])
 }
 
 fn parse_variants(body: &[Tok], enum_name: &str) -> Result<(Vec<String>, usize), String> {

@@ -31,15 +31,30 @@ pub(crate) fn unwrap_none(mut tokens: &[Tok]) -> &[Tok] {
 }
 
 /// Formats a Rust ABI type token slice into its canonical short spelling (`*const NveMapEntry`,
-/// `[u32; 4]`, `Option<NveRuntimeWakeFn>`, `c_void`, `()`), stripping module paths on identifiers.
-pub(crate) fn format_type(tokens: &[Tok]) -> String {
+/// `[u32; 4]`, `Option<NveRuntimeWakeFn>`, `c_void`, `()`), stripping module paths and `r#` on
+/// identifiers and rejecting nested inline `fn(...)` types.
+pub(crate) fn format_type(tokens: &[Tok]) -> Result<String, String> {
     let tokens = unwrap_none(tokens);
     let mut out = String::new();
     let mut i = 0;
     while i < tokens.len() {
+        if is_ident(tokens, i, "fn")
+            || (is_ident(tokens, i, "extern")
+                && matches!(
+                    tokens.get(i + 1),
+                    Some(Tok::Literal(_)) | Some(Tok::Ident(_))
+                ))
+            || (is_ident(tokens, i, "unsafe")
+                && (is_ident(tokens, i + 1, "extern") || is_ident(tokens, i + 1, "fn")))
+        {
+            return Err(
+                "inline `fn(...)` types are not supported in ABI params, returns, or fields; use a named `abi_callbacks!` typedef"
+                    .to_owned(),
+            );
+        }
         match &tokens[i] {
             Tok::Group(Delim::None, inner) => {
-                out.push_str(&format_type(inner));
+                out.push_str(&format_type(inner)?);
                 i += 1;
             }
             Tok::Punct('*', _) => {
@@ -54,18 +69,18 @@ pub(crate) fn format_type(tokens: &[Tok]) -> String {
             Tok::Group(Delim::Bracket, inner) => {
                 out.push('[');
                 if let Some(semi) = find_top_level_punct(inner, ';') {
-                    out.push_str(&format_type(&inner[..semi]));
+                    out.push_str(&format_type(&inner[..semi])?);
                     out.push_str("; ");
-                    out.push_str(&format_type(&inner[semi + 1..]));
+                    out.push_str(&format_type(&inner[semi + 1..])?);
                 } else {
-                    out.push_str(&format_type(inner));
+                    out.push_str(&format_type(inner)?);
                 }
                 out.push(']');
                 i += 1;
             }
             Tok::Group(Delim::Paren, inner) => {
                 out.push('(');
-                out.push_str(&format_type(inner));
+                out.push_str(&format_type(inner)?);
                 out.push(')');
                 i += 1;
             }
@@ -73,16 +88,16 @@ pub(crate) fn format_type(tokens: &[Tok]) -> String {
                 i += 2;
             }
             Tok::Ident(id) => {
-                let mut last = id.clone();
+                let mut last = id.as_str();
                 i += 1;
                 while is_colon2(tokens, i) {
                     i += 2;
                     if let Some(Tok::Ident(seg)) = tokens.get(i) {
-                        last = seg.clone();
+                        last = seg.as_str();
                         i += 1;
                     }
                 }
-                out.push_str(&last);
+                out.push_str(last.strip_prefix("r#").unwrap_or(last));
             }
             Tok::Punct(ch, _) => {
                 out.push(*ch);
@@ -97,13 +112,13 @@ pub(crate) fn format_type(tokens: &[Tok]) -> String {
             }
             Tok::Group(Delim::Brace, inner) => {
                 out.push('{');
-                out.push_str(&format_type(inner));
+                out.push_str(&format_type(inner)?);
                 out.push('}');
                 i += 1;
             }
         }
     }
-    out.trim().to_owned()
+    Ok(out.trim().to_owned())
 }
 
 fn find_top_level_punct(tokens: &[Tok], ch: char) -> Option<usize> {
@@ -256,7 +271,7 @@ pub(crate) fn parse_fn_ptr_sig(
         if pos >= tokens.len() {
             return Err(format!("`{ctx}` missing return type after `->`"));
         }
-        format_type(&tokens[pos..])
+        format_type(&tokens[pos..])?
     } else {
         return Err(format!(
             "`{ctx}` unexpected trailing tokens in function pointer signature"
@@ -313,12 +328,21 @@ fn parse_fn_params(tokens: &[Tok], ctx: &str) -> Result<Vec<ParsedParam>, String
         if pos == start {
             return Err(format!("`{ctx}`: missing type for parameter `{rust_ident}`"));
         }
-        let ty = format_type(&tokens[start..pos]);
+        let abi_name = strip_raw(&rust_ident);
+        if abi_name == "_" {
+            return Err(format!(
+                "`{ctx}`: wildcard `_` parameter is not allowed; name every ABI parameter"
+            ));
+        }
+        if out.iter().any(|p: &ParsedParam| p.abi_name == abi_name) {
+            return Err(format!("`{ctx}`: duplicate parameter name `{abi_name}`"));
+        }
+        let ty = format_type(&tokens[start..pos])?;
         if is_punct(tokens, pos, ',') {
             pos += 1;
         }
         out.push(ParsedParam {
-            abi_name: strip_raw(&rust_ident),
+            abi_name,
             rust_ident,
             ty,
         });

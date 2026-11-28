@@ -13,6 +13,7 @@ mod event_enum;
 mod fn_sig;
 mod lit;
 mod parse;
+mod parse_attrs;
 mod repr_enum;
 mod table;
 mod tok;

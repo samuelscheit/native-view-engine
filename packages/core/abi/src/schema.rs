@@ -136,6 +136,15 @@ pub struct AbiAliasDescriptor {
     pub doc: Option<&'static str>,
 }
 
+impl AbiAliasDescriptor {
+    pub(crate) const EMPTY: Self = Self {
+        name: "",
+        rust_name: None,
+        target: "",
+        doc: None,
+    };
+}
+
 /// Named parameter of a vtable method or callback typedef.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AbiParamDescriptor {
@@ -284,11 +293,13 @@ concat_abi_slices!(CORE_CONSTS: [AbiConstDescriptor] = [
     EVENT_TABLE_ABI_CONSTS,
 ]);
 
-const CORE_ALIASES: &[AbiAliasDescriptor] = &[
+const CORE_HANDLE_ALIASES_PRE: &[AbiAliasDescriptor] = &[
     <NodeId as NveAliasSchema>::SCHEMA,
     <SurfaceId as NveAliasSchema>::SCHEMA,
     <FrameId as NveAliasSchema>::SCHEMA,
-    TABLE_ABI_ALIASES[0],
+];
+
+const CORE_HANDLE_ALIASES_POST: &[AbiAliasDescriptor] = &[
     <TimestampUs as NveAliasSchema>::SCHEMA,
     <DurationUs as NveAliasSchema>::SCHEMA,
     <EventId as NveAliasSchema>::SCHEMA,
@@ -298,8 +309,14 @@ const CORE_ALIASES: &[AbiAliasDescriptor] = &[
     <InterfaceId as NveAliasSchema>::SCHEMA,
     <HostServiceId as NveAliasSchema>::SCHEMA,
     <HostRequestId as NveAliasSchema>::SCHEMA,
-    FFI_ABI_ALIASES[0],
 ];
+
+concat_abi_slices!(CORE_ALIASES: [AbiAliasDescriptor] = [
+    CORE_HANDLE_ALIASES_PRE,
+    TABLE_ABI_ALIASES,
+    CORE_HANDLE_ALIASES_POST,
+    FFI_ABI_ALIASES,
+]);
 
 concat_abi_slices!(CORE_CALLBACKS: [AbiCallbackDescriptor] = [
     HOST_ABI_CALLBACKS,
@@ -416,6 +433,7 @@ const fn hash_params_and_ret(
 /// Never hashes target-dependent `size`, `align`, `field.offset`, or `slots_offset`, so the
 /// resulting digest is identical across LP64, LLP64, ILP32, i386 System V, and `wasm32`.
 pub const fn hash_abi_descriptor_into(h: &mut crate::Xxh64Hasher, desc: &AbiFileDescriptor) {
+    hash_opt_str(h, desc.namespace);
     h.update_u64(desc.consts.len() as u64);
     let mut i = 0;
     while i < desc.consts.len() {

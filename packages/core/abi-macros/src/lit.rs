@@ -3,11 +3,12 @@
 pub(crate) fn parse_usize_literal(raw: &str) -> Result<usize, String> {
     let c = raw.replace('_', "");
     let t = c
-        .trim_end_matches("usize")
-        .trim_end_matches("u64")
-        .trim_end_matches("u32")
-        .trim_end_matches("u16")
-        .trim_end_matches("u8");
+        .strip_suffix("usize")
+        .or_else(|| c.strip_suffix("u64"))
+        .or_else(|| c.strip_suffix("u32"))
+        .or_else(|| c.strip_suffix("u16"))
+        .or_else(|| c.strip_suffix("u8"))
+        .unwrap_or(c.as_str());
     let (r, d) = if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
         (16, h)
     } else if let Some(b) = t.strip_prefix("0b").or_else(|| t.strip_prefix("0B")) {

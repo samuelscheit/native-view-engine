@@ -1184,4 +1184,87 @@ fn unit_no_manual_repr_enum_converters_positive_and_negative() {
         v_good.is_empty(),
         "delegators, non-unit enums, and structs must not false-positive: {v_good:?}"
     );
+
+    // Trait impls (`From<Int>`, `TryFrom<Int>`), `pub(crate)` cross-file within same crate,
+    // 2-arg fallback, and `if`/`else if` discriminant chains must all be caught.
+    let trait_and_crate_def = r#"
+        #[repr(u8)]
+        pub(crate) enum CrateMode { Off = 0, On = 1, Auto = 2 }
+
+        impl From<u8> for CrateMode {
+            fn from(v: u8) -> Self {
+                match v { 1 => Self::On, 2 => Self::Auto, _ => Self::Off }
+            }
+        }
+
+        impl TryFrom<u8> for CrateMode {
+            type Error = u8;
+            fn try_from(v: u8) -> Result<Self, Self::Error> {
+                match v { 0 => Ok(Self::Off), 1 => Ok(Self::On), 2 => Ok(Self::Auto), _ => Err(v) }
+            }
+        }
+    "#;
+    let trait_and_crate_use = r#"
+        fn decode_with_fallback(raw: u8, fb: CrateMode) -> CrateMode {
+            if raw == 0 {
+                CrateMode::Off
+            } else if raw == 1 {
+                CrateMode::On
+            } else {
+                fb
+            }
+        }
+    "#;
+    // Collision & semantic-domain false-positive guards:
+    // 1. Local struct `PubU8` with `from_u8` in another crate must NOT collide with `pub enum PubU8`.
+    // 2. Semantic HTTP `u16` status mapping onto `#[repr(u8)] Severity` (`0, 1, 2`) must NOT flag.
+    let no_false_positives = r#"
+        pub struct PubU8(pub u8);
+        impl PubU8 {
+            pub const fn from_u8(v: u8) -> Self { Self(v) }
+        }
+
+        #[repr(u8)]
+        pub enum Severity { Ok = 0, Warn = 1, Error = 2 }
+
+        pub fn severity_from_http_status(code: u16) -> Severity {
+            match code {
+                200 => Severity::Ok,
+                404 => Severity::Warn,
+                500 => Severity::Error,
+                _ => Severity::Warn,
+            }
+        }
+    "#;
+
+    let ast_tc_def = syn::parse_file(trait_and_crate_def).unwrap();
+    let ast_tc_use = syn::parse_file(trait_and_crate_use).unwrap();
+    let ast_nfp = syn::parse_file(no_false_positives).unwrap();
+
+    let mut v_tc = Vec::new();
+    ast_enums::scan_manual_repr_enum_converters(
+        &[
+            ("packages/crate_a/src/mode.rs".into(), trait_and_crate_def, &ast_tc_def),
+            ("packages/crate_a/src/decode.rs".into(), trait_and_crate_use, &ast_tc_use),
+        ],
+        &mut v_tc,
+    );
+    assert_eq!(
+        v_tc.len(),
+        3,
+        "expected From<u8>, TryFrom<u8>, and cross-file pub(crate) if/else-if fallback: {v_tc:?}"
+    );
+
+    let mut v_nfp = Vec::new();
+    ast_enums::scan_manual_repr_enum_converters(
+        &[
+            ("packages/a/src/lib.rs".into(), bad_src, &ast_bad),
+            ("packages/other/src/lib.rs".into(), no_false_positives, &ast_nfp),
+        ],
+        &mut v_nfp,
+    );
+    assert!(
+        !v_nfp.iter().any(|v| v.path == "packages/other/src/lib.rs"),
+        "local struct collision and HTTP semantic match must not false-positive: {v_nfp:?}"
+    );
 }

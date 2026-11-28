@@ -13,10 +13,11 @@ use std::fmt::Write as _;
 
 use proc_macro::TokenStream;
 
-use crate::fn_sig::strip_raw;
+use crate::fn_sig::{strip_raw, unwrap_none};
 use crate::parse::parse_i128_literal;
 use crate::tok::{
-    expect_ident, from_stream, is_colon2, is_ident, is_punct, paren_inner, skip_vis, Delim, Tok,
+    attr_name, check_no_cfg_attr, expect_ident, from_stream, is_ident, is_punct, paren_inner,
+    skip_vis, Delim, Tok,
 };
 
 #[cfg(test)]
@@ -53,21 +54,6 @@ fn repr_bounds(repr: &str) -> Option<(i128, i128)> {
     })
 }
 
-fn attr_name(inner: &[Tok]) -> (String, &[Tok]) {
-    let mut i = 0;
-    let mut name = String::new();
-    while let Some(Tok::Ident(id)) = inner.get(i) {
-        name = id.clone();
-        i += 1;
-        if is_colon2(inner, i) {
-            i += 2;
-        } else {
-            break;
-        }
-    }
-    (name, &inner[i..])
-}
-
 fn parse(tokens: &[Tok]) -> Result<ParsedReprEnum, String> {
     let mut pos = 0usize;
     let mut repr: Option<String> = None;
@@ -80,7 +66,14 @@ fn parse(tokens: &[Tok]) -> Result<ParsedReprEnum, String> {
         };
         pos += 2;
         let (name, rest) = attr_name(inner);
-        match name.as_str() {
+        check_no_cfg_attr(
+            name,
+            rest,
+            false,
+            &["repr_enum", "repr", "cfg"],
+            "#[derive(ReprEnum)]",
+        )?;
+        match name {
             "repr" => {
                 if let Some(args) = paren_inner(rest) {
                     let mut i = 0;
@@ -158,19 +151,16 @@ fn parse(tokens: &[Tok]) -> Result<ParsedReprEnum, String> {
         ));
     }
 
-    let repr = match (repr, bad_repr) {
-        (Some(r), _) => r,
-        (None, Some(bad)) => {
-            return Err(format!(
-                "#[derive(ReprEnum)] on `{ident}` requires `#[repr(u8|u16|u32|u64|i8|i16|i32|i64)]`, found `#[repr({bad})]`"
-            ));
-        }
-        (None, None) => {
-            return Err(format!(
-                "#[derive(ReprEnum)] on `{ident}` requires `#[repr(u8|u16|u32|u64|i8|i16|i32|i64)]`"
-            ));
-        }
-    };
+    if let Some(bad) = bad_repr {
+        return Err(format!(
+            "#[derive(ReprEnum)] on `{ident}` requires `#[repr(u8|u16|u32|u64|i8|i16|i32|i64)]`, found `#[repr({bad})]`"
+        ));
+    }
+    let repr = repr.ok_or_else(|| {
+        format!(
+            "#[derive(ReprEnum)] on `{ident}` requires `#[repr(u8|u16|u32|u64|i8|i16|i32|i64)]`"
+        )
+    })?;
 
     let Some(Tok::Group(Delim::Brace, body)) = tokens.get(pos) else {
         return Err(format!(
@@ -224,7 +214,14 @@ fn parse_variants(
                 return Err(format!("malformed variant attribute on `{enum_name}`"));
             };
             pos += 2;
-            let (name, _) = attr_name(inner);
+            let (name, rest) = attr_name(inner);
+            check_no_cfg_attr(
+                name,
+                rest,
+                true,
+                &["repr_enum", "cfg"],
+                "#[derive(ReprEnum)] variant",
+            )?;
             if name == "repr_enum" {
                 return Err(format!(
                     "#[derive(ReprEnum)] on `{enum_name}` does not support variant-level `#[repr_enum(...)]`"
@@ -247,24 +244,20 @@ fn parse_variants(
 
         let val = if is_punct(body, pos, '=') {
             pos += 1;
-            let neg = if is_punct(body, pos, '-') {
+            let disc_start = pos;
+            while pos < body.len() && !is_punct(body, pos, ',') {
                 pos += 1;
-                true
-            } else {
-                false
-            };
-            let Some(Tok::Literal(lit)) = body.get(pos) else {
-                return Err(format!(
-                    "#[derive(ReprEnum)] variant `{enum_name}::{vname}` requires integer literal discriminant"
-                ));
-            };
-            pos += 1;
-            if pos < body.len() && !is_punct(body, pos, ',') {
-                return Err(format!(
-                    "#[derive(ReprEnum)] variant `{enum_name}::{vname}` requires integer literal discriminant"
-                ));
             }
-            parse_i128_literal(lit, neg)?
+            let disc_toks = unwrap_none(&body[disc_start..pos]);
+            match disc_toks {
+                [Tok::Literal(lit)] => parse_i128_literal(lit, false)?,
+                [Tok::Punct('-', _), Tok::Literal(lit)] => parse_i128_literal(lit, true)?,
+                _ => {
+                    return Err(format!(
+                        "#[derive(ReprEnum)] variant `{enum_name}::{vname}` requires integer literal discriminant"
+                    ));
+                }
+            }
         } else {
             next_val.ok_or_else(|| {
                 format!(
@@ -324,13 +317,13 @@ fn emit(e: &ParsedReprEnum) -> String {
 
     let _ = writeln!(
         out,
-        "#[allow(dead_code)]\nimpl {id} {{\n    pub const COUNT: usize = {count};\n    pub const ALL: [Self; {count}] = [{all_items}];\n\n    #[inline(always)]\n    pub const fn as_{r}(self) -> {r} {{\n        self as {r}\n    }}\n\n    #[inline(always)]\n    pub const fn try_from_{r}(__nve_raw: {r}) -> ::core::option::Option<Self> {{\n        match __nve_raw {{\n            {try_arms}_ => ::core::option::Option::None,\n        }}\n    }}"
+        "#[allow(dead_code)]\nimpl {id} {{\n    pub const COUNT: usize = {count};\n    pub const ALL: [Self; {count}] = [{all_items}];\n\n    #[inline(always)]\n    pub const fn as_{r}(self) -> {r} {{\n        self as {r}\n    }}\n\n    #[inline]\n    pub const fn try_from_{r}(__nve_raw: {r}) -> ::core::option::Option<Self> {{\n        match __nve_raw {{\n            {try_arms}_ => ::core::option::Option::None,\n        }}\n    }}"
     );
 
     if let Some(ref fb) = e.fallback {
         let _ = writeln!(
             out,
-            "\n    #[inline(always)]\n    pub const fn from_{r}(__nve_raw: {r}) -> Self {{\n        match Self::try_from_{r}(__nve_raw) {{\n            ::core::option::Option::Some(__nve_v) => __nve_v,\n            ::core::option::Option::None => Self::{fb},\n        }}\n    }}"
+            "\n    #[inline]\n    pub const fn from_{r}(__nve_raw: {r}) -> Self {{\n        match Self::try_from_{r}(__nve_raw) {{\n            ::core::option::Option::Some(__nve_v) => __nve_v,\n            ::core::option::Option::None => Self::{fb},\n        }}\n    }}"
         );
     }
 

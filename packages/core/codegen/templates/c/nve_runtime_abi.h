@@ -70,11 +70,11 @@ NVE_STATIC_ASSERT(offsetof({{ m.vtable().name }}, {{ h.name }}) == {{ off }}u, "
 {%- endif %}
 {%- endfor %}
 {%- for method in m.slots() %}
-NVE_STATIC_ASSERT(offsetof({{ m.vtable().name }}, {{ method.name }}) == {{ m.vtable().slots_offset }}u + {{ loop.index0 }}u * sizeof(void*), "{{ m.vtable().name }}.{{ method.name }} slot");
+NVE_STATIC_ASSERT(offsetof({{ m.vtable().name }}, {{ method.name }}) == {{ c::width(m.vtable_slots_offset()) }} + {{ loop.index0 }}u * sizeof(void*), "{{ m.vtable().name }}.{{ method.name }} slot");
 {%- endfor %}
 NVE_STATIC_ASSERT(
     sizeof({{ m.vtable().name }}) ==
-        (({{ m.vtable().slots_offset }}u + NVE_RUNTIME_API_SLOT_COUNT * sizeof(void*) + NVE_ALIGNOF({{ m.vtable().name }}) - 1u) &
+        (({{ c::width(m.vtable_slots_offset()) }} + NVE_RUNTIME_API_SLOT_COUNT * sizeof(void*) + NVE_ALIGNOF({{ m.vtable().name }}) - 1u) &
          ~(NVE_ALIGNOF({{ m.vtable().name }}) - 1u)),
     "{{ m.vtable().name }} size");
 
@@ -98,9 +98,9 @@ NVE_STATIC_ASSERT(
 /* 1 when `api` is non-NULL and every slot is set (version / hash checked separately). */
 static inline int nve_runtime_api_slots_complete(const NveRuntimeApi* api) {
   return api != NULL
-{%- for method in m.slots() %} &&
+{%- for method in m.slots() %}{% if !method.optional %} &&
          api->{{ method.name }} != NULL
-{%- endfor %};
+{%- endif %}{%- endfor %};
 }
 
 NVE_RUNTIME_API const NveRuntimeApi* nve_runtime_get_interface(uint32_t abi_version);
