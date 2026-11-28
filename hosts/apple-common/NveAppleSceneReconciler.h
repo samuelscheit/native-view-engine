@@ -30,13 +30,16 @@ NS_ASSUME_NONNULL_BEGIN
 /// Returns the canonical payload of a runtime resource (`resource_payload`), or `nil`.
 typedef NSData *_Nullable (^NveAppleResourceProvider)(uint32_t resourceId);
 
-/// Incremental Apple reconciler over the zero-copy runtime scene: realizes every live node as a
-/// retained native view keyed by `NodeId`, recreates views whose kind changed, updates dirty
-/// nodes in `O(dirty)`, refreshes frames, reorders subviews by paint order, sizes scroll content,
-/// and resolves `nve.image` resources (cached until an image row changes).
+/// Apple adapter of host-cxx's `RetainedTree` over the zero-copy runtime scene: one retained
+/// native view per live node, O(changed) per frame (removed, dirty, moved — geometry only — and the
+/// clean views whose resource bytes were rewritten), inherited typography cascades, subviews in
+/// paint order (scene order by `z_index`), scroll content sizes, and `nve.image` sources decoded
+/// once per resource version.
 @interface NveAppleSceneReconciler : NSObject
 
+/// Views (re)applied by the last sync (`update`s), geometry-only moves, and removals.
 @property (nonatomic, readonly) uint32_t lastReconciledDirtyCount;
+@property (nonatomic, readonly) uint32_t lastReconciledMovedCount;
 @property (nonatomic, readonly) uint32_t lastReconciledRemovedCount;
 @property (nonatomic, readonly) NSUInteger mountedViewCount;
 

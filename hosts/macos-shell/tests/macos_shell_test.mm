@@ -1,6 +1,7 @@
 // macOS host suite over the real `libnve_runtime`: demo-app mount + styling, props, press ->
-// outbound events, resize, dylib error codes, Tier-2 reload with state, instant-boot snapshots,
-// core-table scenes (text input, image, scroll, accessibility), and pairing errors.
+// outbound events, resize, calls re-entering from reconcile, runtime-loaded dylib error codes,
+// Tier-2 reload with state, core-table scenes (text input, image, scroll, accessibility, rewritten
+// image resources), min-content measurement, and pairing errors.
 #import <AppKit/AppKit.h>
 #import "NveAppleComponentHost.h"
 #import "RCTNveMacComponentView.h"
@@ -8,6 +9,7 @@
 #include "NveAppleDemoApp.hpp"
 #include "NveAppleValueBridge.h"
 
+#include <nve/host/host_session.hpp>
 #include <nve/host/nve2_builder.hpp>
 
 #include <array>
@@ -53,8 +55,8 @@ std::vector<uint8_t> image_src(std::string_view url) {
   return out;
 }
 
-std::string png_data_uri() {
-  NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:nullptr pixelsWide:4 pixelsHigh:4
+std::string png_data_uri(NSInteger pixels = 4) {
+  NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:nullptr pixelsWide:pixels pixelsHigh:pixels
       bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:0 bitsPerPixel:0];
   NSData *png = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
   return std::string("data:image/png;base64,") + [png base64EncodedStringWithOptions:0].UTF8String;
@@ -133,6 +135,14 @@ NSData *typography_scene(uint64_t revision) {
   return [NSData dataWithBytes:frame.data() length:frame.size()];
 }
 
+/// Revision 2 of `core_table_scene`: only resource 9's bytes change (an 8px PNG); node 3 stays clean.
+NSData *rewritten_image_scene() {
+  Nve2FrameBuilder b(2u);
+  b.define_resource(9u, Key64::of("nve.res.image_src"), image_src(png_data_uri(8)));
+  const std::vector<uint8_t> frame = b.finish();
+  return [NSData dataWithBytes:frame.data() length:frame.size()];
+}
+
 CGFloat font_size(RCTNveMacComponentView *view, uint32_t node) {
   NSView *v = [view nativeViewForNodeId:node];
   return [v isKindOfClass:[NSTextField class]] ? ((NSTextField *)v).font.pointSize : -1.0;
@@ -162,9 +172,10 @@ int main() {
     NSTextField *title = (NSTextField *)[view nativeViewForNodeId:DemoApp::kTitle];
     CHECK(near(title.font.pointSize, 18.0));  // inherited typography from the card
     CHECK(button.gestureRecognizers.count == 1u && card.gestureRecognizers.count == 0u);
-    NSView *rootNode = [view nativeViewForNodeId:1u];
-    CHECK(rootNode != nil && near(view.intrinsicContentSize.width, rootNode.frame.size.width) &&
-          near(view.intrinsicContentSize.height, rootNode.frame.size.height));  // the laid-out root
+    CGSize rootSize = CGSizeZero;
+    CHECK([view nativeViewForNodeId:1u] == nil);  // the root's style paints on the host view itself
+    CHECK([view.nveHost getRootLayoutSize:&rootSize] && rootSize.width > 0.0 &&
+          near(view.intrinsicContentSize.width, rootSize.width) && near(view.intrinsicContentSize.height, rootSize.height));
 
     // 2. Props + 3. press -> re-render + outbound custom event.
     CHECK([view applyPropsDictionary:@{@"title" : @"Hello props", @"ignored" : @[ @1, @{@"k" : NSNull.null} ]}]);
@@ -186,15 +197,47 @@ int main() {
     const CGFloat before = card.frame.size.width;
     [view setFrameSize:NSMakeSize(600, 300)];
     CHECK(card.frame.size.width > before + 100.0);
+    CHECK(view.nveHost.lastReconciledMovedCount >= 1u);  // re-placed children without a content update
 
-    // 5. Dylib errors keep the running app.
+    // 4b. Calls made from inside reconcile (a frame-change observer) run on the next main-queue
+    //     turn, and the deferred block never keeps a released host alive.
+    card.postsFrameChangedNotifications = YES;
+    __block BOOL deferredAccepted = NO;
+    id observer = [NSNotificationCenter.defaultCenter addObserverForName:NSViewFrameDidChangeNotification object:card queue:nil
+        usingBlock:^(NSNotification *) { deferredAccepted = [view applyPropsDictionary:@{@"title" : @"Deferred"}]; }];
+    [view setFrameSize:NSMakeSize(500, 300)];
+    [NSNotificationCenter.defaultCenter removeObserver:observer];
+    CHECK(deferredAccepted && ![label_text(view, DemoApp::kTitle) isEqualToString:@"Deferred"]);
+    [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+    CHECK([label_text(view, DemoApp::kTitle) isEqualToString:@"Deferred"]);
+    __weak NveAppleComponentHost *released = nil;
+    @autoreleasepool {
+      RCTNveMacComponentView *transient = make_view();
+      CHECK([transient attachNveInterface:&DemoApp::get_interface surfaceId:8u]);
+      NSView *transientCard = [transient nativeViewForNodeId:DemoApp::kCard];
+      transientCard.postsFrameChangedNotifications = YES;
+      id o = [NSNotificationCenter.defaultCenter addObserverForName:NSViewFrameDidChangeNotification object:transientCard
+          queue:nil usingBlock:^(NSNotification *) { [transient.nveHost dispatchPressOnNodeId:DemoApp::kButton x:0 y:0]; }];
+      [transient setFrameSize:NSMakeSize(700, 300)];
+      [NSNotificationCenter.defaultCenter removeObserver:o];
+      released = transient.nveHost;
+    }
+    CHECK(released == nil);  // the pending press holds no strong reference
+    [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];  // and runs as a no-op
+
+    // 5. Load errors (the runtime loads app modules) keep the running app.
     NSError *err = nil;
-    CHECK(![view loadNveDylibAtPath:@"/nonexistent/libapp.dylib" surfaceId:7u error:&err] && err.code == 1);
-    CHECK(![view loadNveDylibAtPath:@NVE_TEST_NO_ENTRY_DYLIB surfaceId:7u error:&err] && err.code == 2);
-    CHECK(![view loadNveDylibAtPath:@NVE_TEST_NO_SURFACE_DYLIB surfaceId:7u error:&err] && err.code == 3);
+    using nve::host::ModuleError;
+    auto code = [](ModuleError e) { return static_cast<NSInteger>(e); };
+    CHECK(![view loadNveDylibAtPath:@"" surfaceId:7u error:&err] && err.code == code(ModuleError::Open));
+    CHECK(![view loadNveDylibAtPath:@"/nonexistent/libapp.dylib" surfaceId:7u error:&err] && err.code == code(ModuleError::Open));
+    CHECK(![view loadNveDylibAtPath:@NVE_TEST_NO_ENTRY_DYLIB surfaceId:7u error:&err] && err.code == code(ModuleError::MissingEntry));
+    CHECK(![view loadNveDylibAtPath:@NVE_TEST_NO_SURFACE_DYLIB surfaceId:7u error:&err] && err.code == code(ModuleError::MissingSurface));
+    CHECK([err.localizedDescription containsString:@"Loading"]);
     CHECK([label_text(view, DemoApp::kLabel) isEqualToString:@"Clicks: 2"]);
     RCTNveMacComponentView *failing = make_view();
-    CHECK(![failing loadNveDylibAtPath:@NVE_TEST_CREATE_FAIL_DYLIB surfaceId:1u error:&err] && err.code == 3);
+    CHECK(![failing loadNveDylibAtPath:@NVE_TEST_CREATE_FAIL_DYLIB surfaceId:1u error:&err] && err.code == code(ModuleError::Attach));
+    CHECK(!failing.nveHost.isAppAttached);
 
     // 6. Tier-2 reload keeps state; a failed reload keeps the live app.
     RCTNveMacComponentView *dylibView = make_view();
@@ -220,6 +263,28 @@ int main() {
     CHECK([scroller isKindOfClass:[NSScrollView class]]);
     CHECK([scene nativeViewForNodeId:5u].superview == ((NSScrollView *)scroller).documentView);
     CHECK(near(((NSScrollView *)scroller).documentView.frame.size.height, 400.0));
+    // A clean image node whose resource bytes were rewritten re-decodes; nothing else updates.
+    NSImage *before4 = ((NveAppleImageView *)image).image;
+    CHECK(near(before4.size.width, 4.0));
+    CHECK([scene.nveHost replayFrame0:rewritten_image_scene()]);
+    CHECK([scene nativeViewForNodeId:3u] == image && near(((NveAppleImageView *)image).image.size.width, 8.0));
+    CHECK(scene.nveLastReconciledDirtyCount == 1u && scene.nveLastReconciledRemovedCount == 0u);
+
+    // 7a. `max_width == 0` measures min-content: the widest word, wrapped onto more lines.
+    {
+      NveRuntimeTextStyle style{};
+      style.font_size = 14.0f;
+      style.font_weight = 400u;
+      const std::string_view sentence = "a considerably long sentence";
+      const NveStrSlice s{reinterpret_cast<const uint8_t *>(sentence.data()), sentence.size()};
+      float lw = 0.0f, lh = 0.0f, mw = 0.0f, mh = 0.0f, ww = 0.0f, wh = 0.0f;
+      nve::apple::native_text_measure(nullptr, s, &style, INFINITY, &lw, &lh);
+      nve::apple::native_text_measure(nullptr, s, &style, 0.0f, &mw, &mh);
+      const std::string_view word = "considerably";
+      nve::apple::native_text_measure(nullptr, NveStrSlice{reinterpret_cast<const uint8_t *>(word.data()), word.size()},
+                                      &style, INFINITY, &ww, &wh);
+      CHECK(mw > 0.0f && mw < lw && mh > lh && std::fabs(mw - ww) <= 1.0f);
+    }
 
     // 7b. Inherited typography cascades through dirty non-typography children to a recycled
     //     (generation 1) child, and clearing an ancestor's Typography restyles the subtree.

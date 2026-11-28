@@ -109,32 +109,10 @@ uint64_t current_timestamp_us() noexcept;
 /// Packed little-endian RGBA8888 (R in the low byte, A in the high byte) to `NSColor` / `UIColor`.
 NvePlatformColor * _Nonnull color_from_rgba(uint32_t rgba);
 
-/// Uniform error codes emitted by `open_nve_dylib` under a caller-supplied NSError domain.
-enum class DylibErrorCode : NSInteger {
-  OpenFailed = 1,
-  MissingEntryPoint = 2,
-  MissingSurfaceInterface = 3,
-};
-
-struct LoadedDylib {
-  void * _Nullable handle{nullptr};
-  NveGetInterfaceFn _Nullable get_interface{nullptr};
-};
-
-/// `dlopen` a Rust NVE `cdylib`, resolve `nve_get_interface`, and require `NVE_IFACE_SURFACE`.
-/// On failure closes any opened handle, fills `*out_error` (code 1/2/3), and returns `false`.
-bool open_nve_dylib(
-    NSString * _Nullable dylib_path,
-    NSString * _Nonnull error_domain,
-    LoadedDylib * _Nonnull out_dylib,
-    NSError * _Nullable * _Nullable out_error);
-
-/// Safely `dlclose` a handle if non-null and zero the pointer.
-void close_dylib(void * _Nullable &handle) noexcept;
-
 /// `NveRuntimeMeasureTextFn` for runtime layout: the system font the views paint (size / CSS
 /// weight / italic, `platform_font`) via `boundingRectWithSize:` (macOS adds
-/// `NSTextFieldCell`'s 4pt horizontal inset). Apple views do not paint family, letter spacing,
+/// `NSTextFieldCell`'s 4pt horizontal inset); `max_width == 0` measures min-content (wrapped at
+/// the widest whitespace-delimited word). Apple views do not paint family, letter spacing,
 /// line height, or max lines yet, so measurement ignores them too (paint parity).
 void native_text_measure(void *_Nullable ctx, NveStrSlice text, const NveRuntimeTextStyle *_Nonnull style,
                          float max_width, float *_Nonnull out_width, float *_Nonnull out_height);

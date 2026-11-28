@@ -7,20 +7,7 @@
 #pragma mark - Tier-2 reload
 
 - (BOOL)reloadDylibAtPath:(NSString *)dylibPath error:(NSError **)error {
-  nve::apple::LoadedDylib next;
-  if (!nve::apple::open_nve_dylib(dylibPath, _errorDomain, &next, error)) return NO;  // live app untouched
-  std::span<const uint8_t> state;
-  if (_appAttached && _session.snapshot_state(&state) == NVE_RUNTIME_OK) {
-    _pendingSnapshotState.assign(state.begin(), state.end());  // copy: the slice dies with the old app
-  }
-  if (![self _attachGetInterface:next.get_interface error:error]) {
-    _pendingSnapshotState.clear();
-    nve::apple::close_dylib(next.handle);
-    return NO;
-  }
-  nve::apple::close_dylib(_dylibHandle);  // the old app was destroyed by the attach above
-  _dylibHandle = next.handle;
-  return YES;
+  return [self _loadAppModule:dylibPath carryState:_appAttached error:error];  // failure: live app untouched
 }
 
 #pragma mark - Pairing
@@ -32,14 +19,12 @@
   if (_session.pair_connect(uri.UTF8String ?: "", token.UTF8String ?: "") != NVE_RUNTIME_OK) {
     if (error) {
       const std::string detail = _session.last_error();
-      *error = [self _errorWithCode:static_cast<NSInteger>(nve::apple::DylibErrorCode::OpenFailed)
+      *error = [self _errorWithCode:static_cast<NSInteger>(nve::host::ModuleError::Open)
                         description:[NSString stringWithFormat:@"Pairing with %@ failed: %s", uri, detail.c_str()]];
     }
     return NO;
   }
   _appAttached = NO;
-  _pendingSnapshotState.clear();
-  nve::apple::close_dylib(_dylibHandle);
   _pairRequested = YES;
   [self renderFrame];
   return YES;

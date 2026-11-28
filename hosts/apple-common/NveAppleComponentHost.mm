@@ -62,14 +62,15 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
   // fails (e.g. a non-owner thread), the box is leaked rather than freed under a firing worker.
   if (_wakeCtx != nullptr && _session.clear_wake_callback() == NVE_RUNTIME_OK) CFBridgingRelease(_wakeCtx);
   // Destroy the runtime (and the app it owns) before unloading the app's code.
-  _session.reset();
-  nve::apple::close_dylib(_dylibHandle);
+  _session.reset();  // the runtime unloads any module it loaded once the app is destroyed
 }
 
-- (BOOL)_deferIfReconciling:(dispatch_block_t)block {
-  if (!_reconciling) return NO;
-  dispatch_async(dispatch_get_main_queue(), block);
-  return YES;
+- (void)_deferToNextTurn:(void (^)(NveAppleComponentHost *host))block {
+  __weak NveAppleComponentHost *weakSelf = self;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    NveAppleComponentHost *host = weakSelf;
+    if (host != nil) block(host);
+  });
 }
 
 + (NveAppleComponentHost *)hostForRootView:(NvePlatformView *)rootView {
@@ -80,9 +81,9 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
   return [NSError errorWithDomain:_errorDomain code:code userInfo:@{NSLocalizedDescriptionKey : description}];
 }
 
-- (NSError *)_runtimeError:(NSString *)what {
+- (NSError *)_runtimeError:(NSString *)what status:(NveRuntimeStatus)status {
   const std::string detail = _session.last_error();
-  return [self _errorWithCode:static_cast<NSInteger>(nve::apple::DylibErrorCode::MissingSurfaceInterface)
+  return [self _errorWithCode:static_cast<NSInteger>(nve::host::module_error(status))
                   description:[NSString stringWithFormat:@"%@: %s", what, detail.empty() ? "runtime error" : detail.c_str()]];
 }
 
@@ -95,6 +96,7 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
 - (BOOL)hasReplayedFrame0 { return _hasReplayedFrame0; }
 - (uint32_t)lastReconciledDirtyCount { return _reconciler.lastReconciledDirtyCount; }
 - (uint32_t)lastReconciledRemovedCount { return _reconciler.lastReconciledRemovedCount; }
+- (uint32_t)lastReconciledMovedCount { return _reconciler.lastReconciledMovedCount; }
 
 - (uint32_t)nodeCount {
   NveRuntimeMetrics m{};
@@ -105,44 +107,53 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
 
 - (BOOL)_attachGetInterface:(NveGetInterfaceFn)getInterface error:(NSError **)error {
   if (_pairRequested) [self disconnectPaired];
-  if (_session.attach_app_interface(getInterface) != NVE_RUNTIME_OK) {
-    if (error) *error = [self _runtimeError:@"Failed to initialize NVE surface instance"];
+  const NveRuntimeStatus st = _session.attach_app_interface(getInterface);
+  if (st != NVE_RUNTIME_OK) {
+    if (error) *error = [self _runtimeError:@"Failed to initialize NVE surface instance" status:st];
     return NO;
   }
   _appAttached = getInterface != nullptr;  // NULL detaches
-  if (!_pendingSnapshotState.empty()) {
-    (void)_session.restore_state(_pendingSnapshotState);
-    _pendingSnapshotState.clear();
+  [self renderFrame];
+  return YES;
+}
+
+- (BOOL)_loadAppModule:(NSString *)path carryState:(BOOL)carry error:(NSError **)error {
+  if (path.length == 0) {
+    if (error) *error = [self _errorWithCode:static_cast<NSInteger>(nve::host::ModuleError::Open) description:@"Empty dylib path"];
+    return NO;
   }
+  // The runtime stages a private copy (a rebuilt file always runs new code), swaps atomically (a
+  // rejected module leaves the running app or pairing untouched), and unloads the old module only
+  // after its app is destroyed: the host never `dlopen`s app code.
+  const NveRuntimeStatus st = _session.load_app_module(path.UTF8String ?: "", carry);
+  if (st != NVE_RUNTIME_OK) {
+    if (error) *error = [self _runtimeError:[NSString stringWithFormat:@"Loading %@ failed", path] status:st];
+    return NO;
+  }
+  _appAttached = YES;
+  _pairRequested = NO;
   [self renderFrame];
   return YES;
 }
 
 - (BOOL)attachInterface:(NveGetInterfaceFn)getInterface surfaceId:(uint32_t)surfaceId {
   _surfaceId = surfaceId;
-  if (![self _attachGetInterface:getInterface error:nil]) return NO;
-  nve::apple::close_dylib(_dylibHandle);  // a statically linked app replaces any loaded dylib
-  return YES;
+  return [self _attachGetInterface:getInterface error:nil];
 }
 
 - (BOOL)loadDylibAtPath:(NSString *)dylibPath surfaceId:(uint32_t)surfaceId error:(NSError **)error {
-  nve::apple::LoadedDylib lib;
-  if (!nve::apple::open_nve_dylib(dylibPath, _errorDomain, &lib, error)) return NO;
   _surfaceId = surfaceId;
-  if (![self _attachGetInterface:lib.get_interface error:error]) {
-    nve::apple::close_dylib(lib.handle);
-    return NO;
-  }
-  nve::apple::close_dylib(_dylibHandle);
-  _dylibHandle = lib.handle;
-  return YES;
+  return [self _loadAppModule:dylibPath carryState:NO error:error];
 }
 
 #pragma mark - Props, input, frames
 
 - (BOOL)applyPropsDictionary:(NSDictionary<NSString *, id> *)props {
-  NSDictionary<NSString *, id> *copy = [props copy];
-  if ([self _deferIfReconciling:^{ [self applyPropsDictionary:copy]; }]) return YES;
+  if (_reconciling) {
+    NSDictionary<NSString *, id> *copy = [props copy];  // the caller may mutate it before next turn
+    [self _deferToNextTurn:^(NveAppleComponentHost *host) { [host applyPropsDictionary:copy]; }];
+    return YES;
+  }
   _arena.reset();
   const std::vector<NveMapEntry> entries = nve::apple::map_entries_from_dictionary(props, _arena);
   bool changed = false;
@@ -155,8 +166,11 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
 }
 
 - (BOOL)applyHotPatch:(NSData *)patchNvp1 {
-  NSData *copy = [patchNvp1 copy];
-  if ([self _deferIfReconciling:^{ [self applyHotPatch:copy]; }]) return YES;
+  if (_reconciling) {
+    NSData *copy = [patchNvp1 copy];
+    [self _deferToNextTurn:^(NveAppleComponentHost *host) { [host applyHotPatch:copy]; }];
+    return YES;
+  }
   bool changed = false;
   const auto st = _session.apply_hot_patch(
       std::span<const uint8_t>(static_cast<const uint8_t *>(patchNvp1.bytes), patchNvp1.length), &changed);
@@ -172,31 +186,48 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
 }
 
 - (void)dispatchPressOnNodeId:(uint32_t)nodeId x:(float)x y:(float)y {
-  if ([self _deferIfReconciling:^{ [self dispatchPressOnNodeId:nodeId x:x y:y]; }]) return;
+  if (_reconciling) {
+    [self _deferToNextTurn:^(NveAppleComponentHost *host) { [host dispatchPressOnNodeId:nodeId x:x y:y]; }];
+    return;
+  }
   [self _dispatch:nve::apple::make_point_event(_surfaceId, nodeId, NVE_EVENT_PRESS, x, y)];
 }
 
 - (void)dispatchTextChangeOnNodeId:(uint32_t)nodeId text:(NSString *)text {
-  NSString *copy = [text copy];
-  if ([self _deferIfReconciling:^{ [self dispatchTextChangeOnNodeId:nodeId text:copy]; }]) return;
-  [self _dispatch:nve::apple::make_text_event(_surfaceId, nodeId, NVE_EVENT_TEXT_CHANGE, copy.UTF8String ?: "", _arena)];
+  if (_reconciling) {
+    NSString *copy = [text copy];
+    [self _deferToNextTurn:^(NveAppleComponentHost *host) { [host dispatchTextChangeOnNodeId:nodeId text:copy]; }];
+    return;
+  }
+  [self _dispatch:nve::apple::make_text_event(_surfaceId, nodeId, NVE_EVENT_TEXT_CHANGE, text.UTF8String ?: "", _arena)];
 }
 
 - (void)dispatchSubmitOnNodeId:(uint32_t)nodeId text:(NSString *)text {
-  NSString *copy = [text copy];
-  if ([self _deferIfReconciling:^{ [self dispatchSubmitOnNodeId:nodeId text:copy]; }]) return;
-  [self _dispatch:nve::apple::make_text_event(_surfaceId, nodeId, NVE_EVENT_SUBMIT, copy.UTF8String ?: "", _arena)];
+  if (_reconciling) {
+    NSString *copy = [text copy];
+    [self _deferToNextTurn:^(NveAppleComponentHost *host) { [host dispatchSubmitOnNodeId:nodeId text:copy]; }];
+    return;
+  }
+  [self _dispatch:nve::apple::make_text_event(_surfaceId, nodeId, NVE_EVENT_SUBMIT, text.UTF8String ?: "", _arena)];
 }
 
 - (void)dispatchFocusOnNodeId:(uint32_t)nodeId focused:(BOOL)focused {
-  if ([self _deferIfReconciling:^{ [self dispatchFocusOnNodeId:nodeId focused:focused]; }]) return;
+  if (_reconciling) {
+    [self _deferToNextTurn:^(NveAppleComponentHost *host) { [host dispatchFocusOnNodeId:nodeId focused:focused]; }];
+    return;
+  }
   NveDirectEvent ev = nve::apple::make_point_event(_surfaceId, nodeId, focused ? NVE_EVENT_FOCUS : NVE_EVENT_BLUR, 0.0f, 0.0f);
   ev.payload_tag = NVE_EVENT_PAYLOAD_EMPTY;
   [self _dispatch:ev];
 }
 
 - (void)dispatchScrollOnNodeId:(uint32_t)nodeId x:(float)x y:(float)y contentWidth:(float)cw contentHeight:(float)ch {
-  if ([self _deferIfReconciling:^{ [self dispatchScrollOnNodeId:nodeId x:x y:y contentWidth:cw contentHeight:ch]; }]) return;
+  if (_reconciling) {
+    [self _deferToNextTurn:^(NveAppleComponentHost *host) {
+      [host dispatchScrollOnNodeId:nodeId x:x y:y contentWidth:cw contentHeight:ch];
+    }];
+    return;
+  }
   [self _dispatch:nve::apple::make_scroll_event(_surfaceId, nodeId, x, y, cw, ch)];
 }
 
@@ -242,7 +273,12 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
 - (void)updateSurfaceWidth:(float)width height:(float)height scaleFactor:(float)scaleFactor {
   if (!(width > 0.0f) || !(height > 0.0f)) return;
   // A resize from a layout pass inside reconcile would fail with BUSY and be lost: apply it next turn.
-  if ([self _deferIfReconciling:^{ [self updateSurfaceWidth:width height:height scaleFactor:scaleFactor]; }]) return;
+  if (_reconciling) {
+    [self _deferToNextTurn:^(NveAppleComponentHost *host) {
+      [host updateSurfaceWidth:width height:height scaleFactor:scaleFactor];
+    }];
+    return;
+  }
   if (_session.set_viewport(width, height, scaleFactor > 0.0f ? scaleFactor : 1.0f) == NVE_RUNTIME_OK) [self renderFrame];
 }
 

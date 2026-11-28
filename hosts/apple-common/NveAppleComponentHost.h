@@ -16,6 +16,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) uint32_t nodeCount;
 @property (nonatomic, readonly) uint32_t lastReconciledDirtyCount;
 @property (nonatomic, readonly) uint32_t lastReconciledRemovedCount;
+/// Views only re-placed (geometry moved, content clean) by the last frame.
+@property (nonatomic, readonly) uint32_t lastReconciledMovedCount;
 @property (nonatomic, readonly) BOOL isAppAttached;
 @property (nonatomic, readonly) BOOL isPaired;
 @property (nonatomic, readonly) BOOL isPairedConnected;
