@@ -7,6 +7,8 @@ Zero-unsafe (`#![forbid(unsafe_code)]`), zero-runtime-dependency Tier-2 little-e
 - `ByteReader<'a>` — strictly bounds-checked LE reader (strict `0|1` bools, canonical LE floats, bounded `read_bytes`/`read_str`/`read_vec`, `expect_magic`, `expect_zero`, `finish()`).
 - `ByteWriter` — reusable LE writer (`clear()`, `with_buf()`, checked `patch_u32` / `write_zeroes`, length-prefixed slices/strings/sequences).
 - `SliceWriter<'a>` — zero-allocation fixed-slice LE writer over `&mut [u8]` with exact-fill `finish()`.
+- `StackWriter<'a>`, `with_stack_writer<N>`, `try_with_stack_writer<N>`, and POD stack helpers (`encode_u8_stack`..`encode_f64_stack`, `encode_pod_stack<N>`) — zero-allocation fast-path encoding into `[u8; N]` spilling to `Vec<u8>` only on overflow.
+- `ByteTransport` & `TransportError` — pluggable binary sync/async byte transport with zero-copy borrowed reply delivery (`call_sync_decode`).
 - `CodecError` — typed, allocation-free binary framing error (`Truncated`, `BadMagic`, `BadVersion`, `BadEnum`, `BadBool`, `NonZeroReserved`, `LenOverflow`, `TrailingBytes`, `InvalidUtf8`).
 - `NveEncode` / `NveDecode` and `#[derive(NveCodec)]`.
 

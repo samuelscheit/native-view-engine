@@ -7,7 +7,11 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use nve_codec::{ByteReader, ByteWriter, CodecError, NveCodec, NveDecode, NveEncode, DEFAULT_MAX_ITEMS};
+use nve_codec::{
+    call_sync_decode, encode_u32_stack, try_with_stack_writer, with_stack_writer, ByteReader,
+    ByteTransport, ByteWriter, CodecError, NveCodec, NveDecode, NveEncode, TransportError,
+    DEFAULT_MAX_ITEMS,
+};
 
 thread_local! {
     static THREAD_ALLOCS: Cell<usize> = const { Cell::new(0) };
@@ -173,5 +177,107 @@ fn adversarial_lying_lengths_allocate_zero_bytes_and_bound_zst_amplification() {
         invocations <= input.len() + 64 + 1,
         "zero-byte callback invocations ({invocations}) exceeded input_len + 64 ({})",
         input.len() + 64
+    );
+}
+
+#[test]
+fn counting_alloc_positive_probe_and_stack_writer_byte_transport_zero_alloc() {
+    // Positive control probe: prove CountingAlloc catches real heap allocations.
+    let (probe_allocs, _) = measure_allocs(|| {
+        let v = std::hint::black_box(vec![1u8; 64]);
+        v.len()
+    });
+    assert!(
+        probe_allocs >= 1,
+        "positive control probe must observe >= 1 heap allocation"
+    );
+
+    struct InlineEcho;
+    impl ByteTransport for InlineEcho {
+        fn call_sync(
+            &self,
+            _service_id: u32,
+            _method_id: u32,
+            req: &[u8],
+            on_reply: &mut dyn FnMut(&[u8]),
+        ) -> Result<(), TransportError> {
+            on_reply(req);
+            Ok(())
+        }
+
+        fn call_async(
+            &self,
+            _service_id: u32,
+            _method_id: u32,
+            req: &[u8],
+            on_done: nve_codec::TransportDoneFn,
+        ) {
+            on_done(Ok(req));
+        }
+    }
+
+    let transport = InlineEcho;
+
+    let (fast_allocs, sum) = measure_allocs(|| {
+        let mut acc = 0u64;
+        for i in 0..128u32 {
+            let decoded: u64 = try_with_stack_writer::<512, _, TransportError>(
+                |w| {
+                    w.write_u32(i)?;
+                    w.write_str("clipboard.read")?;
+                    w.write_bytes(b"zero-alloc-payload")?;
+                    w.write_bool(true)
+                },
+                |req| {
+                    call_sync_decode(&transport, 1, 1, req, |reply| {
+                        let mut r = ByteReader::new(reply);
+                        let seq = r.read_u32()?;
+                        let name = r.read_str(64)?;
+                        let body = r.read_bytes(64)?;
+                        let flag = r.read_bool()?;
+                        r.finish()?;
+                        assert_eq!(name, "clipboard.read");
+                        assert_eq!(body, b"zero-alloc-payload");
+                        assert!(flag);
+                        Ok(u64::from(seq))
+                    })
+                },
+            )
+            .unwrap();
+            acc += decoded;
+
+            // Single POD stack helper round-trip.
+            let pod_req = encode_u32_stack(i);
+            let pod_out = call_sync_decode(&transport, 1, 1, &pod_req, |reply| {
+                let mut r = ByteReader::new(reply);
+                let v = r.read_u32()?;
+                r.finish()?;
+                Ok(v)
+            })
+            .unwrap();
+            assert_eq!(pod_out, i);
+        }
+        acc
+    });
+    assert_eq!(sum, (0..128u64).sum::<u64>());
+    assert_eq!(
+        fast_allocs, 0,
+        "with_stack_writer::<512> + ByteTransport::call_sync fast path must allocate 0 bytes"
+    );
+
+    // Overflow spills cleanly to Vec<u8> (verified by observing >= 1 allocation).
+    let (spill_allocs, spilled_len) = measure_allocs(|| {
+        with_stack_writer::<16, _>(
+            |w| {
+                w.write_str("this-payload-exceeds-sixteen-bytes-and-spills-to-heap")
+            },
+            |bytes| bytes.len(),
+        )
+        .unwrap()
+    });
+    assert!(spilled_len > 16);
+    assert!(
+        spill_allocs >= 1,
+        "overflowing StackWriter must spill to heap Vec<u8>"
     );
 }

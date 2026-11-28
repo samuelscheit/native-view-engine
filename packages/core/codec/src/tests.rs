@@ -363,3 +363,192 @@ fn deterministic_fuzz_nested_derived_packets_never_panic() {
         }
     }
 }
+
+#[test]
+fn stack_writer_fits_on_stack_spills_on_overflow_and_pod_helpers_roundtrip() {
+    // 1. Exact fit inside stack buffer stays unspilled.
+    let mut exact = [0u8; 16];
+    let mut w = StackWriter::new(&mut exact);
+    w.write_u32(0x1122_3344).unwrap();
+    w.write_bytes(b"hello").unwrap(); // 4 + 5 = 9 bytes (total 13)
+    w.write_zeroes(3).unwrap(); // total 16
+    assert!(!w.is_spilled());
+    assert_eq!(w.len(), 16);
+
+    let mut r = ByteReader::new(w.as_slice());
+    assert_eq!(r.read_u32().unwrap(), 0x1122_3344);
+    assert_eq!(r.read_bytes(16).unwrap(), b"hello");
+    r.expect_zero(3).unwrap();
+    r.finish().unwrap();
+
+    // 2. Overflow by 1 byte spills cleanly into Vec<u8> preserving prior bytes.
+    let mut tiny = [0u8; 8];
+    let mut sw = StackWriter::new(&mut tiny);
+    sw.write_u32(42).unwrap();
+    assert!(!sw.is_spilled());
+    sw.write_str("overflow-string-payload").unwrap();
+    assert!(sw.is_spilled());
+    sw.write_opt(Some(99u16), |s, v| s.write_u16(v)).unwrap();
+    sw.write_opt(None::<u16>, |s, v| s.write_u16(v)).unwrap();
+    let spilled = sw.into_vec();
+
+    let mut r = ByteReader::new(&spilled);
+    assert_eq!(r.read_u32().unwrap(), 42);
+    assert_eq!(r.read_str(64).unwrap(), "overflow-string-payload");
+    assert_eq!(r.read_opt(ByteReader::read_u16).unwrap(), Some(99));
+    assert_eq!(r.read_opt(ByteReader::read_u16).unwrap(), None);
+    r.finish().unwrap();
+
+    // 3. LenOverflow fails without spilling.
+    let mut no_spill = [0u8; 16];
+    let mut w_err = StackWriter::new(&mut no_spill);
+    assert!(matches!(
+        w_err.write_bytes_max(&[1u8; 10], 4),
+        Err(CodecError::LenOverflow { len: 10, max: 4 })
+    ));
+    assert!(!w_err.is_spilled());
+    assert!(w_err.is_empty());
+
+    // 4. Huge write_zeroes returns LenOverflow instead of panicking.
+    let mut tiny2 = [0u8; 4];
+    let mut w_zero = StackWriter::new(&mut tiny2);
+    assert!(matches!(
+        w_zero.write_zeroes(usize::MAX),
+        Err(CodecError::LenOverflow { .. })
+    ));
+
+    // 5. with_stack_writer + try_with_stack_writer.
+    let out = with_stack_writer::<32, _>(
+        |w| {
+            w.write_str("nve")?;
+            w.write_u64(12345)
+        },
+        |bytes| bytes.to_vec(),
+    )
+    .unwrap();
+    let mut r = ByteReader::new(&out);
+    assert_eq!(r.read_str(16).unwrap(), "nve");
+    assert_eq!(r.read_u64().unwrap(), 12345);
+    r.finish().unwrap();
+
+    let res: Result<usize, TransportError> = try_with_stack_writer::<8, _, TransportError>(
+        |w| w.write_str("spills-past-8-bytes"),
+        |bytes| Ok(bytes.len()),
+    );
+    assert_eq!(res.unwrap(), 4 + "spills-past-8-bytes".len());
+
+    // 6. Single-byte / POD stack helpers.
+    assert_eq!(encode_u8_stack(7), [7]);
+    assert_eq!(encode_i8_stack(-2), [0xFE]);
+    assert_eq!(encode_bool_stack(false), [0]);
+    assert_eq!(encode_bool_stack(true), [1]);
+    assert_eq!(encode_u16_stack(0x1234), [0x34, 0x12]);
+    assert_eq!(encode_i16_stack(-1), [0xFF, 0xFF]);
+    assert_eq!(encode_u32_stack(0x0102_0304), [4, 3, 2, 1]);
+    assert_eq!(encode_i32_stack(-1), [0xFF; 4]);
+    assert_eq!(encode_u64_stack(1), [1, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(encode_i64_stack(-1), [0xFF; 8]);
+    assert_eq!(encode_f32_stack(-0.0), 0u32.to_le_bytes());
+    assert_eq!(encode_f32_stack(f32::NAN), CANONICAL_F32_NAN_BITS.to_le_bytes());
+    assert_eq!(encode_f64_stack(-0.0), 0u64.to_le_bytes());
+    assert_eq!(encode_f64_stack(f64::NAN), CANONICAL_F64_NAN_BITS.to_le_bytes());
+
+    let pod = encode_pod_stack::<6>(|w| {
+        w.write_u16(0xABCD)?;
+        w.write_u32(0x0102_0304)
+    })
+    .unwrap();
+    assert_eq!(pod, [0xCD, 0xAB, 0x04, 0x03, 0x02, 0x01]);
+    assert_eq!(
+        encode_pod_stack::<6>(|w| w.write_u16(1)),
+        Err(CodecError::TrailingBytes(4))
+    );
+}
+
+#[test]
+fn byte_transport_sync_async_blanket_impls_and_error_formatting() {
+    use std::sync::Arc;
+
+    struct EchoTransport;
+    impl ByteTransport for EchoTransport {
+        fn call_sync(
+            &self,
+            service_id: u32,
+            method_id: u32,
+            req: &[u8],
+            on_reply: &mut dyn FnMut(&[u8]),
+        ) -> Result<(), TransportError> {
+            match (service_id, method_id) {
+                (1, 1) => {
+                    on_reply(req);
+                    Ok(())
+                }
+                (1, 2) => Ok(()),
+                (1, 3) => Err(TransportError::PermissionDenied),
+                _ => Err(TransportError::Unsupported),
+            }
+        }
+
+        fn call_async(
+            &self,
+            service_id: u32,
+            method_id: u32,
+            req: &[u8],
+            on_done: TransportDoneFn,
+        ) {
+            if service_id == 1 && method_id == 1 {
+                on_done(Ok(req));
+            } else {
+                on_done(Err(TransportError::Status(-7)));
+            }
+        }
+    }
+
+    let direct = EchoTransport;
+    let arc: Arc<dyn ByteTransport> = Arc::new(EchoTransport);
+    let boxed: Box<dyn ByteTransport> = Box::new(EchoTransport);
+
+    // Works through direct ref, &T, Arc<dyn ByteTransport>, and Box<dyn ByteTransport>.
+    for t in [&direct as &dyn ByteTransport, &*arc, &*boxed] {
+        let val = call_sync_decode(t, 1, 1, &encode_u32_stack(777), |reply| {
+            let mut r = ByteReader::new(reply);
+            let n = r.read_u32()?;
+            r.finish()?;
+            Ok(n)
+        })
+        .unwrap();
+        assert_eq!(val, 777);
+
+        // Empty sync reply (no on_reply call) decodes &[] cleanly.
+        let empty = call_sync_decode(t, 1, 2, &[], |reply| Ok(reply.len())).unwrap();
+        assert_eq!(empty, 0);
+        assert_eq!(
+            call_sync_decode(t, 1, 3, &[], |_| Ok(())),
+            Err(TransportError::PermissionDenied)
+        );
+    }
+
+    // Async delivery through Arc<T>.
+    let (tx, rx) = std::sync::mpsc::channel();
+    arc.call_async(
+        1,
+        1,
+        b"async-ok",
+        Box::new(move |res| {
+            tx.send(res.map(|b| b.to_vec())).unwrap();
+        }),
+    );
+    let got = rx.recv().ok();
+    assert_eq!(got, Some(Ok(b"async-ok".to_vec())));
+
+    // TransportError Display + std::error::Error::source coverage.
+    let codec_err = TransportError::from(CodecError::BadMagic);
+    assert!(std::error::Error::source(&codec_err).is_some());
+    assert!(codec_err.to_string().contains("magic"));
+    let io_err = TransportError::from(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"));
+    assert!(matches!(io_err, TransportError::Io(_)));
+    assert!(TransportError::BufferOverflow { needed: 64, capacity: 16 }
+        .to_string()
+        .contains("64B"));
+    assert!(TransportError::Status(-4).to_string().contains("-4"));
+}
