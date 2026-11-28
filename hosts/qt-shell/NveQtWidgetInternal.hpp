@@ -80,6 +80,7 @@ class NveQtNodeWidget final : public QWidget, public SemanticsCarrier {
 
   QtNodeView* view_;
   NodePaint paint_;
+  ShadowCache inset_cache_;  // the blurred inset shadows, re-rasterized only when they change
   bool pressed_ = false;
 };
 

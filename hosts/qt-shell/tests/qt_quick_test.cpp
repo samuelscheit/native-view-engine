@@ -1,8 +1,12 @@
 // Qt Quick host (`NveQtQuickItem`): the retained scene graph (pixels for backgrounds, borders,
 // z-index, opacity, visibility, rounded overflow clips, shadows; wrapper reuse, O(changed)
-// updates, texture reuse, reparenting and removal), the QML API (properties, signals), app
-// modules with hot reload / focus survival / state files, queued wakes, and the live kitchen sink.
+// updates, texture reuse, reparenting and removal, records synced before their raster, detached
+// records across scene changes, bounded / transparent shadows), the QML API (properties,
+// signals), app modules with hot reload / focus survival / state files, queued wakes, and the live
+// kitchen sink.
 #include "qt_quick_helpers.hpp"
+
+#include "NveQtQuickInternal.hpp"
 
 #include <nve/host/demo_counter_app.hpp>
 
@@ -375,10 +379,115 @@ void test_scene_graph_orphans_rebuild_and_clip_shape() {
   NVE_CHECK(item.sceneGraphStats().retainedNodes == 3u);
 }
 
+/// Records the scene graph syncs before `updatePolish` rasterized them (an app frame applied in
+/// `beforeSynchronizing`) stay queued and show on the next frame; records detached while the item
+/// changes scene are repainted too (textures are per device pixel ratio).
+void test_unpolished_and_detached_records_repaint() {
+  constexpr uint32_t kHolder = 2u, kLate = 3u, kLabel = 4u;
+  ScriptedApp app;
+  h::Nve2Writer& w = app.w;
+  w.create(1u);
+  w.set(1u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(255, 255, 255));
+  w.set(1u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_FLEX_DIRECTION, NVE_FLEX_DIRECTION_ROW);
+  w.create(kHolder);
+  size_node(w, kHolder, 100.0f, 40.0f);
+  text_node(w, kLabel, "detached");
+  const uint32_t label[] = {kLabel};
+  w.set_children(kHolder, label);
+  const uint32_t holder[] = {kHolder};
+  w.set_children(1u, holder);
+  QuickHarness q;
+  ProbeItem& item = *q.item;
+  NVE_CHECK(item.host().attach_interface(&ScriptedApp::get_interface));
+  (void)q.grab();
+
+  // A new node published between polish and sync: no raster yet this frame, shown on the next.
+  w.create(kLate);
+  size_node(w, kLate, 40.0f, 40.0f);
+  w.set(kLate, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(0, 200, 0));
+  const uint32_t both[] = {kHolder, kLate};
+  w.set_children(1u, both);
+  const QMetaObject::Connection late = QObject::connect(
+      &q.window, &QQuickWindow::beforeSynchronizing, &q.window, [&] { flush(item.host()); }, Qt::DirectConnection);
+  (void)q.grab();
+  QObject::disconnect(late);
+  NVE_CHECK(item.nodeRect(kLate) == QRectF(100, 0, 40, 40));
+  QCoreApplication::processEvents();  // the posted polish + update
+  NVE_CHECK(same_rgb(q.at(120, 20), 0, 200, 0));
+
+  // A detached record is repainted for the new screen when the item changes scene, like the
+  // attached ones (it may come back without a layout or content change).
+  w.set_children(kHolder, std::span<const uint32_t>());
+  flush(item.host());
+  (void)q.grab();
+  const QuickNodeView* detached = item.impl()->find(kLabel);
+  NVE_CHECK(detached != nullptr && detached->parent == nullptr);
+  const uint64_t generation = detached->paint_generation;
+  item.setParentItem(nullptr);
+  item.setParentItem(q.window.contentItem());
+  NVE_CHECK(detached->paint_generation > generation && detached->sg_dirty_slot >= 0);
+  w.set_children(kHolder, label);
+  flush(item.host());
+  (void)q.grab();
+  NVE_CHECK(q.sg(kLabel) != nullptr && is_ancestor(q.sg(kHolder), q.sg(kLabel)));
+}
+
+/// Shadows: transparent ones paint nothing (no raster), and a raster never exceeds 4096 device
+/// pixels per axis however large the box (a lower device pixel ratio instead).
+void test_shadow_bounds() {
+  BoxVisual v;
+  v.shadows = {{2.0f, 2.0f, 8.0f, 0.0f, h::rgba(0, 0, 0, 0), false}, {0.0f, 0.0f, 8.0f, 0.0f, h::rgba(0, 0, 0, 0), true}};
+  NVE_CHECK(!v.has_outer_shadow() && !v.has_inset_shadow());
+  v.shadows.push_back({0.0f, 0.0f, 8.0f, 0.0f, h::rgba(0, 0, 0, 1), false});
+  NVE_CHECK(v.has_outer_shadow() && !v.has_inset_shadow());
+
+  const ShadowCanvas normal = shadow_canvas(QSizeF(100.0, 50.0), 2.0);
+  NVE_CHECK(normal.image.size() == QSize(200, 100) && normal.scale == 2.0);
+  const ShadowCanvas huge = shadow_canvas(QSizeF(100000.0, 50.0), 2.0);
+  NVE_CHECK(!huge.image.isNull() && huge.image.width() <= 4096 && huge.image.height() >= 1);
+  NVE_CHECK(std::abs(huge.image.width() / huge.scale - 100000.0) < 50.0);  // same logical size
+  NVE_CHECK(shadow_canvas(QSizeF(0.0, 50.0), 2.0).image.isNull() && shadow_canvas(QSizeF(10.0, 10.0), NAN).image.isNull());
+
+  // Boxes up to 100000px wide with a big blur paint, bounded, through the widget cache (0), the
+  // plain outer path (1) and the inset path (2): the spread shadow darkens below the box (outer)
+  // or inside it (inset); outer shadows never paint inside a box their raster resolves.
+  const h::BoxShadow big[] = {{0.0f, 0.0f, 200.0f, 50.0f, h::rgba(0, 0, 0), false},
+                              {0.0f, 0.0f, 200.0f, 50.0f, h::rgba(0, 0, 0), true}};
+  for (const double width : {100.0, 5000.0, 100000.0}) {
+    for (int mode = 0; mode < 3; ++mode) {
+      QImage t(64, 64, QImage::Format_ARGB32_Premultiplied);
+      t.fill(Qt::white);
+      {
+        QPainter p(&t);
+        const QRectF box(32.0 - width / 2.0, 0.0, width, 20.0);
+        if (mode == 0) {
+          ShadowCache cache;
+          cache.paint(p, box, 0.0, big, false);
+        } else if (mode == 1) {
+          paint_outer_shadows(p, box, 0.0, big);
+        } else {
+          BoxVisual inset;
+          inset.shadows.assign(std::begin(big), std::end(big));
+          paint_box_background(p, box, inset, nullptr);
+        }
+      }
+      const int below = t.pixelColor(32, 40).red(), inside = t.pixelColor(32, 10).red();
+      if (mode == 2) {
+        NVE_CHECK(inside < 128 && below == 255);
+      } else {
+        NVE_CHECK(below < 200);
+        if (width <= 5000.0) NVE_CHECK(inside == 255);
+      }
+    }
+  }
+}
+
 int main(int argc, char** argv) {
   QGuiApplication app(argc, argv);
   test_scene_graph_pixels_and_retention();
   test_scene_graph_orphans_rebuild_and_clip_shape();
+  test_unpolished_and_detached_records_repaint();
+  test_shadow_bounds();
   test_qml_api_modules_hot_reload_and_state();
   test_queued_wakes_never_outlive_the_item();
   test_live_kitchen_sink_if_configured();

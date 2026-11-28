@@ -52,8 +52,9 @@ struct QuickRaster {
 struct QuickNodeView {
   uint32_t id = 0u;
   QuickNodeView* parent = nullptr;
-  std::vector<QuickNodeView*> children;  // scene order
-  uint32_t order = 0u;
+  std::vector<QuickNodeView*> children;  // scene order until a child leaves (swap-removed)
+  uint32_t order = 0u;  // scene order among the siblings (paint order ties)
+  uint32_t slot = 0u;   // index in `parent->children`
   int32_t z = 0;
 
   QRectF local;  // relative to the parent's box (before its scroll offset)
@@ -130,6 +131,11 @@ class NveQtQuickItem::Impl final : public QtHost {
   void rasterize_dirty(qreal dpr);
   /// Qt dropped (or will drop) the scene graph: no record keeps a wrapper pointer, all are queued.
   void reset_scene_graph();
+  /// Render thread (GUI thread blocked): `stale` records were shown before their paint was
+  /// rasterized; they stay queued and a polish + update is posted to the GUI thread.
+  void defer_upload(std::span<QuickNodeView* const> stale);
+  /// GUI thread: rasterize the queued records (`polish`) and sync them (`update`).
+  void schedule_frame();
   /// Item-local origin of `v`'s box (ancestors' positions and scroll offsets applied).
   [[nodiscard]] QPointF origin_of(const QuickNodeView& v) const;
   /// Deepest visible record under an item-local point, in reverse paint order.

@@ -21,6 +21,7 @@ QImage raster(QSizeF size, qreal dpr, Paint&& paint) {
   const QSize px(std::max(1, static_cast<int>(std::ceil(size.width() * dpr))),
                  std::max(1, static_cast<int>(std::ceil(size.height() * dpr))));
   QImage image(px, QImage::Format_ARGB32_Premultiplied);
+  if (image.isNull()) return image;  // unallocatable: nothing painted (never a null-device painter)
   image.setDevicePixelRatio(dpr);
   image.fill(Qt::transparent);
   QPainter p(&image);
@@ -45,14 +46,18 @@ void NveQtQuickItem::Impl::rasterize(QuickNodeView& v, qreal dpr) {
   const QSizeF size = v.local.size();
   const bool empty = size.width() <= 0.0 || size.height() <= 0.0;
   const BoxVisual& visual = v.paint.visual;
+  r.shadow = QImage();
   if (!empty && visual.has_outer_shadow()) {
     const QMarginsF m = outer_shadow_margins(visual.shadows);
     r.shadow_rect = QRectF(QPointF(), size).marginsAdded(m);
-    r.shadow = raster(r.shadow_rect.size(), dpr, [&](QPainter& p) {
+    ShadowCanvas c = shadow_canvas(r.shadow_rect.size(), dpr);  // bounded; null when unallocatable
+    if (!c.image.isNull()) {
+      QPainter p(&c.image);
+      p.setRenderHint(QPainter::Antialiasing, true);
+      p.scale(c.scale, c.scale);
       paint_outer_shadows(p, QRectF(QPointF(m.left(), m.top()), size), visual.radius, visual.shadows);
-    });
-  } else {
-    r.shadow = QImage();
+    }
+    r.shadow = std::move(c.image);  // uploaded into `shadow_rect`
   }
   if (empty || (!v.is_input && v.paint.paints_only_background())) {
     r.painted = QImage();
@@ -62,7 +67,7 @@ void NveQtQuickItem::Impl::rasterize(QuickNodeView& v, qreal dpr) {
   r.solid = false;
   const bool focused = focused_ == v.id;
   r.painted = raster(size, dpr, [&](QPainter& p) {
-    paint_node(p, QRectF(QPointF(), size), v.paint);
+    paint_node(p, QRectF(QPointF(), size), v.paint, nullptr);  // the raster is the cache
     if (v.is_input) paint_input(p, QRectF(QPointF(), size), v, focused);
   });
   switch (v.paint.content) {

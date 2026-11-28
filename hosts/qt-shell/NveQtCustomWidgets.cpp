@@ -69,7 +69,7 @@ void NveQtNodeWidget::resizeEvent(QResizeEvent* event) {
 
 void NveQtNodeWidget::paintEvent(QPaintEvent*) {
   QPainter p(this);
-  paint_node(p, QRectF(rect()), paint_);
+  paint_node(p, QRectF(rect()), paint_, &inset_cache_);
 }
 
 void NveQtNodeWidget::mousePressEvent(QMouseEvent* event) {

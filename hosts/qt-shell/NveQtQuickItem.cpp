@@ -46,15 +46,20 @@ void queue_sg(std::vector<QuickNodeView*>& queue, QuickNodeView& v) {
   queue.push_back(&v);
 }
 
-/// Removes `k` from its parent's child list: O(1) at its scene slot (paint order sorts by
-/// `order`, so the swap is harmless until the parent's own `set_children` rebuilds the list).
+/// Removes `k` from its parent's child list: O(1) swap-remove at its `slot` (the moved sibling
+/// takes the slot; paint order sorts by `order`, so the swap never reorders painting).
 void unlink_from_parent(QuickNodeView& k) {
   std::vector<QuickNodeView*>& siblings = k.parent->children;
-  if (k.order < siblings.size() && siblings[k.order] == &k) {
-    siblings[k.order] = siblings.back();
+  if (k.slot < siblings.size() && siblings[k.slot] == &k) {
+    QuickNodeView* moved = siblings.back();
+    siblings[k.slot] = moved;
+    moved->slot = k.slot;
     siblings.pop_back();
-  } else {
-    std::erase(siblings, &k);
+  } else if (const auto it = std::find(siblings.begin(), siblings.end(), &k); it != siblings.end()) {
+    // Unreachable while `slot` is maintained; never leave a dangling sibling pointer behind.
+    for (auto after = siblings.erase(it); after != siblings.end(); ++after) {
+      (*after)->slot = static_cast<uint32_t>(after - siblings.begin());
+    }
   }
   k.parent = nullptr;
 }
@@ -64,10 +69,19 @@ void unlink_from_parent(QuickNodeView& k) {
 void NveQtQuickItem::Impl::mark_dirty(QuickNodeView& v) {
   queue_sg(sg_dirty_, v);
   scene_changed_ = true;
-  if (!tearing_down_) {
-    owner_->polish();  // rasterize on the GUI thread before the render thread syncs
-    owner_->update();
-  }
+  if (!tearing_down_) schedule_frame();
+}
+
+void NveQtQuickItem::Impl::schedule_frame() {
+  owner_->polish();  // rasterize on the GUI thread before the render thread syncs
+  owner_->update();
+}
+
+void NveQtQuickItem::Impl::defer_upload(std::span<QuickNodeView* const> stale) {
+  for (QuickNodeView* v : stale) queue_sg(sg_dirty_, *v);
+  if (tearing_down_) return;
+  // `polish()` / `update()` are GUI-thread calls: post them (dropped with the item).
+  QMetaObject::invokeMethod(owner_, [impl = this] { impl->schedule_frame(); }, Qt::QueuedConnection);
 }
 
 void NveQtQuickItem::Impl::reset_scene_graph() {
@@ -227,6 +241,7 @@ void NveQtQuickItem::Impl::Adapter::set_children(const host::NodeGeometry&, Quic
     }
     k->parent = &parent;
     k->order = i;
+    k->slot = i;
     parent.children.push_back(k);
   }
   parent.children_dirty = true;
@@ -447,6 +462,7 @@ QSGNode* NveQtQuickItem::updatePaintNode(QSGNode* old_node, UpdatePaintNodeData*
 void NveQtQuickItem::releaseResources() {
   // Qt deletes the item's node tree (and with it every wrapper and texture) on the render thread.
   impl_->reset_scene_graph();
+  if (window() != nullptr) impl_->schedule_frame();  // re-rasterize and rebuild every queued record
 }
 
 void NveQtQuickItem::geometryChange(const QRectF& new_geometry, const QRectF& old_geometry) {
@@ -461,12 +477,12 @@ void NveQtQuickItem::geometryChange(const QRectF& new_geometry, const QRectF& ol
 void NveQtQuickItem::itemChange(ItemChange change, const ItemChangeData& value) {
   QQuickItem::itemChange(change, value);
   if (change == ItemDevicePixelRatioHasChanged || change == ItemSceneChange) {
-    // Textures are rasterized per device pixel ratio: repaint everything on the new screen.
-    const auto repaint = [this](auto& self, QuickNodeView& v) -> void {
-      impl_->bump_paint(v);
-      for (QuickNodeView* c : v.children) self(self, *c);
-    };
-    repaint(repaint, impl_->root_);
+    // Textures are rasterized per device pixel ratio: repaint every record on the new screen,
+    // also those detached right now (they may be re-attached without a content change).
+    impl_->bump_paint(impl_->root_);
+    impl_->tree_.for_each_view([this](QuickNodeView*& v) {
+      if (v != nullptr) impl_->bump_paint(*v);
+    });
     if (window() != nullptr && width() > 0.0 && height() > 0.0) {
       impl_->set_surface_size(static_cast<float>(width()), static_cast<float>(height()),
                               static_cast<float>(window()->effectiveDevicePixelRatio()));

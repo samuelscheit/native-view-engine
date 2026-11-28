@@ -39,6 +39,18 @@ struct BoxVisual {
   friend bool operator==(const BoxVisual&, const BoxVisual&) noexcept = default;
 };
 
+/// A cleared premultiplied canvas for a shadow of logical `size` wanted at `dpr` device pixels per
+/// unit: at most 4096 device pixels per axis (a larger area gets a lower `scale`). Paint into it
+/// with `QPainter::scale(scale, scale)` (never through a device pixel ratio: QPainter treats one
+/// below 1 as 1) and draw it into a logical target rect.
+struct ShadowCanvas {
+  QImage image;       // null when `size` is empty or the allocation fails
+  qreal scale = 0.0;  // device pixels per logical unit, at most `dpr`
+};
+[[nodiscard]] ShadowCanvas shadow_canvas(QSizeF size, qreal dpr);
+
+/// `node`'s visuals; `shadows` is its decoded `nve.res.box_shadows` resource (empty when none).
+
 /// `node`'s visuals; `shadows` is its decoded `nve.res.box_shadows` resource (empty when none).
 [[nodiscard]] BoxVisual box_visual(const host::NodeData& node, std::vector<host::BoxShadow> shadows);
 
@@ -59,7 +71,7 @@ class ShadowCache {
 
  private:
   QImage image_;
-  QPointF offset_;  // of the image from the box's top-left
+  QRectF area_;  // logical rect the image covers, relative to the box's top-left
   QSizeF size_;
   qreal radius_ = 0.0;
   qreal dpr_ = 0.0;
@@ -114,9 +126,8 @@ struct NodePaint {
   QImage image;
   uint8_t fit = NVE_IMAGE_FIT_COVER;
   std::vector<uint8_t> draw_list;  // owned: painted after the scene is released
-  // Repaint caches (a widget repaints its unchanged node often: hover, expose, scrolling).
+  // Repaint cache (a widget repaints its unchanged node often: hover, expose, scrolling).
   mutable TextLayoutCache text_layout;
-  mutable ShadowCache inset_shadows;
 
   [[nodiscard]] bool paints_only_background() const noexcept {
     return content == NodeContent::None && !visual.has_border() && visual.shadows.empty() && visual.radius <= 0.0;
@@ -124,7 +135,8 @@ struct NodePaint {
 };
 
 /// Paints `n` into `box` (the node's rect, origin = the node's top-left): background, inset
-/// shadows, content (text / image / canvas, clipped to the rounded box), border.
-void paint_node(QPainter& p, const QRectF& box, const NodePaint& n);
+/// shadows (through `inset_cache` when it repaints often, e.g. a widget), content (text / image /
+/// canvas, clipped to the rounded box), border.
+void paint_node(QPainter& p, const QRectF& box, const NodePaint& n, ShadowCache* inset_cache);
 
 }  // namespace nve::qt

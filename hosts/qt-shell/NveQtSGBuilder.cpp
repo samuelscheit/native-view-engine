@@ -186,11 +186,15 @@ void update_clip(NodeSG& sg, const QuickNodeView& v) {
 }
 
 /// Uploads `v`'s GUI-rasterized images when they changed since this wrapper last showed them.
-void update_visual(NodeSG& sg, const QuickNodeView& v, QQuickWindow& window, SceneGraphStats& stats) {
+/// Returns `false` while the raster is not `v`'s current paint (never rasterized, or polished
+/// before its last change): the record must stay queued until `updatePolish` catches up.
+bool update_visual(NodeSG& sg, const QuickNodeView& v, QQuickWindow& window, SceneGraphStats& stats) {
   const QuickRaster& r = v.raster;
+  if (r.generation == 0u) return false;  // nothing rasterized yet (a fresh wrapper's 0 is no match)
+  const bool current = r.generation == v.paint_generation;
   if (sg.painted_generation == r.generation && sg.painted_dpr == r.dpr) {
     ++stats.texturesReused;
-    return;
+    return current;
   }
   sg.painted_generation = r.generation;
   sg.painted_dpr = r.dpr;
@@ -206,6 +210,7 @@ void update_visual(NodeSG& sg, const QuickNodeView& v, QQuickWindow& window, Sce
     if (sg.rect == nullptr) ++stats.solidRectNodes;
     sg.set_rect(box, v.paint.visual.background);
   }
+  return current;
 }
 
 NodeSG& ensure(RootSG& root, QuickNodeView& v, SceneGraphStats& stats) {
@@ -219,7 +224,8 @@ NodeSG& ensure(RootSG& root, QuickNodeView& v, SceneGraphStats& stats) {
   return *v.sg;
 }
 
-void update_node(RootSG& root, QuickNodeView& v, QQuickWindow& window, SceneGraphStats& stats) {
+/// Returns `false` while `v`'s raster is stale (see `update_visual`).
+bool update_node(RootSG& root, QuickNodeView& v, QQuickWindow& window, SceneGraphStats& stats) {
   NodeSG& sg = ensure(root, v, stats);
   QMatrix4x4 m;
   m.translate(static_cast<float>(v.local.x()), static_cast<float>(v.local.y()));
@@ -230,16 +236,17 @@ void update_node(RootSG& root, QuickNodeView& v, QQuickWindow& window, SceneGrap
   QMatrix4x4 s;
   s.translate(static_cast<float>(-v.scroll.x()), static_cast<float>(-v.scroll.y()));
   if (sg.scroll->matrix() != s) sg.scroll->setMatrix(s);
-  update_visual(sg, v, window, stats);
+  return update_visual(sg, v, window, stats);
 }
 
-void relink(RootSG& root, QSGNode* container, QuickNodeView& parent, QQuickWindow& window, SceneGraphStats& stats) {
+void relink(RootSG& root, QSGNode* container, QuickNodeView& parent, QQuickWindow& window, SceneGraphStats& stats,
+            std::vector<QuickNodeView*>& stale) {
   std::vector<QuickNodeView*> kids = parent.children;
   std::sort(kids.begin(), kids.end(), paints_before);
   // Wrappers are not owned by their parent: removing them only detaches.
   while (QSGNode* c = container->firstChild()) container->removeChildNode(c);
   for (QuickNodeView* k : kids) {
-    if (k->sg == nullptr) update_node(root, *k, window, stats);
+    if (k->sg == nullptr && !update_node(root, *k, window, stats)) stale.push_back(k);
     if (QSGNode* old = k->sg->parent(); old != nullptr) old->removeChildNode(k->sg);
     container->appendChildNode(k->sg);
   }
@@ -273,9 +280,10 @@ QSGNode* sync_scene_graph(QSGNode* old_root, NveQtQuickItem::Impl& impl, QQuickW
   dirty.swap(impl.sg_dirty_);
   std::erase(dirty, nullptr);  // destroyed since queued
   for (QuickNodeView* v : dirty) v->sg_dirty_slot = -1;
+  std::vector<QuickNodeView*> stale;  // shown before `updatePolish` rasterized their paint
   for (QuickNodeView* v : dirty) {
     if (v == &impl.root_) continue;
-    update_node(*root, *v, window, stats);
+    if (!update_node(*root, *v, window, stats)) stale.push_back(v);
     ++stats.nodesUpdated;
   }
   const QSizeF item(impl.config().width, impl.config().height);
@@ -284,9 +292,10 @@ QSGNode* sync_scene_graph(QSGNode* old_root, NveQtQuickItem::Impl& impl, QQuickW
   for (QuickNodeView* v : dirty) {
     if (!v->children_dirty) continue;
     QSGNode* container = v == &impl.root_ ? root->container : v->sg->scroll;
-    relink(*root, container, *v, window, stats);
+    relink(*root, container, *v, window, stats, stale);
   }
   stats.retainedNodes = static_cast<uint32_t>(root->index.size());
+  if (!stale.empty()) impl.defer_upload(stale);
   return root;
 }
 
