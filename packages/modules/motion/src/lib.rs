@@ -15,6 +15,7 @@ mod spring;
 mod table;
 #[cfg(test)]
 mod tests;
+mod tick_hook;
 
 pub use clock::{MotionClock, MotionCompletion, MotionKey, MotionTrack, TimedTransition};
 pub use easing::EasingCurve;
@@ -28,3 +29,4 @@ pub use table::{
     resolve_transition_for, write_transitions, Motion, MotionMut, MotionRef, TransitionProperty,
     TransitionSpec, Transitions, TransitionsView,
 };
+pub use tick_hook::MotionRuntimeTickHook;

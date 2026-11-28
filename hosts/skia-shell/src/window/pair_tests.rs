@@ -14,14 +14,17 @@ use nve_abi::{
 };
 use nve_tables::tables::{register_core_tables, FlexDirection, Interaction, Layout, Visual};
 use nve_engine::{HotPatchMsg, Viewport};
+use nve_runtime::{PairReplicaClient, RuntimeError};
 use nve_store::wire::WireEncoder;
 use nve_store::{ChangeSet, Length, NodeStore, Rgba};
-use nve_wire::{NveWireKind, NveWireServer, NveWireServerConfig, NveWireTransportKind};
+use nve_wire::{
+    NveWireKind, NveWireServer, NveWireServerConfig, NveWireTransportKind, ReconnectConfig,
+};
 use tungstenite::Message;
 
 use super::{
-    render_paired_headless_screenshot, DesktopApp, DesktopHostError, DesktopPreviewOptions,
-    DesktopSession, HotReloadClient, PairConnectConfig, PairedRemoteApp,
+    render_paired_headless_screenshot, DesktopApp, DesktopPreviewOptions, DesktopSession,
+    HotReloadClient, PairConnectConfig,
 };
 
 struct RemoteServerApp {
@@ -181,7 +184,7 @@ impl Drop for TestPairServer {
 }
 
 fn wait_until_pixel(
-    session: &mut DesktopSession<PairedRemoteApp>,
+    session: &mut DesktopSession<PairReplicaClient>,
     x: u32,
     y: u32,
     expected: (u8, u8, u8),
@@ -306,7 +309,7 @@ fn paired_remote_app_e2e_quic_webtransport_wss_and_ws_rasterizes_and_mutates_pix
 
         let cfg = PairConnectConfig::new(addr, server.token.clone(), transport)
             .with_cert_sha256(server.cert_sha256);
-        let mut app = PairedRemoteApp::connect(cfg)
+        let mut app = PairReplicaClient::connect(cfg, "nve-skia-shell")
             .unwrap_or_else(|e| panic!("connect {transport:?} failed: {e}"));
         app.install_wake_callback(Arc::new(move || {
             wakes_cb.fetch_add(1, Ordering::SeqCst);
@@ -341,7 +344,7 @@ fn paired_remote_app_e2e_quic_webtransport_wss_and_ws_rasterizes_and_mutates_pix
         wait_until_pixel(&mut session, 250, 150, (15, 23, 42), Duration::from_secs(2));
 
         assert!(wakes.load(Ordering::SeqCst) >= 2);
-        assert!(session.app().remote_status_banner().unwrap().contains("LIVE"));
+        assert!(session.app().remote_status_banner().contains("LIVE"));
         session.app_mut().disconnect();
         assert!(!session.app().is_connected());
     }
@@ -351,12 +354,15 @@ fn paired_remote_app_e2e_quic_webtransport_wss_and_ws_rasterizes_and_mutates_pix
 fn paired_headless_screenshot_writes_png_and_rejects_bad_token() {
     let server = TestPairServer::start("skia-screenshot-token");
 
-    let bad = PairedRemoteApp::connect(PairConnectConfig::new(
-        format!("ws://{}/nve-wire", server.wss_addr),
-        "wrong-token",
-        NveWireTransportKind::Ws,
-    ));
-    assert!(matches!(bad, Err(DesktopHostError::Pairing(_))));
+    let bad = PairReplicaClient::connect(
+        PairConnectConfig::new(
+            format!("ws://{}/nve-wire", server.wss_addr),
+            "wrong-token",
+            NveWireTransportKind::Ws,
+        ),
+        "nve-skia-shell",
+    );
+    assert!(matches!(bad, Err(RuntimeError::Io(_))));
 
     let out_path = std::env::temp_dir().join(format!(
         "nve_skia_paired_shot_{}.png",
@@ -390,7 +396,7 @@ fn paired_headless_screenshot_writes_png_and_rejects_bad_token() {
     let _ = std::fs::remove_file(Path::new(&out_path));
 }
 
-fn connect_ws_pair_session(token: &str) -> (NveWireServer, DesktopSession<PairedRemoteApp>) {
+fn connect_ws_pair_session(token: &str) -> (NveWireServer, DesktopSession<PairReplicaClient>) {
     register_core_tables();
     let server = NveWireServer::bind_sync(NveWireServerConfig::new(
         "127.0.0.1:0".parse().unwrap(),
@@ -403,7 +409,7 @@ fn connect_ws_pair_session(token: &str) -> (NveWireServer, DesktopSession<Paired
         token,
         NveWireTransportKind::Ws,
     );
-    let app = PairedRemoteApp::connect(cfg).expect("connect paired app");
+    let app = PairReplicaClient::connect(cfg, "nve-skia-shell").expect("connect paired app");
     let viewport = Viewport {
         width: 240.0,
         height: 160.0,
@@ -505,7 +511,7 @@ fn paired_remote_app_recovers_from_corrupt_frame_and_shows_auth_rejected_banner(
 
     assert_eq!(server.broadcast_scene_keyframe(1, &f1).unwrap(), 1);
     assert_eq!(server.broadcast_command_delta(2, b"CORRUPT_NVE2_FRAME").unwrap(), 1);
-    let wait_rx = |sess: &DesktopSession<PairedRemoteApp>, target: u64| {
+    let wait_rx = |sess: &DesktopSession<PairReplicaClient>, target: u64| {
         let deadline = Instant::now() + Duration::from_secs(2);
         while sess.app().frames_received() < target && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(5));
@@ -623,15 +629,21 @@ fn paired_remote_app_recovers_from_corrupt_frame_and_shows_auth_rejected_banner(
         "wrong-token-for-banner",
         NveWireTransportKind::Ws,
     );
-    let mut bad_app = PairedRemoteApp::spawn_for_test(bad_cfg).expect("spawn bad-token app");
+    let mut bad_app = PairReplicaClient::spawn_with_reconnect(
+        bad_cfg,
+        "nve-skia-shell",
+        ReconnectConfig {
+            initial_backoff: Duration::from_millis(20),
+            max_backoff: Duration::from_millis(40),
+        },
+    )
+    .expect("spawn bad-token app");
     let auth_deadline = Instant::now() + Duration::from_secs(3);
     while bad_app.auth_rejections() == 0 && Instant::now() < auth_deadline {
         thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(bad_app.auth_rejections(), 1);
-    let banner = bad_app
-        .remote_status_banner()
-        .expect("paired app status banner");
+    let banner = bad_app.remote_status_banner();
     assert!(
         banner.contains("AUTH REJECTED"),
         "expected AUTH REJECTED in banner, got `{banner}`"
