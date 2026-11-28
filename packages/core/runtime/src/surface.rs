@@ -378,6 +378,7 @@ impl SurfaceRuntime {
         self.with_write(|inner| {
             let (store, resources, state) = inner.split_store_and_state();
             state.invalidate_published_view();
+            state.adopt_store(store);
             state.scene.replace_layout_engine(engine);
             state.layout_engine_name = state.scene.layout_engine_name();
             state.frame_id = state.frame_id.wrapping_add(1).max(1);

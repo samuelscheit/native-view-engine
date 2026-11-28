@@ -134,9 +134,11 @@ winrt::com_ptr<NveRnwComponentUserData> initialize_view_host(rnw_comp::ViewCompo
                                  rnw_input::PointerRoutedEventArgs const& args) {
         auto strong = weak.get();
         auto comp_view = sender.try_as<rnw::ComponentView>();
-        if (!strong || !strong->host || !comp_view) return;
+        // A strong host copy: the press may make JS destroy the view (`Destroying` resets `host`).
+        const std::shared_ptr<NveWinHost> host = strong ? strong->host : nullptr;
+        if (!host || !comp_view) return;
         const auto pos = args.GetCurrentPoint(comp_view.Tag()).Position();
-        if (strong->host->press_at(pos.X, pos.Y).dispatched) args.Handled(true);
+        if (host->press_at(pos.X, pos.Y).dispatched) args.Handled(true);
       });
   user_data->destroying_revoker = view.Destroying(
       winrt::auto_revoke, [weak](winrt::Windows::Foundation::IInspectable const&, rnw::ComponentView const&) {
@@ -180,8 +182,9 @@ bool register_nve_rnw_component(rnw::IReactPackageBuilder const& package_builder
     }
     comp_builder.SetUpdateLayoutMetricsHandler(
         [](rnw::ComponentView const& source, rnw::LayoutMetrics const& metrics, rnw::LayoutMetrics const&) {
-          if (auto user_data = get_user_data(source); user_data && user_data->host) {
-            user_data->host->set_surface_size(metrics.Frame.Width, metrics.Frame.Height, metrics.PointScaleFactor);
+          const auto user_data = get_user_data(source);
+          if (const std::shared_ptr<NveWinHost> host = user_data ? user_data->host : nullptr) {
+            host->set_surface_size(metrics.Frame.Width, metrics.Frame.Height, metrics.PointScaleFactor);
           }
         });
     builder.SetUpdateEventEmitterHandler([](rnw::ComponentView const& source, rnw::EventEmitter const& emitter) {
@@ -189,16 +192,18 @@ bool register_nve_rnw_component(rnw::IReactPackageBuilder const& package_builder
     });
     builder.SetCustomCommandHandler([](rnw::ComponentView const& source, rnw::HandleCommandArgs const& args) {
       auto user_data = get_user_data(source);
-      if (!user_data || !user_data->host) return;
+      // A strong copy: the pump / reload may run app code that destroys the view.
+      const std::shared_ptr<NveWinHost> host = user_data ? user_data->host : nullptr;
+      if (!host) return;
       const auto cmd = args.CommandName();
       if (cmd == L"render") {
-        (void)user_data->host->pump();
+        (void)host->pump();
         args.Handled(true);
       } else if (cmd == L"reloadDylib") {
         auto reader = args.CommandArgs();
         if (reader && reader.ValueType() == rnw::JSValueType::Array && reader.GetNextArrayItem() &&
             reader.ValueType() == rnw::JSValueType::String) {
-          (void)user_data->host->reload_dylib(winrt::to_string(reader.GetString()));
+          (void)host->reload_dylib(winrt::to_string(reader.GetString()));
           args.Handled(true);
         }
       }

@@ -1,6 +1,7 @@
 // Host policy tests (pure headers shared by every native shell): the link-scheme allowlist and
 // local-image rule (`urls.hpp`), and the launch command line + app-state lifecycle
 // (`launch_options.hpp`).
+#include <clocale>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -56,6 +57,34 @@ void test_local_image_path() {
                           "data:image/png;base64,AAAA", ""}) {
     CHECK(path(bad) == "<none>");
   }
+  // Percent-encoded UNC / NT / device prefixes and control characters decode to non-local paths.
+  for (const char* bad : {"file:///%5c%5cserver/share/a.png", "file:///%5C%5Cserver/share", "file:///%2f%2fserver/a",
+                          "file:///%2F%2Fserver/a", "file:///%5c%3f%3f%5cUNC%5cserver%5cx", "file:/%5c%5c.%5cpipe%5cx",
+                          "file://localhost/%5cserver", "file:///%5C\\server", "file:///tmp/a%00.png",
+                          "file:///tmp/%0a.png", "file:///tmp/%7f.png", "file:///tmp/%zz.png", "file:///tmp/a%2",
+                          "\\??\\C:\\a.png", "\\\\?\\C:\\a.png", "\\\\.\\pipe\\x", "/\\server\\share"}) {
+    CHECK(path(bad) == "<none>");
+  }
+  CHECK(path("file:///tmp/%41%2f.png") == "/tmp/%41%2f.png");  // encoded but local
+  CHECK(path("file:///C:/a%5cb.png") == "C:/a%5cb.png");
+  CHECK(local_decoded_path("/tmp/a.png") && local_decoded_path("C:\\img\\a.png"));
+  for (const char* bad : {"\\\\server\\share", "//server/share", "\\??\\C:\\x", "\\\\?\\C:\\x", "/\\x", "C:x",
+                          "relative", "/tmp/\x01.png", ""}) {
+    CHECK(!local_decoded_path(bad));
+  }
+}
+
+/// Scheme and host decisions never follow the C locale (Turkish `I` lower-cases to dotless `ı`).
+void test_policies_are_locale_independent() {
+  for (const char* name : {"tr_TR.ISO8859-9", "tr_TR.ISO-8859-9", "tr_TR.UTF-8", "tr_TR"}) {
+    if (std::setlocale(LC_ALL, name) != nullptr) break;
+  }
+  CHECK(openable_link("HTTPS://EXAMPLE.COM") && openable_link("MAILTO:a@b.c") && openable_link("hTtP://x"));
+  CHECK(local_image_path("FILE://LOCALHOST/tmp/a.png").value_or("") == "/tmp/a.png");
+  // Bytes >= 0x80 are never letters, whatever the locale says.
+  CHECK(!openable_link("\xC4\xB1https://x") && !openable_link("h\xFDttp://x"));
+  CHECK(!local_image_path("\xC9:\\x.png") && !local_image_path("file://LOCALHOS\xDD/x.png"));
+  std::setlocale(LC_ALL, "C");
 }
 
 LaunchParse parse(std::vector<const char*> args, LaunchOptions& o, std::string* error = nullptr,
@@ -161,6 +190,7 @@ void test_launch_state() {
 int main() {
   test_openable_link();
   test_local_image_path();
+  test_policies_are_locale_independent();
   test_launch_args();
   test_launch_state();
   if (g_failures != 0) {

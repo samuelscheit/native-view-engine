@@ -16,7 +16,7 @@
 
 namespace {
 
-// Mirrors Rust `nve_abi::table::NveTableView` / `nve_abi::scene::NveSceneView` (64-bit).
+// Mirrors Rust `nve_abi::table::NveTableView`; its 64-bit layout is locked below.
 struct TestTableView {
   uint32_t key_lo, key_hi, slot, words, row_count, dirty_count, row_index_dir_len, row_index_page_count;
   const uint32_t* rows;
@@ -171,7 +171,7 @@ struct SceneFixture {
   std::vector<NveLayoutRect> rects{{0.f, 0.f, 1.f, 1.f}, {1.f, 1.f, 2.f, 2.f}, {2.f, 2.f, 3.f, 3.f}};
   std::string_view text = "h\xC3\xA9" "\xF0\x9F\x9A\x80";  // "hé" + rocket
   std::vector<uint32_t> children{2u, 3u};
-  std::vector<uint32_t> dirty{0u, 2u, 99u};
+  std::vector<uint32_t> dirty{0u, 2u};
   std::vector<uint32_t> removed{42u};
   std::vector<uint32_t> rows = make_rows();
   std::vector<NveTableView> tables{{kVisual.lo(), kVisual.hi(), 0u, 6u, 2u, 0u, 0u, 0u, rows.data(), nullptr, nullptr, nullptr, nullptr}};
@@ -233,7 +233,7 @@ void test_scene_reader() {
     CHECK(r.width == static_cast<float>(index + 1u));
     ++visited;
   });
-  CHECK(visited == 2u);  // index 99 skipped
+  CHECK(visited == 2u);
   CHECK(scene->removed_ids().size() == 1u && scene->removed_ids()[0] == 42u);
   CHECK(scene->find_table(kVisual)->u32(0, kOpacity) == 200u);
   CHECK(!scene->find_table(Key64{1}).has_value());
@@ -264,6 +264,37 @@ void test_scene_reader_rejects() {
   v.node_capacity = 0;
   v.rows = nullptr;  // null with zero count is fine
   v.rects = nullptr;
+  v.dirty_count = 0;
+  CHECK(SceneReader::open(&v, kSchema, &err).has_value());
+
+  // Dirty / moved indices index `rows` / `rects` unchecked: every one must be in range.
+  const std::array<uint32_t, 3> out_of_range{0u, 2u, 3u};
+  v = fx.view();
+  v.dirty_indices = out_of_range.data();
+  v.dirty_count = 3u;
+  CHECK(!SceneReader::open(&v, kSchema, &err) && err == SceneError::InvalidIndex);
+  v = fx.view();
+  v.moved_indices = out_of_range.data();
+  v.moved_count = 3u;
+  CHECK(!SceneReader::open(&v, kSchema, &err) && err == SceneError::InvalidIndex);
+  v.moved_count = 2u;
+  CHECK(SceneReader::open(&v, kSchema, &err).has_value() && err == SceneError::None);
+
+  // Table slots index the 128-bit row `table_set`: in range and unique.
+  for (const uint32_t slot : {128u, 0xFFFFFFFFu}) {
+    std::vector<NveTableView> bad = fx.tables;
+    bad[0].slot = slot;
+    v = fx.view();
+    v.tables = bad.data();
+    CHECK(!SceneReader::open(&v, kSchema, &err) && err == SceneError::InvalidTable);
+  }
+  std::vector<NveTableView> twice{fx.tables[0], fx.tables[0]};
+  twice[1].key_lo ^= 1u;  // another table, same slot
+  v = fx.view();
+  v.tables = twice.data();
+  v.table_count = 2u;
+  CHECK(!SceneReader::open(&v, kSchema, &err) && err == SceneError::InvalidTable);
+  twice[1].slot = 127u;
   CHECK(SceneReader::open(&v, kSchema, &err).has_value());
 
   const std::array<uint8_t, 2> bad_utf8 = {0xC0, 0xAF};
@@ -293,11 +324,12 @@ void test_count_fits_with_32_bit_limits() {
 }
 
 void test_scene_slab_counts_fit_the_address_space() {
-  // A node slab of u32::MAX 64-byte records exceeds PTRDIFF_MAX on 32-bit hosts and must be
-  // rejected before a span is formed; on 64-bit hosts the same count is representable.
+  // A slab of u32::MAX records exceeds PTRDIFF_MAX on 32-bit hosts and must be rejected before a
+  // span is formed; on 64-bit hosts the same count is representable (the children slab is never
+  // read at open).
   SceneFixture fx;
   NveSceneView v = fx.view();
-  v.dirty_count = 0xFFFFFFFFu;
+  v.children_slab_len = 0xFFFFFFFFu;
   SceneError err = SceneError::None;
   const bool opened = SceneReader::open(&v, kSchema, &err).has_value();
   if constexpr (sizeof(void*) == 4) {
@@ -307,7 +339,7 @@ void test_scene_slab_counts_fit_the_address_space() {
   }
 }
 
-void test_runtime_scene_reader_and_session_mock() {
+void test_scene_reader_and_session_mock() {
   struct MockState {
     int acquires = 0;
     int releases = 0;
@@ -496,7 +528,7 @@ int main() {
   test_count_fits_with_32_bit_limits();
   test_scene_reader();
   test_scene_reader_rejects();
-  test_runtime_scene_reader_and_session_mock();
+  test_scene_reader_and_session_mock();
   if (g_failures != 0) {
     fprintf(stderr, "nve_host_table_scene_test: %d failure(s)\n", g_failures);
     return 1;

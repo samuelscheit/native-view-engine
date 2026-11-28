@@ -48,16 +48,18 @@ int32_t count(HostSession& host) {
 bool press(HostSession& host, uint32_t node) { return host.dispatch(host.events().press(node, 0.0f, 0.0f)); }
 
 /// This process's staged copies of modules with file stem `stem`
-/// (`<tmp>/nve-runtime-modules/<stem>_<label>_<pid>_<seq>.<ext>`).
+/// (`<tmp>/nve-runtime-modules[-<euid>]/<stem>_<label>_<pid>_<seq>.<ext>`: per user on POSIX).
 size_t staged_copies(std::string_view stem) {
 #if defined(_WIN32)
   const std::string pid = "_" + std::to_string(_getpid()) + "_";
+  const fs::path dir = fs::temp_directory_path() / "nve-runtime-modules";
 #else
   const std::string pid = "_" + std::to_string(getpid()) + "_";
+  const fs::path dir = fs::temp_directory_path() / ("nve-runtime-modules-" + std::to_string(geteuid()));
 #endif
   size_t n = 0u;
   std::error_code ec;
-  for (const auto& e : fs::directory_iterator(fs::temp_directory_path() / "nve-runtime-modules", ec)) {
+  for (const auto& e : fs::directory_iterator(dir, ec)) {
     const std::string name = e.path().filename().string();
     if (name.starts_with(std::string(stem) + "_") && name.find(pid) != std::string::npos) ++n;
   }

@@ -41,6 +41,7 @@ NveWinHost::NveWinHost(WinHostConfig config, std::unique_ptr<host::HostSession> 
     : config_(config), session_(std::move(session)) {}
 
 NveWinHost::~NveWinHost() {
+  alive_->store(false, std::memory_order_release);
   session_->set_wake_poster({});
   session_->set_event_sink({});
   on_change_ = {};
@@ -126,7 +127,9 @@ void NveWinHost::set_wake_poster(host::HostSession::WakePoster poster) { session
 
 size_t NveWinHost::pump() {
   if (syncing_) return 0u;  // re-entrant wake raised while mirroring
+  const auto alive = alive_;  // the event sink may destroy this host during the pump
   (void)session_->pump();
+  if (!alive->load(std::memory_order_acquire)) return 0u;
   const uint64_t before = tree_.updated_count() + tree_.created_count();
   sync_views();
   return static_cast<size_t>(tree_.updated_count() + tree_.created_count() - before);
@@ -152,8 +155,9 @@ void NveWinHost::notify_if_changed(uint64_t before) {
 
 bool NveWinHost::dispatch(const NveDirectEvent& ev) {
   if (syncing_) return false;
+  const auto alive = alive_;  // the event sink may destroy this host during the dispatch
   const bool changed = session_->dispatch(ev);
-  sync_views();
+  if (alive->load(std::memory_order_acquire)) sync_views();
   return changed;
 }
 

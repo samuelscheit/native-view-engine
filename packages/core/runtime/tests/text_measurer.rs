@@ -8,11 +8,13 @@ use nve_abi::{
     NveRuntimeTextStyle, NveStrSlice, NVE_LINE_HEIGHT_PERCENT,
     NVE_LINE_HEIGHT_POINTS,
 };
-use nve_components::tables::{FontStyle, Layout, TextContent, Typography, WhiteSpace};
+use nve_components::tables::{
+    FontStyle, Layout, OverflowWrap, TextContent, Typography, WhiteSpace, WordBreak,
+};
 use nve_engine::Viewport;
 use nve_layout::{TextMeasurer, TextStyle};
 use nve_runtime::{SurfaceRuntime};
-use nve_store::{Length, NodeId, NodeStore, ChangeSet, wire::WireEncoder};
+use nve_store::{Length, NodeId, NodeStore, ChangeSet, Rgba, Transaction, wire::WireEncoder};
 
 mod common;
 use common::*;
@@ -102,6 +104,8 @@ struct Measured {
     letter_spacing: f32,
     line_height: (f32, u8),
     white_space: u8,
+    word_break: u8,
+    overflow_wrap: u8,
     max_lines: u32,
     max_width: f32,
 }
@@ -127,6 +131,8 @@ unsafe extern "C" fn recording_measure(
             letter_spacing: s.letter_spacing,
             line_height: (s.line_height, s.line_height_unit),
             white_space: s.white_space,
+            word_break: s.word_break,
+            overflow_wrap: s.overflow_wrap,
             max_lines: s.max_lines,
             max_width,
         });
@@ -198,6 +204,8 @@ fn c_abi_text_measurer_receives_the_resolved_inherited_typography() {
         letter_spacing: 1.5,
         line_height: (150.0, NVE_LINE_HEIGHT_PERCENT),
         white_space: WhiteSpace::NoWrap as u8,
+        word_break: 0,
+        overflow_wrap: 0,
         max_lines: 2,
         max_width: f32::INFINITY, // `nowrap` never wraps, whatever the probe
     };
@@ -218,6 +226,97 @@ fn c_abi_text_measurer_receives_the_resolved_inherited_typography() {
         );
     }
     assert!(of("overrides").iter().any(|m| m.max_width == 120.0), "wrapping text gets its width");
+}
+
+/// Every measure-affecting field edited on an ancestor alone re-measures the inheriting leaf
+/// with the new value (also a same-length family the string arena replaces in place); a
+/// paint-only `color` edit on the ancestor measures nothing.
+#[test]
+fn ancestor_typography_edits_remeasure_descendants_and_color_does_not() {
+    type Edit = fn(&mut Transaction<'_>, NodeId);
+    let s = Surface::new();
+    let mut store = NodeStore::new();
+    let mut enc = WireEncoder::default();
+    let column = {
+        let mut changes = ChangeSet::default();
+        let mut tx = store.tx();
+        let [column, wrapper, leaf] = [(); 3].map(|_| tx.create());
+        // Every field explicit (at its default) so later edits need no `set` bookkeeping.
+        tx.edit::<Typography>(column).font_family("Arial").set(
+            Typography::SET_FONT_FAMILY
+                | Typography::SET_LINE_HEIGHT
+                | Typography::SET_LETTER_SPACING
+                | Typography::SET_WHITE_SPACE
+                | Typography::SET_MAX_LINES
+                | Typography::SET_FONT_STYLE
+                | Typography::SET_WORD_BREAK
+                | Typography::SET_OVERFLOW_WRAP
+                | Typography::SET_COLOR,
+        );
+        tx.edit::<TextContent>(leaf).text("leaf");
+        tx.set_children(NodeId::ROOT, &[column]);
+        tx.set_children(column, &[wrapper]);
+        tx.set_children(wrapper, &[leaf]);
+        tx.commit_into(&mut changes);
+        s.submit(&encode(&store, &changes, &mut enc));
+        column
+    };
+    let seen: *mut Vec<Measured> = Box::into_raw(Box::default());
+    // SAFETY: Live handle; `seen` outlives the measurer (cleared below, then freed).
+    assert_eq!(unsafe { (s.api.set_text_measurer)(s.h, Some(recording_measure), seen.cast()) }, OK);
+    let mut frame = |store: &mut NodeStore, edit: &dyn Fn(&mut Transaction<'_>)| -> Vec<Measured> {
+        let mut changes = ChangeSet::default();
+        let mut tx = store.tx();
+        edit(&mut tx);
+        tx.commit_into(&mut changes);
+        // SAFETY: The runtime only touches `seen` inside `submit` / `tick` (same thread).
+        unsafe { (*seen).clear() };
+        s.submit(&encode(store, &changes, &mut enc));
+        // SAFETY: As above.
+        unsafe { std::mem::take(&mut *seen) }
+    };
+    type Check = fn(&Measured) -> bool;
+    let edits: [(&str, Edit, Check); 8] = [
+        ("line_height", |tx, c| {
+            tx.edit::<Typography>(c).line_height(Length::points(30.0));
+        }, |m| m.line_height == (30.0, NVE_LINE_HEIGHT_POINTS)),
+        ("letter_spacing", |tx, c| {
+            tx.edit::<Typography>(c).letter_spacing(2.5);
+        }, |m| m.letter_spacing == 2.5),
+        ("white_space", |tx, c| {
+            tx.edit::<Typography>(c).white_space(WhiteSpace::PreWrap);
+        }, |m| m.white_space == WhiteSpace::PreWrap as u8),
+        ("max_lines", |tx, c| {
+            tx.edit::<Typography>(c).max_lines(4);
+        }, |m| m.max_lines == 4),
+        ("font_style", |tx, c| {
+            tx.edit::<Typography>(c).font_style(FontStyle::Italic);
+        }, |m| m.font_style == FontStyle::Italic as u8),
+        ("word_break", |tx, c| {
+            tx.edit::<Typography>(c).word_break(WordBreak::BreakAll);
+        }, |m| m.word_break == WordBreak::BreakAll as u8),
+        ("overflow_wrap", |tx, c| {
+            tx.edit::<Typography>(c).overflow_wrap(OverflowWrap::Anywhere);
+        }, |m| m.overflow_wrap == OverflowWrap::Anywhere as u8),
+        // Same length as "Arial": replaced in place under the same arena span.
+        ("same-length font_family", |tx, c| {
+            tx.edit::<Typography>(c).font_family("Inter");
+        }, |m| m.family == "Inter"),
+    ];
+    for (what, edit, check) in edits {
+        let measured = frame(&mut store, &|tx| edit(tx, column));
+        assert!(!measured.is_empty(), "{what} re-measures the inheriting leaf");
+        assert!(measured.iter().all(|m| m.text == "leaf" && check(m)), "{what}: {measured:?}");
+    }
+    let measured = frame(&mut store, &|tx| {
+        tx.edit::<Typography>(column).color(Rgba::WHITE);
+    });
+    assert!(measured.is_empty(), "inherited color never re-measures: {measured:?}");
+
+    // SAFETY: Live handle; restoring the built-in measurer releases `seen`.
+    assert_eq!(unsafe { (s.api.set_text_measurer)(s.h, None, std::ptr::null_mut()) }, OK);
+    // SAFETY: Allocated above; no longer referenced by the runtime.
+    drop(unsafe { Box::from_raw(seen) });
 }
 
 struct HalfMeasurer;

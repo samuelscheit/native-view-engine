@@ -198,3 +198,110 @@ fn a_direct_app_switching_resource_stores_starts_a_new_epoch() {
     assert!(rt.tick(0.0).expect("stay"));
     assert_eq!(epoch(&rt).0, e0.wrapping_add(1), "staying on the new store keeps its epoch");
 }
+
+/// Direct-store app that replaces its store in place (`*store = NodeStore::new()`: the same heap
+/// address, a new namespace) when `command` is 2; 1 re-renders.
+struct InlineResetApp {
+    store: Box<NodeStore>,
+    node: NodeId,
+    changes: ChangeSet,
+    command: Arc<AtomicU8>,
+    reset: bool,
+}
+
+/// Builds `labels` as root children of `store`, returning the first node and the changes.
+fn populate(store: &mut NodeStore, labels: &[&str]) -> (NodeId, ChangeSet) {
+    let mut tx = store.tx();
+    let nodes: Vec<NodeId> = labels
+        .iter()
+        .map(|label| {
+            let n = tx.create();
+            tx.edit::<TextContent>(n).text(label);
+            n
+        })
+        .collect();
+    tx.set_children(NodeId::ROOT, &nodes);
+    let mut changes = ChangeSet::default();
+    tx.commit_into(&mut changes);
+    (nodes[0], changes)
+}
+
+impl RuntimeApp for InlineResetApp {
+    fn render_frame(&mut self, _frame_id: FrameId) -> AppFrame<'_> {
+        if std::mem::take(&mut self.reset) {
+            *self.store = NodeStore::new();
+            (self.node, self.changes) = populate(&mut self.store, &["a much longer replacement label"]);
+            return AppFrame::Direct { changes: &self.changes };
+        }
+        let mut tx = self.store.tx();
+        tx.edit::<TextContent>(self.node).text("rendered");
+        tx.commit_into(&mut self.changes);
+        AppFrame::Direct { changes: &self.changes }
+    }
+
+    fn dispatch_events(&mut self, _events: NveEventBatchRef<'_>) -> bool {
+        false
+    }
+
+    fn poll_async_work(&mut self) -> bool {
+        match self.command.swap(0, Ordering::AcqRel) {
+            0 => false,
+            c => {
+                self.reset = c == 2;
+                true
+            }
+        }
+    }
+
+    fn direct_store(&self) -> Option<&NodeStore> {
+        Some(&self.store)
+    }
+
+    fn direct_store_mut(&mut self) -> Option<&mut NodeStore> {
+        Some(&mut self.store)
+    }
+}
+
+fn published_rect(rt: &SurfaceRuntime, id: NodeId) -> (f32, f32, f32, f32) {
+    let guard = rt.acquire_scene().expect("acquire");
+    let v = guard.view();
+    assert!(id.index() < v.node_capacity as usize);
+    // SAFETY: The guard keeps the published rects alive; index checked above.
+    let r = unsafe { *v.rects.add(id.index()) };
+    (r.x, r.y, r.width, r.height)
+}
+
+#[test]
+fn a_direct_store_replaced_in_place_starts_a_new_epoch_with_fresh_layout() {
+    let command = Arc::new(AtomicU8::new(0));
+    let mut store = Box::new(NodeStore::new());
+    let (node, changes) = populate(&mut store, &["one", "two", "three"]);
+    let app = InlineResetApp { store, node, changes, command: Arc::clone(&command), reset: false };
+    let mut rt = RuntimeBuilder::new().app(Box::new(app)).build();
+    let _ = rt.tick(0.0).expect("mount");
+    let (e0, _) = epoch(&rt);
+    command.store(1, Ordering::Release);
+    assert!(rt.tick(0.0).expect("re-render"));
+    assert_eq!(epoch(&rt).0, e0, "the same store keeps its epoch");
+
+    command.store(2, Ordering::Release);
+    assert!(rt.tick(0.0).expect("in-place reset"));
+    assert_eq!(epoch(&rt).0, e0.wrapping_add(1), "same address, new store: exactly one new epoch");
+
+    // Layout and published rects equal a runtime that only ever saw the replacement store.
+    let mut fresh_store = Box::new(NodeStore::new());
+    let (fresh_node, fresh_changes) = populate(&mut fresh_store, &["a much longer replacement label"]);
+    let fresh_app = InlineResetApp {
+        store: fresh_store,
+        node: fresh_node,
+        changes: fresh_changes,
+        command: Arc::new(AtomicU8::new(0)),
+        reset: false,
+    };
+    let mut fresh = RuntimeBuilder::new().app(Box::new(fresh_app)).build();
+    let _ = fresh.tick(0.0).expect("fresh mount");
+    assert_eq!(published_rect(&rt, fresh_node), published_rect(&fresh, fresh_node));
+    command.store(1, Ordering::Release);
+    assert!(rt.tick(0.0).expect("stay"));
+    assert_eq!(epoch(&rt).0, e0.wrapping_add(1), "the replacement keeps its epoch");
+}

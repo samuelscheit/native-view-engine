@@ -316,9 +316,69 @@ void test_live_kitchen_sink_if_configured() {
 void nve_test_qt_quick_input();
 void nve_test_qt_quick_media_canvas_a11y();
 
+/// Wrapper ownership and clip shape across orphaning, a dropped scene graph, and radius changes:
+/// a detached subtree keeps (owns) its wrappers and comes back intact; when the item leaves the
+/// window Qt deletes the tree and every record, attached or not, is rebuilt; a clip that loses
+/// its radius gets rectangular geometry (never the stale rounded one).
+void test_scene_graph_orphans_rebuild_and_clip_shape() {
+  constexpr uint32_t kHolder = 2u, kClip = 3u, kInner = 4u;
+  ScriptedApp app;
+  h::Nve2Writer& w = app.w;
+  w.create(1u);
+  w.set(1u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(255, 255, 255));
+  w.create(kHolder);
+  size_node(w, kHolder, 100.0f, 100.0f);
+  w.create(kClip);
+  size_node(w, kClip, 60.0f, 60.0f);
+  w.set(kClip, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OVERFLOW_X, NVE_OVERFLOW_HIDDEN);
+  w.set(kClip, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OVERFLOW_Y, NVE_OVERFLOW_HIDDEN);
+  w.set_f32(kClip, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_RADIUS, 30.0f);
+  w.create(kInner);
+  size_node(w, kInner, 200.0f, 200.0f);
+  w.set(kInner, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(255, 0, 0));
+  const uint32_t inner[] = {kInner};
+  w.set_children(kClip, inner);
+  const uint32_t clip[] = {kClip};
+  w.set_children(kHolder, clip);
+  const uint32_t holder[] = {kHolder};
+  w.set_children(1u, holder);
+  QuickHarness q;
+  ProbeItem& item = *q.item;
+  NVE_CHECK(item.host().attach_interface(&ScriptedApp::get_interface));
+  (void)q.grab();
+  const auto clip_node = [&] {
+    return static_cast<const QSGClipNode*>(first_of_type(q.sg(kClip), QSGNode::ClipNodeType));
+  };
+  NVE_CHECK(clip_node() != nullptr && clip_node()->geometry()->vertexCount() > 8);
+
+  // Radius 0: rectangular, with a 4-vertex rect geometry.
+  w.set_f32(kClip, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_RADIUS, 0.0f);
+  flush(item.host());
+  NVE_CHECK(same_rgb(q.at(55, 55), 255, 0, 0));  // the corner is no longer clipped away
+  NVE_CHECK(clip_node()->isRectangular() && clip_node()->geometry()->vertexCount() == 4);
+  NVE_CHECK(clip_node()->geometry()->vertexDataAsPoint2D()[3].x == 60.0f);
+
+  // Orphan kClip's subtree (alive, detached): its wrappers stay owned, out of the tree.
+  const QSGNode* clip_sg = q.sg(kClip);
+  w.set_children(kHolder, std::span<const uint32_t>());
+  flush(item.host());
+  NVE_CHECK(same_rgb(q.at(10, 10), 255, 255, 255));
+  NVE_CHECK(q.sg(kClip) == clip_sg && clip_sg->parent() == nullptr);
+  // Drop the whole scene graph while the subtree is orphaned, then re-attach both.
+  item.setParentItem(nullptr);
+  (void)q.grab();
+  item.setParentItem(q.window.contentItem());
+  w.set_children(kHolder, clip);
+  flush(item.host());
+  NVE_CHECK(same_rgb(q.at(10, 10), 255, 0, 0) && same_rgb(q.at(70, 70), 255, 255, 255));
+  NVE_CHECK(q.sg(kClip) != nullptr && is_ancestor(q.sg(kHolder), q.sg(kInner)));
+  NVE_CHECK(item.sceneGraphStats().retainedNodes == 3u);
+}
+
 int main(int argc, char** argv) {
   QGuiApplication app(argc, argv);
   test_scene_graph_pixels_and_retention();
+  test_scene_graph_orphans_rebuild_and_clip_shape();
   test_qml_api_modules_hot_reload_and_state();
   test_queued_wakes_never_outlive_the_item();
   test_live_kitchen_sink_if_configured();

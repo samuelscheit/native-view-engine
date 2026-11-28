@@ -64,6 +64,8 @@ struct TextPaint {
   uint16_t font_weight = 400u;
   uint8_t font_style = NVE_FONT_STYLE_NORMAL;
   uint8_t white_space = NVE_WHITE_SPACE_NORMAL;
+  uint8_t word_break = NVE_WORD_BREAK_NORMAL;
+  uint8_t overflow_wrap = NVE_OVERFLOW_WRAP_NORMAL;
   uint8_t text_align = NVE_TEXT_ALIGN_START;
   uint8_t text_decoration = 0u;
 
@@ -71,9 +73,7 @@ struct TextPaint {
   /// The runtime measurer's resolved typography (no colour / alignment / decoration: they do
   /// not change the measured size).
   [[nodiscard]] static TextPaint from(const NveRuntimeTextStyle& s);
-  [[nodiscard]] bool wraps() const noexcept {
-    return white_space != NVE_WHITE_SPACE_NO_WRAP && white_space != NVE_WHITE_SPACE_PRE;
-  }
+  [[nodiscard]] host::TextWrap wrap() const noexcept { return host::text_wrap(white_space, word_break, overflow_wrap); }
   friend bool operator==(const TextPaint&, const TextPaint&) = default;
 };
 
@@ -105,7 +105,9 @@ struct WinNodeVisual {
   uint32_t parent = 0u;  // packed `NodeId` (the root's id for top-level nodes)
   host::NodeKind kind = host::NodeKind::View;
   bool canvas = false;
-  Rect local;  // relative to the parent's (unscrolled) origin
+  Rect local;    // relative to the parent's (unscrolled) origin
+  Rect content;  // content box (inside border and padding), relative to `local`'s origin: text,
+                 // images and canvases draw here
   host::VisualStyle visual;
   std::vector<host::BoxShadow> shadows;
   float shadow_reach = 0.0f;  // how far outer shadows paint beyond the rect
@@ -253,6 +255,9 @@ class NveWinVisualTree {
   void apply_scroll_offsets(const host::SceneReader& scene);
   void resort(std::vector<uint32_t>& paint_order, std::span<const uint32_t> children) const;
   void settle_damage();
+  /// `v`'s descendants moved with it (its origin or scroll offset changed): their painted bounds
+  /// are recomputed (old and new areas damaged) by `settle_damage`.
+  void touch_descendants(const WinNodeVisual& v);
 
   template <class Visitor>
   void walk_children(const PaintFrame& frame, float sx, float sy, bool clips, std::span<const uint32_t> ids,
@@ -282,6 +287,7 @@ class NveWinVisualTree {
   std::vector<uint32_t> text_inputs_;
   std::vector<uint32_t> scrolled_;  // nodes with a non-zero published offset
   std::vector<uint32_t> touched_;   // views whose bounds must be recomputed (damage)
+  std::vector<uint32_t> subtree_;   // `touch_descendants` scratch
   std::vector<uint32_t> resort_;    // parents whose children's z-index changed (0: root)
   Rect damage_;
   bool full_damage_ = false;

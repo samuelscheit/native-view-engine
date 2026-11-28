@@ -12,7 +12,12 @@
 // is attached records render state (transform / opacity / clip node, never a plain `QSGNode`): the
 // software adaptation seeds nodes added later from their parent's recorded state only
 // (docs/UPSTREAM.md). Only records marked dirty on the GUI thread are visited; textures are
-// re-rasterized only when the record's paint generation or the device pixel ratio changed.
+// re-uploaded only when the record's GUI-rasterized images (`QuickRaster`) changed: no text,
+// font, or blur work happens here (NveQtQuickRaster.cpp).
+//
+// Ownership: the root's index owns every `NodeSG` (none is owned by its scene-graph parent), so
+// a wrapper detached from the tree (its record orphaned, or its parent relinked) is never leaked
+// and never deleted twice; Qt deleting the root deletes them all.
 #include "NveQtQuickInternal.hpp"
 
 #include <QQuickWindow>
@@ -44,6 +49,7 @@ struct TextureQuad {
 class NodeSG final : public QSGTransformNode {
  public:
   explicit NodeSG(uint32_t node_id) : id(node_id) {
+    setFlag(QSGNode::OwnedByParent, false);  // owned by `RootSG::index`
     appendChildNode(opacity);
     opacity->appendChildNode(clip_parent);
     clip_parent->appendChildNode(scroll);
@@ -129,32 +135,26 @@ class RootSG final : public QSGNode {
   }
   QSGSimpleRectNode* background = new QSGSimpleRectNode();
   QSGTransformNode* container = new QSGTransformNode();  // records state (see the file comment)
-  std::unordered_map<uint32_t, NodeSG*> index;
+  /// Owns every wrapper, attached or not (a deleted wrapper detaches itself and its children).
+  std::unordered_map<uint32_t, std::unique_ptr<NodeSG>> index;
 };
 
-/// A premultiplied HiDPI canvas of logical `size`, cleared, with a painter set up by `paint`.
-template <class Paint>
-QImage raster(QSizeF size, qreal dpr, Paint&& paint) {
-  const QSize px(std::max(1, static_cast<int>(std::ceil(size.width() * dpr))),
-                 std::max(1, static_cast<int>(std::ceil(size.height() * dpr))));
-  QImage image(px, QImage::Format_ARGB32_Premultiplied);
-  image.setDevicePixelRatio(dpr);
-  image.fill(Qt::transparent);
-  QPainter p(&image);
-  p.setRenderHint(QPainter::Antialiasing, true);
-  paint(p);
-  return image;
-}
-
-/// Convex rounded-rect clip geometry as a triangle fan around its centre.
+/// Convex rounded-rect clip geometry as a triangle list around its centre (one triangle per
+/// outline edge). Never a triangle fan: Metal and Direct3D have no fan topology, so the RHI
+/// renderer cannot draw one.
 QSGGeometry* rounded_clip_geometry(const QRectF& r, qreal radius) {
   const QPolygonF outline = rounded_path(r, radius).toFillPolygon();
-  auto* g = new QSGGeometry(QSGGeometry::defaultAttributes_Point2D(), static_cast<int>(outline.size()) + 1);
-  g->setDrawingMode(QSGGeometry::DrawTriangleFan);
+  const qsizetype edges = outline.size();
+  auto* g = new QSGGeometry(QSGGeometry::defaultAttributes_Point2D(), static_cast<int>(edges * 3));
+  g->setDrawingMode(QSGGeometry::DrawTriangles);
   QSGGeometry::Point2D* pts = g->vertexDataAsPoint2D();
-  pts[0].set(static_cast<float>(r.center().x()), static_cast<float>(r.center().y()));
-  for (qsizetype i = 0; i < outline.size(); ++i) {
-    pts[i + 1].set(static_cast<float>(outline[i].x()), static_cast<float>(outline[i].y()));
+  const auto x = [](qreal v) { return static_cast<float>(v); };
+  for (qsizetype i = 0; i < edges; ++i) {
+    const QPointF& a = outline[i];
+    const QPointF& b = outline[(i + 1) % edges];
+    pts[i * 3].set(x(r.center().x()), x(r.center().y()));
+    pts[i * 3 + 1].set(x(a.x()), x(a.y()));
+    pts[i * 3 + 2].set(x(b.x()), x(b.y()));
   }
   return g;
 }
@@ -170,59 +170,41 @@ void update_clip(NodeSG& sg, const QuickNodeView& v) {
   const QRectF r(QPointF(), v.local.size());
   clip->setClipRect(r);  // the rectangular / software path
   clip->setIsRectangular(radius <= 0.0);
+  // Always the current shape: a rounded geometry left over from an earlier radius would keep
+  // clipping the corners of a now-rectangular box on renderers that clip by geometry.
+  QSGGeometry* g = nullptr;
   if (radius > 0.0) {
-    clip->setGeometry(rounded_clip_geometry(r, radius));
-    clip->setFlag(QSGNode::OwnsGeometry, true);
+    g = rounded_clip_geometry(r, radius);
+  } else {
+    g = new QSGGeometry(QSGGeometry::defaultAttributes_Point2D(), 4);
+    QSGGeometry::updateRectGeometry(g, r);
+    g->setDrawingMode(QSGGeometry::DrawTriangleStrip);
   }
+  clip->setGeometry(g);  // deletes the previous one (owned)
+  clip->setFlag(QSGNode::OwnsGeometry, true);
   clip->markDirty(QSGNode::DirtyGeometry);
 }
 
-void update_visual(NodeSG& sg, const QuickNodeView& v, const NveQtQuickItem::Impl& impl, QQuickWindow& window,
-                   qreal dpr, SceneGraphStats& stats) {
-  if (sg.painted_generation == v.paint_generation && sg.painted_dpr == dpr) {
+/// Uploads `v`'s GUI-rasterized images when they changed since this wrapper last showed them.
+void update_visual(NodeSG& sg, const QuickNodeView& v, QQuickWindow& window, SceneGraphStats& stats) {
+  const QuickRaster& r = v.raster;
+  if (sg.painted_generation == r.generation && sg.painted_dpr == r.dpr) {
     ++stats.texturesReused;
     return;
   }
-  sg.painted_generation = v.paint_generation;
-  sg.painted_dpr = dpr;
-  const QSizeF size = v.local.size();
-  const bool empty = size.width() <= 0.0 || size.height() <= 0.0;
-  const BoxVisual& visual = v.paint.visual;
+  sg.painted_generation = r.generation;
+  sg.painted_dpr = r.dpr;
   QSGNode* const after_shadow = sg.rect != nullptr ? static_cast<QSGNode*>(sg.rect)
                                 : sg.painted.node != nullptr ? static_cast<QSGNode*>(sg.painted.node)
                                                              : sg.clip_parent;
-  if (!empty && visual.has_outer_shadow()) {
-    const QMarginsF m = outer_shadow_margins(visual.shadows);
-    const QRectF area = QRectF(QPointF(), size).marginsAdded(m);
-    const QImage img = raster(area.size(), dpr, [&](QPainter& p) {
-      paint_outer_shadows(p, QRectF(QPointF(m.left(), m.top()), size), visual.radius, visual.shadows);
-    });
-    sg.set_quad(sg.shadow, window, img, area, after_shadow);
+  sg.set_quad(sg.shadow, window, r.shadow, r.shadow_rect, after_shadow);
+  const QRectF box(QPointF(), v.local.size());
+  sg.set_quad(sg.painted, window, r.painted, box, sg.clip_parent);
+  if (!r.solid) {
+    sg.drop_rect();
   } else {
-    sg.set_quad(sg.shadow, window, QImage(), QRectF(), nullptr);
-  }
-  if (empty || (!v.is_input && v.paint.paints_only_background())) {
-    sg.set_quad(sg.painted, window, QImage(), QRectF(), nullptr);
-    if (!empty && visual.background.alpha() > 0) {
-      if (sg.rect == nullptr) ++stats.solidRectNodes;
-      sg.set_rect(QRectF(QPointF(), size), visual.background);
-    } else {
-      sg.drop_rect();
-    }
-    return;
-  }
-  sg.drop_rect();
-  const bool focused = impl.focused_ == v.id;
-  const QImage img = raster(size, dpr, [&](QPainter& p) {
-    paint_node(p, QRectF(QPointF(), size), v.paint);
-    if (v.is_input) paint_input(p, QRectF(QPointF(), size), v, focused);
-  });
-  sg.set_quad(sg.painted, window, img, QRectF(QPointF(), size), sg.clip_parent);
-  switch (v.paint.content) {
-    case NodeContent::Text: ++stats.textRasterizations; break;
-    case NodeContent::Image: ++stats.imageRasterizations; break;
-    case NodeContent::Canvas: ++stats.canvasRasterizations; break;
-    case NodeContent::None: v.is_input ? ++stats.textRasterizations : ++stats.boxRasterizations; break;
+    if (sg.rect == nullptr) ++stats.solidRectNodes;
+    sg.set_rect(box, v.paint.visual.background);
   }
 }
 
@@ -231,13 +213,13 @@ NodeSG& ensure(RootSG& root, QuickNodeView& v, SceneGraphStats& stats) {
     ++stats.nodesReused;
     return *v.sg;
   }
-  v.sg = new NodeSG(v.id);
-  root.index[v.id] = v.sg;
+  auto sg = std::make_unique<NodeSG>(v.id);
+  v.sg = sg.get();
+  root.index[v.id] = std::move(sg);
   return *v.sg;
 }
 
-void update_node(RootSG& root, QuickNodeView& v, const NveQtQuickItem::Impl& impl, QQuickWindow& window, qreal dpr,
-                 SceneGraphStats& stats) {
+void update_node(RootSG& root, QuickNodeView& v, QQuickWindow& window, SceneGraphStats& stats) {
   NodeSG& sg = ensure(root, v, stats);
   QMatrix4x4 m;
   m.translate(static_cast<float>(v.local.x()), static_cast<float>(v.local.y()));
@@ -248,29 +230,20 @@ void update_node(RootSG& root, QuickNodeView& v, const NveQtQuickItem::Impl& imp
   QMatrix4x4 s;
   s.translate(static_cast<float>(-v.scroll.x()), static_cast<float>(-v.scroll.y()));
   if (sg.scroll->matrix() != s) sg.scroll->setMatrix(s);
-  update_visual(sg, v, impl, window, dpr, stats);
+  update_visual(sg, v, window, stats);
 }
 
-void relink(RootSG& root, QSGNode* container, QuickNodeView& parent, const NveQtQuickItem::Impl& impl,
-            QQuickWindow& window, qreal dpr, SceneGraphStats& stats) {
+void relink(RootSG& root, QSGNode* container, QuickNodeView& parent, QQuickWindow& window, SceneGraphStats& stats) {
   std::vector<QuickNodeView*> kids = parent.children;
-  std::stable_sort(kids.begin(), kids.end(),
-                   [](const QuickNodeView* a, const QuickNodeView* b) { return a->z < b->z; });
-  container->removeAllChildNodes();
+  std::sort(kids.begin(), kids.end(), paints_before);
+  // Wrappers are not owned by their parent: removing them only detaches.
+  while (QSGNode* c = container->firstChild()) container->removeChildNode(c);
   for (QuickNodeView* k : kids) {
-    if (k->sg == nullptr) update_node(root, *k, impl, window, dpr, stats);
+    if (k->sg == nullptr) update_node(root, *k, window, stats);
     if (QSGNode* old = k->sg->parent(); old != nullptr) old->removeChildNode(k->sg);
     container->appendChildNode(k->sg);
   }
   parent.children_dirty = false;
-}
-
-/// Every record of the tree (the scene graph is rebuilt from scratch).
-void mark_all(NveQtQuickItem::Impl& impl, QuickNodeView& v) {
-  v.sg = nullptr;
-  v.children_dirty = true;
-  impl.sg_dirty_.push_back(&v);
-  for (QuickNodeView* c : v.children) mark_all(impl, *c);
 }
 
 }  // namespace
@@ -280,33 +253,29 @@ QSGNode* sync_scene_graph(QSGNode* old_root, NveQtQuickItem::Impl& impl, QQuickW
   if (root == nullptr) {
     // First pass, or Qt dropped the previous tree (window change): nothing old exists anymore.
     root = new RootSG();
-    impl.sg_dead_.clear();
-    impl.sg_dirty_.clear();
-    mark_all(impl, impl.root_);
+    impl.reset_scene_graph();
   }
   SceneGraphStats& stats = impl.stats_;
   if (impl.sg_dirty_.empty() && impl.sg_dead_.empty()) return root;
   ++stats.syncCount;
 
-  // 1. Wrappers of destroyed records: detach everything first (a dead wrapper may hold live
-  //    children awaiting their new parent, or other dead wrappers), then delete each alone.
+  // 1. Wrappers of destroyed records (deleting one detaches it and its children, which may be
+  //    live wrappers awaiting their new parent).
   for (NodeSG* dead : impl.sg_dead_) {
-    if (QSGNode* p = dead->parent(); p != nullptr) p->removeChildNode(dead);
-  }
-  for (NodeSG* dead : impl.sg_dead_) {
-    while (QSGNode* c = dead->scroll->firstChild()) dead->scroll->removeChildNode(c);
-    if (auto it = root->index.find(dead->id); it != root->index.end() && it->second == dead) root->index.erase(it);
-    delete dead;
+    if (auto it = root->index.find(dead->id); it != root->index.end() && it->second.get() == dead) {
+      root->index.erase(it);
+    }
   }
   impl.sg_dead_.clear();
 
   // 2. Dirty records' properties and visuals; 3. child lists whose membership / order changed.
-  const qreal dpr = window.effectiveDevicePixelRatio();
   std::vector<QuickNodeView*> dirty;
   dirty.swap(impl.sg_dirty_);
+  std::erase(dirty, nullptr);  // destroyed since queued
+  for (QuickNodeView* v : dirty) v->sg_dirty_slot = -1;
   for (QuickNodeView* v : dirty) {
     if (v == &impl.root_) continue;
-    update_node(*root, *v, impl, window, dpr, stats);
+    update_node(*root, *v, window, stats);
     ++stats.nodesUpdated;
   }
   const QSizeF item(impl.config().width, impl.config().height);
@@ -315,7 +284,7 @@ QSGNode* sync_scene_graph(QSGNode* old_root, NveQtQuickItem::Impl& impl, QQuickW
   for (QuickNodeView* v : dirty) {
     if (!v->children_dirty) continue;
     QSGNode* container = v == &impl.root_ ? root->container : v->sg->scroll;
-    relink(*root, container, *v, impl, window, dpr, stats);
+    relink(*root, container, *v, window, stats);
   }
   stats.retainedNodes = static_cast<uint32_t>(root->index.size());
   return root;
@@ -325,39 +294,7 @@ const QSGNode* find_node_sg(const QSGNode* root, uint32_t node_id) noexcept {
   if (root == nullptr) return nullptr;
   const auto& index = static_cast<const RootSG*>(root)->index;
   const auto it = index.find(node_id);
-  return it != index.end() ? it->second : nullptr;
-}
-
-void paint_input(QPainter& p, const QRectF& box, const QuickNodeView& v, bool focused) {
-  const QuickInput& in = v.input;
-  const QRectF content = v.paint.content_box.translated(box.topLeft());
-  QtTextStyle style = v.paint.style;
-  style.wrap = in.multiline;
-  style.max_lines = in.multiline ? 0 : 1;
-  const QString shown = in.secure ? QString(in.edit.size(), QChar(0x2022)) : in.edit;
-  const int caret = std::clamp(in.caret, 0, static_cast<int>(shown.size()));
-  QString text = shown;
-  text.insert(caret, in.preedit);
-  p.save();
-  p.setClipRect(content);
-  if (text.isEmpty() && !in.placeholder.isEmpty()) {
-    QtTextStyle dim = style;
-    dim.color.setAlphaF(style.color.alphaF() * 0.5f);
-    (void)layout_text(in.placeholder, dim, content.width(), &p, content.topLeft());
-  } else {
-    (void)layout_text(text, style, content.width(), &p, content.topLeft());
-  }
-  const QFontMetricsF fm(style.font);
-  const qreal line = fm.height();
-  if (!in.preedit.isEmpty()) {  // composition underline
-    const qreal x0 = content.left() + fm.horizontalAdvance(shown.left(caret));
-    p.fillRect(QRectF(x0, content.top() + line - 1.0, fm.horizontalAdvance(in.preedit), 1.0), style.color);
-  }
-  if (focused && !in.read_only) {
-    const qreal x = content.left() + fm.horizontalAdvance(text.left(caret + static_cast<int>(in.preedit.size())));
-    p.fillRect(QRectF(std::min(x, content.right() - 1.0), content.top(), 1.0, line), style.color);
-  }
-  p.restore();
+  return it != index.end() ? it->second.get() : nullptr;
 }
 
 }  // namespace nve::qt

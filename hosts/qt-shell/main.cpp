@@ -10,8 +10,8 @@
 #include <QQuickView>
 #endif
 
-#include <nve/host/app_state.hpp>
 #include <nve/host/demo_counter_app.hpp>
+#include <nve/host/launch_options.hpp>
 
 #include <QApplication>
 #include <QEvent>
@@ -25,9 +25,6 @@
 #include <unistd.h>
 #endif
 
-#include <algorithm>
-#include <cstdlib>
-#include <cstring>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -35,19 +32,10 @@
 namespace {
 
 using nve::qt::QtHost;
-namespace app_state = nve::host::app_state;
 
-struct LaunchOptions {
-  std::string dylib_path;
-  std::string pair_uri;
-  std::string pair_token;
-  std::string state_path;
-  uint32_t schema_version = 1u;
-  bool no_state = false;
-  bool reset_state = false;
+/// The shared command line (`launch_options.hpp`) plus `--quick` (the Qt Quick surface).
+struct LaunchOptions : nve::host::LaunchOptions {
   bool quick = false;
-  int width = 640;
-  int height = 420;
 };
 
 /// Saves the app state when the window closes, else at shutdown (a quit without a close: signals,
@@ -111,35 +99,40 @@ std::unique_ptr<QSocketNotifier> install_signal_handlers() {
 /// Starts the requested app source; on a pairing or load failure runs the built-in demo with
 /// persistence disabled (the fallback must neither restore nor overwrite another app's state).
 void start_app(QtHost& host, LaunchOptions& o, const std::function<void(const std::string&)>& set_title) {
-  const auto builtin = [&] { (void)host.attach_interface(&nve::host::demo::CounterApp::get_interface); };
+  const auto builtin = [&] { return host.attach_interface(&nve::host::demo::CounterApp::get_interface); };
+  bool loaded = false;  // the requested source runs (not the built-in fallback)
   if (!o.pair_uri.empty()) {
     std::string error;
-    if (host.connect_paired(o.pair_uri, o.pair_token, &error)) {
+    loaded = host.connect_paired(o.pair_uri, o.pair_token, &error);
+    if (loaded) {
       set_title("paired: " + o.pair_uri);
     } else {
       std::cerr << "[nve-qt-shell] pairing with '" << o.pair_uri << "' failed: " << error << "\n";
-      builtin();
-      o.no_state = true;
     }
   } else if (!o.dylib_path.empty()) {
     nve::host::ModuleError code = nve::host::ModuleError::None;
     std::string error;
-    if (!host.load_dylib(o.dylib_path, &code, &error)) {
+    loaded = host.load_dylib(o.dylib_path, &code, &error);
+    if (!loaded) {
       std::cerr << "[nve-qt-shell] loading '" << o.dylib_path << "' failed (" << static_cast<int>(code)
                 << "): " << error << "\n";
-      builtin();
-      o.no_state = true;
     }
   } else {
-    builtin();
+    loaded = builtin();
   }
-  if (o.no_state) return;  // nothing to restore or clear
-  if (o.reset_state) {
-    if (!host.clear_state(o.state_path)) {
-      std::cerr << "[nve-qt-shell] clearing " << o.state_path << " failed: " << host.last_error() << "\n";
-    }
-  } else if (host.restore_state(o.state_path, o.schema_version)) {
-    std::cerr << "[nve-qt-shell] restored app state from " << o.state_path << "\n";
+  if (!loaded) (void)builtin();
+  switch (nve::host::state_action_after_load(o, loaded)) {
+    case nve::host::StateAction::Clear:
+      if (!host.clear_state(o.state_path)) {
+        std::cerr << "[nve-qt-shell] clearing " << o.state_path << " failed: " << host.last_error() << "\n";
+      }
+      break;
+    case nve::host::StateAction::Restore:
+      if (host.restore_state(o.state_path, o.schema_version)) {
+        std::cerr << "[nve-qt-shell] restored app state from " << o.state_path << "\n";
+      }
+      break;
+    case nve::host::StateAction::None: break;
   }
 }
 
@@ -195,56 +188,30 @@ int run_quick(QApplication& qapp, LaunchOptions& o) {
 #endif
 
 void print_usage(const char* argv0) {
-  std::cout << "Usage: " << argv0
-            << " [--quick] [--dylib <libapp.dylib|.so|.dll>] [--pair <nve://|quic://|wt://|ws(s)://...>]"
-               " [--pair-token <token>] [--state <file>] [--no-state] [--reset-state] [--schema <ver>]"
-               " [--width W] [--height H]\n"
-               "Env: NVE_STATE_DISABLE=1, NVE_STATE_PATH=<file>, NVE_RESET_STATE=1\n";
+  std::cout << "Usage: " << argv0 << " [--quick] " << nve::host::kLaunchUsage << "\n" << nve::host::kLaunchEnvUsage
+            << "\n";
 }
 
 }  // namespace
 
 int main(int argc, char* argv[]) {
-  QApplication qapp(argc, argv);
+  QApplication qapp(argc, argv);  // consumes Qt's own arguments first
   LaunchOptions o;
-  for (int i = 1; i < argc; ++i) {
-    const auto is = [&](const char* flag) { return std::strcmp(argv[i], flag) == 0; };
-    const bool has_value = i + 1 < argc;
-    if (is("--help") || is("-h")) {
-      print_usage(argv[0]);
-      return 0;
-    } else if (is("--quick")) {
-      o.quick = true;
-    } else if (is("--no-state")) {
-      o.no_state = true;
-    } else if (is("--reset-state")) {
-      o.reset_state = true;
-    } else if (is("--dylib") && has_value) {
-      o.dylib_path = argv[++i];
-    } else if (is("--pair") && has_value) {
-      o.pair_uri = argv[++i];
-    } else if (is("--pair-token") && has_value) {
-      o.pair_token = argv[++i];
-    } else if (is("--state") && has_value) {
-      o.state_path = argv[++i];
-    } else if (is("--schema") && has_value) {
-      o.schema_version = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 10));
-    } else if (is("--width") && has_value) {
-      o.width = std::max(1, std::atoi(argv[++i]));
-    } else if (is("--height") && has_value) {
-      o.height = std::max(1, std::atoi(argv[++i]));
-    } else {
-      std::cerr << "[nve-qt-shell] unknown argument '" << argv[i] << "'\n";
+  std::string error;
+  const auto quick_flag = [&o](std::string_view flag, const char*) {
+    if (flag != "--quick") return 0;
+    o.quick = true;
+    return 1;
+  };
+  switch (nve::host::parse_launch_args(argc, argv, o, &error, quick_flag)) {
+    case nve::host::LaunchParse::Help: print_usage(argv[0]); return 0;
+    case nve::host::LaunchParse::Error:
+      std::cerr << "[nve-qt-shell] " << error << "\n";
       print_usage(argv[0]);
       return 2;
-    }
+    case nve::host::LaunchParse::Run: break;
   }
-  // `NVE_STATE_DISABLE` / `NVE_STATE_PATH` via `resolve_path`; `NVE_RESET_STATE` via `reset_requested`.
-  if (!o.no_state && o.state_path.empty() && o.pair_uri.empty()) {
-    o.state_path = app_state::resolve_path(o.dylib_path.empty() ? "nve-qt-shell-builtin" : o.dylib_path);
-  }
-  o.no_state = o.no_state || o.state_path.empty();
-  o.reset_state = o.reset_state || app_state::reset_requested();
+  nve::host::resolve_launch_state(o, "nve-qt-shell-builtin");
 
   if (o.quick) {
 #ifdef NVE_QT_HAS_QUICK

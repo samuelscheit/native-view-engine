@@ -16,7 +16,8 @@ use nve_abi::{
     NveStrSlice, NVE_RUNTIME_ABI_VERSION,
 };
 use nve_engine::StateFile;
-use nve_runtime::nve_runtime_get_interface;
+use nve_engine::loader::staging_dir;
+use nve_runtime::{MODULE_STAGING_DIR, nve_runtime_get_interface};
 
 const OK: i32 = NveRuntimeStatus::Ok as i32;
 const INVALID: i32 = NveRuntimeStatus::InvalidArg as i32;
@@ -201,12 +202,13 @@ fn str_slice(path: &Path) -> NveStrSlice {
     NveStrSlice::from_str(path.to_str().expect("UTF-8 test path"))
 }
 
-/// This process's staged copies (`<tmp>/nve-runtime-modules/<stem>_<label>_<pid>_<seq>.<ext>`)
-/// of modules whose file stem is `stem`.
+/// This process's staged copies (`<staging dir>/<stem>_<label>_<pid>_<seq>.<ext>`) of modules
+/// whose file stem is `stem`.
 fn staged_copies(stem: &str) -> usize {
     let prefix = format!("{stem}_");
     let pid = format!("_{}_", std::process::id());
-    std::fs::read_dir(std::env::temp_dir().join("nve-runtime-modules"))
+    let dir = staging_dir(MODULE_STAGING_DIR).expect("desktop tests stage copies");
+    std::fs::read_dir(dir)
         .map(|dir| {
             dir.filter_map(Result::ok)
                 .map(|e| e.file_name().to_string_lossy().into_owned())
@@ -317,6 +319,15 @@ fn failed_module_loads_keep_the_running_app_and_leave_no_staged_copy() {
     .unwrap();
     assert_eq!(off_thread, INVALID);
     assert_eq!(staged_copies(&stem(&fx.v1)), 1, "only the running module is staged");
+
+    // A held scene refuses the load before anything is staged, loaded or created.
+    let mut view = NveSceneView::default();
+    // SAFETY: `rt.h` is live; the scene is released below on this thread.
+    assert_eq!(unsafe { (rt.api.scene_acquire)(rt.h, &mut view) }, OK);
+    assert_eq!(rt.load(&fx.v2, true), BUSY);
+    assert_eq!(staged_copies(&stem(&fx.v2)), 0, "nothing staged while busy");
+    // SAFETY: Releases the scene acquired above.
+    assert_eq!(unsafe { (rt.api.scene_release)(rt.h) }, OK);
     assert_eq!(rt.snapshot().unwrap(), b"v1:live");
 }
 

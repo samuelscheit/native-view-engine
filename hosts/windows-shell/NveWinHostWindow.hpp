@@ -79,6 +79,7 @@ class D2DPaintCache {
 
   ID2D1RenderTarget* target_ = nullptr;  // the bitmaps' owner
   IWICImagingFactory* wic_ = nullptr;
+  bool com_ = false;  // this cache's `CoInitializeEx` succeeded (S_OK / S_FALSE): balanced in `release`
   std::unordered_map<std::string, Bitmap> bitmaps_;
   std::list<std::string> lru_;  // most recent first
   std::unordered_map<uint32_t, Layout> layouts_;

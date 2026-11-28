@@ -7,6 +7,7 @@
 #include "NveQtImageCache.hpp"
 #include "NveQtPaint.hpp"
 
+#include <nve/host/controlled_text.hpp>
 #include <nve/host/core_resources.hpp>
 #include <nve/host/host_session.hpp>
 
@@ -20,6 +21,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 
 class QObject;
 
@@ -141,6 +143,22 @@ class QtHost {
                                          const BoxVisual& previous) const;
   /// Mirrors the current scene without ticking.
   size_t sync();
+  /// A controlled field of node `id` now shows `current`: the shared edit path
+  /// (`host::dispatch_controlled_edit`). `refind(id)` returns the field after the dispatch
+  /// (`ControlledAnswer<Field>`); an in-process app's transformed or rejected answer is shown
+  /// through `write(field, value)`. May destroy the field (and this host).
+  template <class Field, class Refind, class Write>
+  void edit_text(host::ControlledText& text, std::string_view current, uint32_t id, Refind&& refind, Write&& write) {
+    const auto alive = alive_;
+    (void)host::dispatch_controlled_edit<Field>(
+        text, current, [&](std::string_view sent) { return dispatch_text_change(id, sent); },
+        [&]() -> host::ControlledAnswer<Field> {
+          // Paired answers are asynchronous and arrive through `app_published`.
+          if (!alive->load(std::memory_order_acquire) || is_paired()) return {};
+          return refind(id);
+        },
+        std::forward<Write>(write));
+  }
 
  private:
   void create_session();

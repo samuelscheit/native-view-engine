@@ -309,8 +309,12 @@ void test_text_inputs_keys_ime_and_focus() {
   q.type(QStringLiteral("qw"));
   NVE_CHECK(item.nodeText(kUpper) == "QW" && app.last(NVE_EVENT_TEXT_CHANGE)->text == "Qw");
   q.click(q.center(kReject));
-  q.type(QStringLiteral("s"));
-  NVE_CHECK(item.nodeText(kReject) == "fixeds" && app.last(NVE_EVENT_TEXT_CHANGE)->text == "fixeds");
+  q.type(QStringLiteral("s"));  // rejected: the app's value is shown again (no echo of the revert)
+  const size_t rejected = app.count(NVE_EVENT_TEXT_CHANGE, kReject);
+  NVE_CHECK(item.nodeText(kReject) == "fixed" && app.last(NVE_EVENT_TEXT_CHANGE)->text == "fixeds");
+  q.type(QStringLiteral("t"));
+  NVE_CHECK(item.nodeText(kReject) == "fixed" && app.last(NVE_EVENT_TEXT_CHANGE)->text == "fixedt");
+  NVE_CHECK(app.count(NVE_EVENT_TEXT_CHANGE, kReject) == rejected + 1u);
 
   // Multi-line: Return inserts a newline, no submit.
   q.click(q.center(kNotes));

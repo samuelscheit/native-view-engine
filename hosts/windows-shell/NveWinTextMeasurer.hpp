@@ -80,7 +80,7 @@ class DirectWriteTextMeasurer {
       return nullptr;
     }
     const DWRITE_TEXT_RANGE all{0u, static_cast<UINT32>(w.size())};
-    (void)layout->SetWordWrapping(style.wraps() && bounded_w ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP);
+    (void)layout->SetWordWrapping(bounded_w ? word_wrapping(style.wrap()) : DWRITE_WORD_WRAPPING_NO_WRAP);
     (void)layout->SetTextAlignment(alignment(style.text_align));
     if ((style.text_decoration & NVE_TEXT_DECORATION_UNDERLINE) != 0u) (void)layout->SetUnderline(TRUE, all);
     if ((style.text_decoration & NVE_TEXT_DECORATION_LINE_THROUGH) != 0u) (void)layout->SetStrikethrough(TRUE, all);
@@ -103,14 +103,18 @@ class DirectWriteTextMeasurer {
   [[nodiscard]] NveIntrinsicSize measure(std::string_view text, const NveRuntimeTextStyle& style,
                                          float max_width) const {
     const TextPaint paint = TextPaint::from(style);
-    IDWriteTextLayout* layout = create_layout(text, paint, max_width, 0.0f);
+    const host::TextWrap wrap = paint.wrap();
+    // `max_width == 0` probes min-content: the widest unbreakable run of the wrap mode. Words
+    // (`normal`): the longest word, laid out at that (ceiled: sizes are whole pixels) width; any
+    // other wrapping breaks between characters: one cluster per line.
+    const bool min_content = max_width == 0.0f && wrap != host::TextWrap::None;
+    IDWriteTextLayout* layout = create_layout(text, paint, min_content ? kNarrowest : max_width, 0.0f);
     if (layout == nullptr) return NveIntrinsicSize{0.0f, 0.0f};
-    // `max_width == 0` probes min-content: wrap at the widest unbreakable run.
     FLOAT min_width = 0.0f;
-    if (max_width == 0.0f && paint.wraps() && SUCCEEDED(layout->DetermineMinWidth(&min_width)) && min_width > 0.0f) {
+    if (min_content && wrap == host::TextWrap::Word && SUCCEEDED(layout->DetermineMinWidth(&min_width)) &&
+        min_width > 0.0f) {
       layout->Release();
-      max_width = min_width;
-      layout = create_layout(text, paint, max_width, 0.0f);
+      layout = create_layout(text, paint, std::ceil(min_width), 0.0f);
       if (layout == nullptr) return NveIntrinsicSize{0.0f, 0.0f};
     }
     DWRITE_TEXT_METRICS m{};
@@ -130,7 +134,55 @@ class DirectWriteTextMeasurer {
     *out_height = s.height;
   }
 
+  /// First installed family of the CSS list `list` (unquoted generics, ASCII case-insensitive,
+  /// mapped to Windows' defaults), else Segoe UI: `CreateTextFormat` and GDI's `CreateFontW` take
+  /// one name and silently substitute unknown ones (the painter, the measurer, and the native
+  /// EDIT controls all resolve through this).
+  [[nodiscard]] std::wstring resolve_family(std::string_view list) const {
+    std::wstring found;
+    IDWriteFontCollection* fonts = nullptr;
+    if (factory_ == nullptr || FAILED(factory_->GetSystemFontCollection(&fonts, FALSE)) || fonts == nullptr) {
+      return L"Segoe UI";
+    }
+    host::for_each_font_family(list, [&](std::string_view name, bool quoted) {
+      const wchar_t* generic = quoted ? nullptr : generic_face(host::generic_font_family(name));
+      const std::wstring candidate = generic != nullptr ? std::wstring(generic) : wide(name);
+      UINT32 index = 0u;
+      BOOL exists = FALSE;
+      if (SUCCEEDED(fonts->FindFamilyName(candidate.c_str(), &index, &exists)) && exists) found = candidate;
+      return found.empty();
+    });
+    fonts->Release();
+    return found.empty() ? std::wstring(L"Segoe UI") : found;
+  }
+
  private:
+  /// Windows' face of a CSS generic family (Chromium's defaults); null for a named family.
+  static const wchar_t* generic_face(host::GenericFamily generic) noexcept {
+    switch (generic) {
+      case host::GenericFamily::Serif: return L"Times New Roman";
+      case host::GenericFamily::SansSerif:
+      case host::GenericFamily::SystemUi: return L"Segoe UI";
+      case host::GenericFamily::Monospace: return L"Consolas";
+      case host::GenericFamily::Cursive: return L"Comic Sans MS";
+      case host::GenericFamily::Fantasy: return L"Impact";
+      case host::GenericFamily::None: break;
+    }
+    return nullptr;
+  }
+
+  /// DirectWrite wrapping of a resolved `TextWrap` (`WHOLE_WORD`: an over-long word overflows,
+  /// as CSS `normal`; `CHARACTER`: `break-all`; `EMERGENCY_BREAK`: words, else characters).
+  static DWRITE_WORD_WRAPPING word_wrapping(host::TextWrap wrap) noexcept {
+    switch (wrap) {
+      case host::TextWrap::None: return DWRITE_WORD_WRAPPING_NO_WRAP;
+      case host::TextWrap::Word: return DWRITE_WORD_WRAPPING_WHOLE_WORD;
+      case host::TextWrap::Anywhere: return DWRITE_WORD_WRAPPING_CHARACTER;
+      case host::TextWrap::WordOrAnywhere: return DWRITE_WORD_WRAPPING_EMERGENCY_BREAK;
+    }
+    return DWRITE_WORD_WRAPPING_WRAP;
+  }
+
   static DWRITE_TEXT_ALIGNMENT alignment(uint8_t align) noexcept {
     switch (align) {
       case NVE_TEXT_ALIGN_CENTER: return DWRITE_TEXT_ALIGNMENT_CENTER;
@@ -167,28 +219,6 @@ class DirectWriteTextMeasurer {
     }
   }
 
-  /// First installed family of the CSS list `list` (generic names mapped to Windows' defaults),
-  /// else Segoe UI: `CreateTextFormat` takes one name and silently substitutes unknown ones.
-  [[nodiscard]] std::wstring resolve_family(std::string_view list) const {
-    std::wstring found;
-    IDWriteFontCollection* fonts = nullptr;
-    if (FAILED(factory_->GetSystemFontCollection(&fonts, FALSE)) || fonts == nullptr) return L"Segoe UI";
-    host::for_each_font_family(list, [&](std::string_view name) {
-      const std::wstring candidate = name == "monospace" || name == "ui-monospace" ? std::wstring(L"Consolas")
-                                     : name == "sans-serif" || name == "system-ui" || name == "ui-sans-serif"
-                                         ? std::wstring(L"Segoe UI")
-                                     : name == "serif" || name == "ui-serif" ? std::wstring(L"Times New Roman")
-                                     : name == "cursive"                     ? std::wstring(L"Comic Sans MS")
-                                                                             : wide(name);
-      UINT32 index = 0u;
-      BOOL exists = FALSE;
-      if (SUCCEEDED(fonts->FindFamilyName(candidate.c_str(), &index, &exists)) && exists) found = candidate;
-      return found.empty();
-    });
-    fonts->Release();
-    return found.empty() ? std::wstring(L"Segoe UI") : found;
-  }
-
   IDWriteTextFormat* format(const TextPaint& s) const {
     // Sizes are sealed finite / positive by `read_node`; bound them so the key cannot overflow.
     const float size = std::clamp(s.font_size, 1.0f, kMaxFontSize);
@@ -222,6 +252,7 @@ class DirectWriteTextMeasurer {
   }
 
   static constexpr float kUnbounded = 1.0e6f;  // finite: DirectWrite metrics overflow at FLT_MAX
+  static constexpr float kNarrowest = 1.0f;    // min-content probe width: one cluster per line
   static constexpr float kMaxFontSize = 4096.0f;
   static constexpr size_t kMaxFormats = 64u;
   struct Format {

@@ -28,21 +28,24 @@ std::string editable_text(const GtkNodeView& v) {
   return raw != nullptr ? raw : "";
 }
 
+/// Shows `text` in the field, inside the caller's `host_write` scope.
+void write_editable_text(GtkNodeView& v, std::string_view text) {
+  const std::string value(text);
+  if (v.kind == WidgetKind::TextView) {
+    gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(v.widget)), value.c_str(), -1);
+  } else {
+    gtk_editable_set_text(GTK_EDITABLE(v.widget), value.c_str());
+  }
+}
+
 void set_editable_text(GtkNodeView& v, const std::string& text) {
   const auto write = v.text.host_write();
-  if (v.kind == WidgetKind::TextView) {
-    gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(v.widget)), text.c_str(), -1);
-  } else {
-    gtk_editable_set_text(GTK_EDITABLE(v.widget), text.c_str());
-  }
+  write_editable_text(v, text);
 }
 
 void on_text_changed(GtkNodeView* v) {
   if (v->text.writing()) return;
-  std::string current = editable_text(*v);
-  if (!v->text.user_edited(current)) return;
-  // May destroy `v` (the app can remove the input in response): touch nothing afterwards.
-  (void)v->host->dispatch_text_change(v->id, current);
+  v->host->edit_text(*v);  // may destroy `v`
 }
 
 /// Disconnects every handler bound to `v` before dropping the widget's controller: a controller
@@ -218,9 +221,8 @@ void NveGtkHost::Adapter::update(GtkNodeView*& v, const host::NodeData& node) {
       const char* current = gtk_label_get_text(GTK_LABEL(w));
       if (current == nullptr || text != current) gtk_label_set_text(GTK_LABEL(w), text.c_str());
       const host::TextStyle& t = node.text_style;
-      const bool wraps = t.white_space != NVE_WHITE_SPACE_NO_WRAP && t.white_space != NVE_WHITE_SPACE_PRE;
-      gtk_label_set_wrap(GTK_LABEL(w), wraps ? TRUE : FALSE);
-      gtk_label_set_wrap_mode(GTK_LABEL(w), PANGO_WRAP_WORD_CHAR);
+      gtk_label_set_wrap(GTK_LABEL(w), t.wrap() != host::TextWrap::None ? TRUE : FALSE);
+      gtk_label_set_wrap_mode(GTK_LABEL(w), gtk_internal::pango_wrap(t.wrap()));
       const auto lines = static_cast<int>(std::min<uint32_t>(t.max_lines, std::numeric_limits<int>::max()));
       gtk_label_set_lines(GTK_LABEL(w), lines > 0 ? lines : -1);
       gtk_label_set_ellipsize(GTK_LABEL(w), t.max_lines > 0u ? PANGO_ELLIPSIZE_END : PANGO_ELLIPSIZE_NONE);
@@ -418,6 +420,24 @@ void NveGtkHost::update_text_input(GtkNodeView& v, const host::NodeData& node) {
   // Controlled value: adopt the app's value unless it merely echoes what the user is typing.
   const std::string value(node.input.value);
   if (v.text.app_published(value, editable_text(v))) set_editable_text(v, value);
+}
+
+void NveGtkHost::edit_text(GtkNodeView& view) {
+  const std::string current = editable_text(view);
+  const uint32_t id = view.id;
+  const auto alive = alive_;  // the dispatch may destroy this host, not only the view
+  (void)host::dispatch_controlled_edit<GtkNodeView>(
+      view.text, current,
+      [&](std::string_view sent) { return dispatch(session_->events().text(id, NVE_EVENT_TEXT_CHANGE, sent)); },
+      [&]() -> host::ControlledAnswer<GtkNodeView> {
+        // Paired answers are asynchronous and arrive through `app_published`.
+        if (!alive->load(std::memory_order_acquire) || is_paired()) return {};
+        GtkNodeView* const* found = tree_.find(id);
+        GtkNodeView* v = found != nullptr ? *found : nullptr;
+        if (v == nullptr || (v->kind != WidgetKind::Entry && v->kind != WidgetKind::TextView)) return {};
+        return {v, &v->text, v->text.app_value()};
+      },
+      write_editable_text);
 }
 
 void NveGtkHost::update_scroll(GtkNodeView& v, const host::NodeData& node) {

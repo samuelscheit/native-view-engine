@@ -2766,6 +2766,7 @@ name = "nve-engine"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "libc",
  "libloading 0.9.1",
  "nve-abi",
  "nve-components",

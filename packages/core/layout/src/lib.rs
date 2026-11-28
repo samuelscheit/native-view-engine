@@ -15,7 +15,8 @@ mod taffy_store;
 
 pub use engine::{DynLayoutEngine, StoreLayoutEngine};
 pub use measure::{
-    HeuristicTextMeasurer, ResolvedTextStyle, TextMeasurer, TextStyle, resolve_inherited_text,
+    HeuristicTextMeasurer, ResolvedFamily, ResolvedTextStyle, TextMeasurer, TextStyle,
+    resolve_inherited_text,
 };
 pub use scene::{
     LaidOutScene, ScrollOffsets, compute_scroll_content_size, layout_snapshot_of, length_to_dim,

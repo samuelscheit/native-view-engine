@@ -203,21 +203,60 @@ std::string css_float(double value) {
   return (out.empty() || out == "-0") ? std::string("0") : out;
 }
 
-std::string font_family_list(std::string_view authored) {
-  // Pango splits a family on `,` but does not trim (`"A, monospace"` misses `monospace` on the
-  // CoreText font map), so the entries are joined back with a bare `,`.
-  std::string out;
-  host::for_each_font_family(authored.substr(0u, kMaxFontFamily), [&out](std::string_view name) {
+namespace {
+
+/// Visits each authored family made safe for a CSS string and Pango, with its generic (`None`
+/// when quoted or not a generic). A family Pango cannot name (a quoted `"Foo, Bar"`: Pango
+/// splits families on `,`) is skipped rather than split into two wrong names.
+template <class Visit>
+void for_each_safe_family(std::string_view authored, Visit&& visit) {
+  host::for_each_font_family(authored.substr(0u, kMaxFontFamily), [&](std::string_view name, bool quoted) {
+    if (name.find(',') != std::string_view::npos) return true;
     std::string entry(name);
     // Inside a CSS string: drop anything that could end it or the block, and control bytes.
     std::erase_if(entry, [](char c) {
       const auto u = static_cast<unsigned char>(c);
       return u < 0x20u || u == 0x7Fu || c == '"' || c == '\\' || c == '{' || c == '}' || c == ';';
     });
-    if (!entry.empty()) out += (out.empty() ? "" : ",") + entry;
+    if (!entry.empty()) visit(entry, quoted ? host::GenericFamily::None : host::generic_font_family(name));
     return true;
   });
+}
+
+}  // namespace
+
+std::string font_family_list(std::string_view authored) {
+  // Pango splits a family on `,` but does not trim (`"A, monospace"` misses `monospace` on the
+  // CoreText font map), so the entries are joined back with a bare `,`.
+  std::string out;
+  for_each_safe_family(authored, [&out](const std::string& entry, host::GenericFamily generic) {
+    if (!out.empty()) out += ',';
+    out += generic != host::GenericFamily::None ? std::string(host::generic_font_keyword(generic)) : entry;
+  });
   return out;
+}
+
+std::string font_family_css(std::string_view authored) {
+  std::string out;
+  for_each_safe_family(authored, [&out](const std::string& entry, host::GenericFamily generic) {
+    if (!out.empty()) out += ", ";
+    if (generic != host::GenericFamily::None) {
+      out += host::generic_font_keyword(generic);
+    } else {
+      out += '"' + entry + '"';
+    }
+  });
+  return out;
+}
+
+PangoWrapMode pango_wrap(host::TextWrap wrap) noexcept {
+  switch (wrap) {
+    case host::TextWrap::Anywhere: return PANGO_WRAP_CHAR;
+    case host::TextWrap::WordOrAnywhere: return PANGO_WRAP_WORD_CHAR;
+    case host::TextWrap::None:
+    case host::TextWrap::Word: break;
+  }
+  return PANGO_WRAP_WORD;
 }
 
 std::string css_rgba(uint32_t rgba) {
@@ -279,8 +318,8 @@ std::string build_css_rule(const std::string& selector, const host::NodeData& no
     d += t.font_style == NVE_FONT_STYLE_ITALIC    ? "  font-style: italic;\n"
          : t.font_style == NVE_FONT_STYLE_OBLIQUE ? "  font-style: oblique;\n"
                                                   : "  font-style: normal;\n";
-    if (const std::string family = font_family_list(t.font_family); !family.empty()) {
-      d += "  font-family: \"" + family + "\";\n";
+    if (const std::string family = font_family_css(t.font_family); !family.empty()) {
+      d += "  font-family: " + family + ";\n";
     }
     if (t.letter_spacing != 0.0f && std::isfinite(t.letter_spacing)) {
       d += "  letter-spacing: " + css_float(t.letter_spacing) + "px;\n";

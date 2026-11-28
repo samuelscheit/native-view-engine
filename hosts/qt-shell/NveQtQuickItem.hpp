@@ -100,7 +100,12 @@ class NveQtQuickItem : public QQuickItem {
   void sceneChanged();
 
  protected:
+  /// GUI thread, before each scene-graph sync: rasterizes the dirty records (text, shadows,
+  /// images) so the render thread only uploads textures.
+  void updatePolish() override;
   QSGNode* updatePaintNode(QSGNode* old_node, UpdatePaintNodeData* data) override;
+  /// The item leaves its window: Qt deletes the node tree; forget every wrapper pointer.
+  void releaseResources() override;
   void geometryChange(const QRectF& new_geometry, const QRectF& old_geometry) override;
   void itemChange(ItemChange change, const ItemChangeData& value) override;
   void mousePressEvent(QMouseEvent* event) override;

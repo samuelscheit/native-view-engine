@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <atomic>
 #include <memory>
 #include <span>
 #include <string>
@@ -152,6 +153,9 @@ class NveWinHost {
   uint32_t hovered_ = 0u;
   uint32_t pressed_ = 0u;  // `pointer_down` target
   bool syncing_ = false;
+  /// False once destruction began: a pump / dispatch whose event sink destroyed the host stops
+  /// before touching it again.
+  std::shared_ptr<std::atomic<bool>> alive_ = std::make_shared<std::atomic<bool>>(true);
 };
 
 }  // namespace nve::win

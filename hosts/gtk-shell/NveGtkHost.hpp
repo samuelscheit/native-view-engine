@@ -153,6 +153,10 @@ class NveGtkHost {
   // --- Input --------------------------------------------------------------------------------
   bool simulate_press(uint32_t node_id, float x = 0.0f, float y = 0.0f);
   bool dispatch_text_change(uint32_t node_id, std::string_view text);
+  /// The entry / text view `view` changed: a user edit dispatches `TextChange`, and an
+  /// in-process app's transformed or rejected answer is written back (`dispatch_controlled_edit`).
+  /// May destroy `view` (and this host).
+  void edit_text(GtkNodeView& view);
   bool dispatch_submit(uint32_t node_id, std::string_view text);
   bool dispatch_focus(uint32_t node_id, bool focused);
   bool dispatch_scroll(uint32_t node_id, float offset_x, float offset_y, float content_width, float content_height);

@@ -9,11 +9,13 @@
 //! through one epoch-stamped slot array, so recording is O(changed + node capacity on relayout,
 //! one pass) with zero heap allocations once capacities warm.
 //!
-//! Inherited styling is content too: a `Typography` row change / attach / detach dirties every
-//! text / text-input descendant inheriting it (paint-only edits move no rect), so retained hosts
-//! restyle exactly `dirty` instead of walking the whole tree.
+//! Inherited styling is content too: a `Typography` row change / attach / detach, or a subtree
+//! moving under another parent, dirties every text / text-input descendant inheriting it
+//! (paint-only edits move no rect), so retained hosts restyle exactly `dirty` instead of walking
+//! the whole tree.
 
 use nve_abi::NveLayoutRect;
+use nve_abi::table::effect;
 use nve_components::tables::{TextContent, TextInput, Typography};
 use nve_store::{ChangeSet, NodeId, NodeStore, NveTable};
 
@@ -29,8 +31,11 @@ pub(crate) struct SceneDelta {
     /// `epoch` once a slot joined `dirty` or `moved` this frame.
     stamp: Vec<u32>,
     epoch: u32,
-    /// `epoch`-stamped roots of this frame's inherited-typography walk.
+    /// `epoch` once a slot is a root of, or was visited by, this frame's inherited-typography
+    /// walk.
     inherit_stamp: Vec<u32>,
+    /// Deduplicated roots of this frame's inherited-typography walk (reused).
+    inherit_roots: Vec<NodeId>,
     /// Reusable DFS stack of the inherited-typography walk.
     inherit_stack: Vec<NodeId>,
 }
@@ -112,28 +117,38 @@ impl SceneDelta {
         }
     }
 
-    /// O(union of the changed nodes' subtrees): changed roots are stamped first and a walk never
-    /// enters another root's subtree (that root walks it), so nested changes visit a node once.
+    /// Roots are the nodes whose `Typography` row changed / attached / detached and the
+    /// containers that moved under another parent (touched with `MEASURE`; leaves have nothing
+    /// to walk). O(union of the roots' subtrees): roots are deduplicated and stamped first, and
+    /// every visited node is stamped, so a walk never enters another root's subtree (that root
+    /// walks it) and nested or repeated roots visit each node once.
     fn mark_inherited_typography(&mut self, store: &NodeStore, changes: &ChangeSet) {
-        let Some(typo) = changes.table(Typography::slot()) else {
-            return;
-        };
         let cap = self.stamp.len();
         if self.inherit_stamp.len() < cap {
             self.inherit_stamp.resize(cap, 0);
         }
         let epoch = self.epoch;
-        let roots = || typo.nodes.iter().chain(&typo.detached).copied();
-        for id in roots() {
-            if id.index() < cap && store.is_live(id) {
-                self.inherit_stamp[id.index()] = epoch;
+        let typo = changes
+            .table(Typography::slot())
+            .map(|t| (t.nodes.as_slice(), t.detached.as_slice()))
+            .unwrap_or_default();
+        let moved = changes
+            .touched
+            .iter()
+            .zip(&changes.effects)
+            .filter(|&(&id, &fx)| fx & effect::MEASURE != 0 && !store.children(id).is_empty())
+            .map(|(&id, _)| id);
+        self.inherit_roots.clear();
+        for id in typo.0.iter().chain(typo.1).copied().chain(moved) {
+            let idx = id.index();
+            if idx < cap && store.is_live(id) && self.inherit_stamp[idx] != epoch {
+                self.inherit_stamp[idx] = epoch;
+                self.inherit_roots.push(id);
             }
         }
         let (text, input) = (TextContent::slot(), TextInput::slot());
-        for root in roots() {
-            if !store.is_live(root) {
-                continue;
-            }
+        let roots = std::mem::take(&mut self.inherit_roots);
+        for &root in &roots {
             self.inherit_stack.clear();
             self.inherit_stack.extend_from_slice(store.children(root));
             while let Some(id) = self.inherit_stack.pop() {
@@ -141,12 +156,14 @@ impl SceneDelta {
                 if idx >= cap || !store.is_live(id) || self.inherit_stamp[idx] == epoch {
                     continue;
                 }
+                self.inherit_stamp[idx] = epoch;
                 if store.has_slot(id, text) || store.has_slot(id, input) {
                     self.mark(idx, true);
                 }
                 self.inherit_stack.extend_from_slice(store.children(id));
             }
         }
+        self.inherit_roots = roots;
     }
 
     #[inline]

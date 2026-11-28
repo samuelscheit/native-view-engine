@@ -53,8 +53,10 @@ class Painter {
       for (const host::BoxShadow& s : n.shadows) {
         if (s.inset) inset_shadow(s, r, radius);
       }
-      if (!n.image.empty() || (n.canvas && !n.draw_list.empty())) media(n, r, radius);
-      if (n.kind == host::NodeKind::Text || n.kind == host::NodeKind::TextInput) text(n, r);
+      // Content draws in the content box (inside border and padding), clipped to the box.
+      const Rect content{r.x + n.content.x, r.y + n.content.y, n.content.width, n.content.height};
+      if (!n.image.empty() || (n.canvas && !n.draw_list.empty())) media(n, r, content, radius);
+      if (n.kind == host::NodeKind::Text || n.kind == host::NodeKind::TextInput) text(n, content);
     }
     if (n.clips() && !r.empty()) {
       if (radius > 0.0f) {
@@ -191,19 +193,21 @@ class Painter {
     pop_clip(clip, axis);
   }
 
-  /// Image and canvas content, clipped to the node's (rounded) box.
-  void media(const WinNodeVisual& n, const Rect& r, float radius) {
+  /// Image and canvas content placed in `content`, clipped to the node's (rounded) box `r`.
+  void media(const WinNodeVisual& n, const Rect& r, const Rect& content, float radius) {
     Layer clip;
     bool axis = false;
     if (!push_clip(r, radius, clip, axis)) return;
     if (ID2D1Bitmap* bmp = n.image.empty() ? nullptr : cache_.bitmap(rt_, n.image)) {
       const D2D1_SIZE_F size = bmp->GetSize();
-      if (const auto placed = place_image(n.image_fit, r, size.width, size.height)) {
+      if (const auto placed = place_image(n.image_fit, content, size.width, size.height)) {
         const D2D1_RECT_F src = to_d2d(placed->src);
         rt_->DrawBitmap(bmp, to_d2d(placed->dst), 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, &src);
       }
     }
-    if (n.canvas && !n.draw_list.empty()) (void)render_draw_list_to_d2d(rt_, brush_, factory_, to_d2d(r), n.draw_list);
+    if (n.canvas && !n.draw_list.empty()) {
+      (void)render_draw_list_to_d2d(rt_, brush_, factory_, to_d2d(content), n.draw_list);
+    }
     pop_clip(clip, axis);
   }
 
@@ -222,7 +226,11 @@ class Painter {
       } else {
         shown = n.input.value;
       }
-      if (!n.input.multiline) style.white_space = NVE_WHITE_SPACE_NO_WRAP;
+      if (!n.input.multiline) {
+        style.white_space = NVE_WHITE_SPACE_NO_WRAP;
+      } else {
+        style.overflow_wrap = NVE_OVERFLOW_WRAP_ANYWHERE;  // a text area breaks long words (`break-word`)
+      }
     } else {
       shown = n.text;
     }
@@ -230,7 +238,11 @@ class Painter {
     IDWriteTextLayout* layout = cache_.layout(text_, n.id, shown, style, r.width, r.height);
     if (layout == nullptr) return;
     brush_->SetColor(to_d2d(style.color, alpha));
-    rt_->DrawTextLayout(D2D1::Point2F(r.x, r.y), layout, brush_, D2D1_DRAW_TEXT_OPTIONS_NONE);
+    // A line clamp or a clipping box ends at the layout box: lines DirectWrite laid out past
+    // its max height must not paint (`CLIP` clips to the layout box).
+    const D2D1_DRAW_TEXT_OPTIONS options =
+        style.max_lines > 0u || n.clips() ? D2D1_DRAW_TEXT_OPTIONS_CLIP : D2D1_DRAW_TEXT_OPTIONS_NONE;
+    rt_->DrawTextLayout(D2D1::Point2F(r.x, r.y), layout, brush_, options);
   }
 
   ID2D1RenderTarget* rt_;

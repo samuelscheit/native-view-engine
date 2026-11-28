@@ -6,8 +6,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-option(NVE_ENABLE_NATIVE_VIEWS "Enable packages/modules/native-views" OFF)
-
 # Unified prefixes first, then the split Homebrew kegs (qtbase + qtdeclarative). Qt6 resolves
 # components next to Qt6Config.cmake only, so split kegs also go on its additional-prefix list.
 foreach(_nve_qt_hint IN ITEMS
@@ -47,17 +45,6 @@ target_include_directories(nve_qt_shell_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(nve_qt_shell_lib PRIVATE ${_nve_qt_warnings})
 target_link_libraries(nve_qt_shell_lib PUBLIC nve::host_cxx nve::runtime nve::canvas_cxx Qt6::Widgets)
 
-if(NVE_ENABLE_NATIVE_VIEWS)
-  if(NOT TARGET nve_qt_native_views)
-    add_subdirectory(
-      "${CMAKE_CURRENT_SOURCE_DIR}/../../packages/modules/native-views/qt"
-      "${CMAKE_CURRENT_BINARY_DIR}/nve_qt_native_views"
-    )
-  endif()
-  target_link_libraries(nve_qt_shell_lib PUBLIC nve_qt_native_views)
-  target_compile_definitions(nve_qt_shell_lib PUBLIC NVE_ENABLE_NATIVE_VIEWS=1)
-endif()
-
 add_executable(nve_qt_shell main.cpp)
 target_compile_options(nve_qt_shell PRIVATE ${_nve_qt_warnings})
 target_link_libraries(nve_qt_shell PRIVATE nve_qt_shell_lib)
@@ -90,6 +77,7 @@ if(TARGET Qt6::Quick AND TARGET Qt6::Qml)
     NveQtQuickInput.cpp
     NveQtQuickAccessible.cpp
     NveQtSGBuilder.cpp
+    NveQtQuickRaster.cpp
   )
   target_compile_options(nve_qt_quick_lib PRIVATE ${_nve_qt_warnings})
   target_link_libraries(nve_qt_quick_lib PUBLIC nve_qt_shell_lib Qt6::Quick Qt6::Qml)

@@ -277,9 +277,10 @@ class Nve2Writer {
   }
 
   void emit_rows() {
-    for (uint32_t slot = 0; slot < declared_.size(); ++slot) {
+    for (uint32_t slot_index = 0; slot_index < declared_.size(); ++slot_index) {
+      const auto slot = static_cast<uint8_t>(slot_index);  // < 128 table slots
       const auto lo = rows_.lower_bound(row_key(slot, 0u));
-      const auto hi = rows_.lower_bound(row_key(slot + 1u, 0u));
+      const auto hi = rows_.lower_bound(row_key(slot_index + 1u, 0u));
       uint32_t patches = 0u;
       uint32_t strings = 0u;
       for (auto it = lo; it != hi; ++it) {
@@ -296,7 +297,9 @@ class Nve2Writer {
           if (m == 0u && !(r.attached_now && r.strs.empty())) continue;
           u32(static_cast<uint32_t>(it->first));
           u32(m);
-          for (uint32_t bits = m; bits != 0u; bits &= bits - 1u) u32(r.words[std::countr_zero(bits)]);
+          for (uint32_t bits = m; bits != 0u; bits &= bits - 1u) {
+            u32(r.words[static_cast<size_t>(std::countr_zero(bits))]);
+          }
         }
         end();
       }

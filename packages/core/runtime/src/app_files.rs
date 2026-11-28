@@ -12,8 +12,9 @@ use crate::builder::RuntimeError;
 use crate::hooks::with_app;
 use crate::surface::SurfaceRuntime;
 
-/// `std::env::temp_dir()` subdirectory holding staged module copies (each removed on unload).
-const MODULE_STAGING_DIR: &str = "nve-runtime-modules";
+/// Staging-root subdirectory (per user, see `StagedDylib`) holding staged module copies (each
+/// removed on unload).
+pub const MODULE_STAGING_DIR: &str = "nve-runtime-modules";
 
 /// The loader failure as a runtime error naming the module `path` (hosts show it to developers).
 fn loader_error(e: LoaderError, path: &Path) -> RuntimeError {
@@ -27,6 +28,10 @@ fn loader_error(e: LoaderError, path: &Path) -> RuntimeError {
         LoaderError::MissingSurfaceInterface | LoaderError::NullHandle => {
             RuntimeError::Unsupported("app module exports no usable NVE_IFACE_SURFACE")
         }
+        LoaderError::AlreadyLoadedInPlace(_) => RuntimeError::Io(format!(
+            "app module {path} is already loaded in place; push a versioned file or set {}",
+            nve_engine::loader::MODULE_STAGE_DIR_ENV
+        )),
     }
 }
 
@@ -69,6 +74,9 @@ impl SurfaceRuntime {
         carry_state: bool,
     ) -> Result<(), RuntimeError> {
         self.check_file_op()?;
+        // `SceneBusy` before staging, `dlopen` and `create`: a held scene would refuse the
+        // attach only after the module's initializers and app constructor already ran.
+        self.with_write(|_| Ok(()))?;
         let label = format!("surface{}", self.surface_id);
         let module = StagedDylib::load(path, MODULE_STAGING_DIR, &label).map_err(|e| loader_error(e, path))?;
         let mut app = CAbiAppAdapter::from_staged_dylib(module, self.surface_id)?;

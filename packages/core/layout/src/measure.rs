@@ -4,12 +4,13 @@
 
 use std::sync::Arc;
 
+use nve_abi::xxh64;
 use nve_components::tables::{FontStyle, OverflowWrap, Typography, WhiteSpace, WordBreak};
 use nve_store::{Length, NodeId, NodeStore, Rgba, StrSpan};
 
 /// Fully resolved, inherited typography of one node: everything a host needs to measure text
-/// exactly as it paints it. `F` is the family: a [`StrSpan`] into the store while layout keeps it
-/// per node ([`ResolvedTextStyle`]), a borrowed `&str` when handed to a [`TextMeasurer`].
+/// exactly as it paints it. `F` is the family: a [`ResolvedFamily`] into the store while layout
+/// keeps it per node ([`ResolvedTextStyle`]), a borrowed `&str` when handed to a [`TextMeasurer`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextStyle<F> {
     pub color: Rgba,
@@ -31,8 +32,33 @@ pub struct TextStyle<F> {
     pub max_lines: u32,
 }
 
+/// A node's resolved font family: where it lives in the store plus the `xxh64` of its text.
+/// Equality is by content hash alone, so an in-place `StrArena` replace that keeps the span
+/// (`"Arial"` → `"Inter"`) still compares unequal, while the same family at another span does not.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ResolvedFamily {
+    pub span: StrSpan,
+    pub hash: u64,
+}
+
+impl ResolvedFamily {
+    /// The family `span` of `store`, hashed now (`0` for the empty default family).
+    #[inline]
+    pub fn new(store: &NodeStore, span: StrSpan) -> Self {
+        let text = store.text(span);
+        Self { span, hash: if text.is_empty() { 0 } else { xxh64(text.as_bytes(), 0) } }
+    }
+}
+
+impl PartialEq for ResolvedFamily {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.hash == other.hash
+    }
+}
+
 /// Inherited typography kept per node during a layout pass.
-pub type ResolvedTextStyle = TextStyle<StrSpan>;
+pub type ResolvedTextStyle = TextStyle<ResolvedFamily>;
 
 impl<F: Default> Default for TextStyle<F> {
     fn default() -> Self {
@@ -89,6 +115,24 @@ impl<F> TextStyle<F> {
     }
 }
 
+impl<F: PartialEq> TextStyle<F> {
+    /// `true` when both styles measure identically: every field except paint-only `color`,
+    /// floats compared by bits (so `NaN` never forces endless re-measurement).
+    #[inline]
+    pub fn measure_eq(&self, other: &Self) -> bool {
+        self.font_family == other.font_family
+            && self.font_size.to_bits() == other.font_size.to_bits()
+            && self.font_weight == other.font_weight
+            && self.font_style == other.font_style
+            && self.letter_spacing.to_bits() == other.letter_spacing.to_bits()
+            && self.line_height == other.line_height
+            && self.white_space == other.white_space
+            && self.word_break == other.word_break
+            && self.overflow_wrap == other.overflow_wrap
+            && self.max_lines == other.max_lines
+    }
+}
+
 impl<F: AsRef<str>> TextStyle<F> {
     /// The measurer view of an owned-family style.
     #[inline]
@@ -111,7 +155,7 @@ impl ResolvedTextStyle {
     /// The measurer view of this style, its family read from `store`.
     #[inline]
     pub fn in_store<'a>(&self, store: &'a NodeStore) -> TextStyle<&'a str> {
-        self.map_family(|&span| store.text(span))
+        self.map_family(|family| store.text(family.span))
     }
 }
 
@@ -143,7 +187,11 @@ pub fn resolve_inherited_text(
         parent.font_weight = t.font_weight();
     }
     if explicit(Typography::SET_LINE_HEIGHT, t.line_height() != Length::AUTO) {
-        parent.line_height = t.line_height();
+        let lh = t.line_height();
+        // `NaN` / `inf` / negative heights are invalid CSS: keep the inherited value.
+        if lh.is_auto() || (lh.value().is_finite() && lh.value() >= 0.0) {
+            parent.line_height = lh;
+        }
     }
     if explicit(Typography::SET_LETTER_SPACING, t.letter_spacing() != 0.0) {
         let ls = t.letter_spacing();
@@ -152,7 +200,7 @@ pub fn resolve_inherited_text(
         }
     }
     if explicit(Typography::SET_FONT_FAMILY, !t.font_family().is_empty()) {
-        parent.font_family = t.font_family_span();
+        parent.font_family = ResolvedFamily::new(store, t.font_family_span());
     }
     if explicit(Typography::SET_MAX_LINES, t.max_lines() != 0) {
         parent.max_lines = t.max_lines();
@@ -336,5 +384,32 @@ mod tests {
         let two = TextStyle { max_lines: 2, ..points };
         assert_eq!(m.measure(text, &two, Some(20.0)).1, 60.0);
         assert_eq!(m.measure("a\nb\nc\nd", &two, None).1, 60.0);
+    }
+
+    #[test]
+    fn resolution_sanitizes_line_height_and_hashes_the_family() {
+        let mut store = NodeStore::new();
+        let mut tx = store.tx();
+        let [parent, nan, negative, family] = [(); 4].map(|_| tx.create());
+        tx.edit::<Typography>(parent).line_height(Length::points(18.0)).font_family("Inter");
+        // Raw `NaN` points bits (tag `00`): no constructor produces them, a wire frame can.
+        tx.edit::<Typography>(nan)
+            .line_height(Length(f32::NAN.to_bits() & !0b11))
+            .set(Typography::SET_LINE_HEIGHT);
+        tx.edit::<Typography>(negative).line_height(Length::points(-4.0));
+        tx.edit::<Typography>(family).font_family("Arial");
+        tx.commit_into(&mut nve_store::ChangeSet::default());
+        let p = resolve_inherited_text(&store, parent, ResolvedTextStyle::default());
+        for child in [nan, negative] {
+            let r = resolve_inherited_text(&store, child, p);
+            assert_eq!(r.line_height, Length::points(18.0), "invalid heights inherit");
+            assert!(r.measure_eq(&r), "bitwise float equality is reflexive");
+        }
+        let inter = p.font_family;
+        assert_eq!(inter.hash, xxh64(b"Inter", 0));
+        let arial = resolve_inherited_text(&store, family, p);
+        assert!(!arial.measure_eq(&p), "same-length families differ by content");
+        assert!(arial.measure_eq(&TextStyle { color: Rgba::WHITE, ..arial }), "color is paint-only");
+        assert_eq!(ResolvedTextStyle::default().font_family.hash, 0);
     }
 }

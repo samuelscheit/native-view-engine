@@ -225,7 +225,7 @@ impl RuntimeBuilder {
                     published_scroll: Vec::new(),
                     dirty_resources: Vec::new(),
                     published_resources: PublishedResources::None,
-                    epoch_resources: PublishedResources::None,
+                    committed_store: 0,
                     published_view: NveSceneView {
                         schema_hash: NVE_RUNTIME_SCHEMA_HASH,
                         ..NveSceneView::default()

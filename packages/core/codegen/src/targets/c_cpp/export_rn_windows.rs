@@ -79,7 +79,11 @@ pub(crate) fn emit_windows_rnw_component_view_hpp(spec: &NveExportSpec) -> Strin
     );
     writeln!(
         out,
-        "/// events to `{name}RnwEventCallbacks` (UI thread only, like the host)."
+        "/// events to `{name}RnwEventCallbacks` (UI thread only, like the host). `host` may be null (no"
+    );
+    writeln!(
+        out,
+        "/// runtime / DirectWrite: `register_nve_rnw_component` then hands out an empty view): inert."
     );
     writeln!(out, "class {name}RnwComponentView {{");
     writeln!(out, " public:");
@@ -91,6 +95,7 @@ pub(crate) fn emit_windows_rnw_component_view_hpp(spec: &NveExportSpec) -> Strin
         out,
         "      : host_(std::move(host)), callbacks_(std::move(callbacks)) {{"
     );
+    writeln!(out, "    if (host_ == nullptr) return;");
     writeln!(
         out,
         "    host_->set_event_callback([this](std::span<const NveDirectEvent> events) {{"
@@ -103,7 +108,7 @@ pub(crate) fn emit_windows_rnw_component_view_hpp(spec: &NveExportSpec) -> Strin
     writeln!(out, "  }}");
     writeln!(
         out,
-        "  ~{name}RnwComponentView() {{ host_->set_event_callback({{}}); }}"
+        "  ~{name}RnwComponentView() {{ if (host_ != nullptr) host_->set_event_callback({{}}); }}"
     );
     writeln!(
         out,
@@ -124,7 +129,7 @@ pub(crate) fn emit_windows_rnw_component_view_hpp(spec: &NveExportSpec) -> Strin
     );
     writeln!(
         out,
-        "    return host_->attach_interface(interface_override != nullptr ? interface_override : &{vtable_sym});"
+        "    return host_ != nullptr && host_->attach_interface(interface_override != nullptr ? interface_override : &{vtable_sym});"
     );
     writeln!(out, "  }}");
     writeln!(
@@ -133,7 +138,7 @@ pub(crate) fn emit_windows_rnw_component_view_hpp(spec: &NveExportSpec) -> Strin
     );
     writeln!(
         out,
-        "  bool update_props(std::span<const NveMapEntry> props) {{ return host_->apply_props(props); }}"
+        "  bool update_props(std::span<const NveMapEntry> props) {{ return host_ != nullptr && host_->apply_props(props); }}"
     );
     writeln!(
         out,
@@ -141,7 +146,11 @@ pub(crate) fn emit_windows_rnw_component_view_hpp(spec: &NveExportSpec) -> Strin
     );
     writeln!(
         out,
-        "  [[nodiscard]] nve::win::NveWinHost& host() noexcept {{ return *host_; }}"
+        "  /// The surface's host; null when the view has no runtime."
+    );
+    writeln!(
+        out,
+        "  [[nodiscard]] nve::win::NveWinHost* host() noexcept {{ return host_.get(); }}"
     );
     writeln!(out);
     writeln!(out, " private:");

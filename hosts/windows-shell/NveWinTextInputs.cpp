@@ -141,12 +141,14 @@ void WinTextInputs::update(Field& f, const WinNodeVisual& v, const PaintFrame& f
 
   // Typography (GDI font in device pixels) and colours.
   const TextPaint& t = v.text_style;
-  const std::wstring family = t.font_family.empty() ? std::wstring(L"Segoe UI") : wide(t.font_family);
   const LONG height = -std::max<LONG>(1, px(t.font_size, scale));
-  std::wstring key = family + L'|' + std::to_wstring(height) + L'|' + std::to_wstring(t.font_weight) + L'|' +
-                     std::to_wstring(t.font_style) + L'|' + std::to_wstring(t.text_decoration);
+  std::wstring key = wide(t.font_family) + L'|' + std::to_wstring(height) + L'|' + std::to_wstring(t.font_weight) +
+                     L'|' + std::to_wstring(t.font_style) + L'|' + std::to_wstring(t.text_decoration);
   bool restyled = false;
   if (key != f.font_key) {
+    // GDI takes one face name: the CSS list resolves exactly as the painter's (first installed
+    // family, generics mapped), never the raw list GDI would silently replace.
+    const std::wstring family = host_->text_measurer().resolve_family(t.font_family);
     HFONT font = ::CreateFontW(height, 0, 0, 0, std::clamp<int>(t.font_weight, 1, 1000),
                                t.font_style != NVE_FONT_STYLE_NORMAL ? TRUE : FALSE,
                                (t.text_decoration & NVE_TEXT_DECORATION_UNDERLINE) != 0u ? TRUE : FALSE,
@@ -211,20 +213,22 @@ bool WinTextInputs::on_command(WPARAM wparam, LPARAM lparam) {
   switch (HIWORD(wparam)) {
     case EN_CHANGE: {
       if (f.text.writing()) return true;  // a host write
-      const std::string text = control_text(control);
-      if (!f.text.user_edited(text)) return true;
-      (void)host_->dispatch_text_change(id, text);  // overlay re-sync is posted, never inline
-      // In-process apps answer synchronously: show a transformed or rejected edit's result now
-      // (a rejecting app republishes nothing, so no later sync would revert the field).
-      const auto it = fields_.find(id);
-      const WinNodeVisual* v = host_->is_paired() ? nullptr : host_->visual_tree().find(id);
-      if (it != fields_.end() && it->second.hwnd != nullptr && v != nullptr &&
-          it->second.text.app_answered(v->input.value)) {
-        const auto write = it->second.text.host_write();
-        ::SetWindowTextW(it->second.hwnd, to_control_text(v->input.value).c_str());
-        const int end = ::GetWindowTextLengthW(it->second.hwnd);  // caret after the answer
-        ::SendMessageW(it->second.hwnd, EM_SETSEL, static_cast<WPARAM>(end), static_cast<LPARAM>(end));
-      }
+      // The shared edit path: the dispatch may remove the field (re-found by id); a transformed or
+      // rejected answer of an in-process app is shown now (a rejecting app republishes nothing).
+      (void)host::dispatch_controlled_edit<Field>(
+          f.text, control_text(control),
+          [&](std::string_view sent) { return host_->dispatch_text_change(id, sent); },  // overlay re-sync is posted
+          [&]() -> host::ControlledAnswer<Field> {
+            const auto it = fields_.find(id);
+            const WinNodeVisual* v = host_->is_paired() ? nullptr : host_->visual_tree().find(id);
+            if (it == fields_.end() || it->second.hwnd == nullptr || v == nullptr) return {};
+            return {&it->second, &it->second.text, v->input.value};
+          },
+          [](Field& field, std::string_view value) {
+            ::SetWindowTextW(field.hwnd, to_control_text(value).c_str());
+            const int end = ::GetWindowTextLengthW(field.hwnd);  // caret after the answer
+            ::SendMessageW(field.hwnd, EM_SETSEL, static_cast<WPARAM>(end), static_cast<LPARAM>(end));
+          });
       return true;
     }
     case EN_SETFOCUS: (void)host_->dispatch_focus(id, true); return true;

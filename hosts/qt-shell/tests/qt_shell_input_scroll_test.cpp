@@ -128,10 +128,16 @@ void test_controlled_text_inputs() {
   NVE_CHECK(app.last(NVE_EVENT_TEXT_CHANGE)->text == "q" && upper->text() == "Q");
   type(upper, Qt::Key_W, QStringLiteral("w"));
   NVE_CHECK(app.last(NVE_EVENT_TEXT_CHANGE)->text == "Qw" && upper->text() == "QW");
-  // Rejecting app (value unchanged): the user's text is kept, not fought.
+  // Rejecting app (value unchanged, nothing republished): the field shows the app's value again,
+  // and that write-back is no edit; the next keystroke starts from it.
   reject->setCursorPosition(5);
+  const size_t rejected = app.count(NVE_EVENT_TEXT_CHANGE, kReject);
   type(reject, Qt::Key_S, QStringLiteral("s"));
-  NVE_CHECK(app.last(NVE_EVENT_TEXT_CHANGE)->text == "fixeds" && reject->text() == "fixeds");
+  NVE_CHECK(app.last(NVE_EVENT_TEXT_CHANGE)->text == "fixeds" && reject->text() == "fixed");
+  NVE_CHECK(app.count(NVE_EVENT_TEXT_CHANGE, kReject) == rejected + 1u);
+  reject->setCursorPosition(5);
+  type(reject, Qt::Key_T, QStringLiteral("t"));
+  NVE_CHECK(app.last(NVE_EVENT_TEXT_CHANGE)->text == "fixedt" && reject->text() == "fixed");
 
   // IME: composition is neither dispatched nor clobbered by an app update; the commit is.
   spin();  // window activation is asynchronous

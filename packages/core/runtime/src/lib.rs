@@ -21,6 +21,8 @@ pub mod surface;
 pub use nve_engine::wake;
 
 pub use app::{AppFrame, CAbiAppAdapter, FrameTickHook, NveAppAdapter, RuntimeApp};
+#[cfg(not(target_arch = "wasm32"))]
+pub use app_files::MODULE_STAGING_DIR;
 pub use builder::{RuntimeBuilder, RuntimeError};
 pub use c_api::nve_runtime_get_interface;
 pub use surface::{SceneReadGuard, SurfaceRuntime};
