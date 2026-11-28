@@ -59,10 +59,10 @@ pub(crate) struct SurfaceState {
     /// `ResourceStore` of the store `published_view` borrows; lets `resource_payload` serve any
     /// `scene_acquire` thread without touching `!Sync` apps.
     pub(crate) published_resources: PublishedResources,
-    /// Resource source the current `scene_epoch` publishes (`None` until the first publish after
-    /// a reset): resource ids from another source are a different namespace, so a change of
-    /// source starts a new epoch even without a replica reset.
-    pub(crate) epoch_resources: PublishedResources,
+    /// [`NodeStore::instance_id`] the scene, delta and `scene_epoch` were last committed from
+    /// (`0` right after a reset): node and resource ids of another store are another namespace,
+    /// so committing a different store resets them into a new epoch first.
+    pub(crate) committed_store: u64,
     pub(crate) metrics: NveRuntimeMetrics,
     pub(crate) needs_render: bool,
     pub(crate) needs_publish: bool,
@@ -72,14 +72,16 @@ pub(crate) struct SurfaceState {
 /// [`RuntimeInner`] (it moves with `SurfaceRuntime`), so it is resolved at read time instead of
 /// being cached as an address; a direct app's store lives behind its `Box<dyn RuntimeApp>`, whose
 /// heap address survives runtime moves.
+/// Each source carries its store's [`NodeStore::instance_id`], so an in-place store replacement
+/// at the same address never compares equal.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PublishedResources {
     /// Invalidated: no resource reads.
     None,
     /// `RuntimeInner::replica_store.resources()`.
-    Replica,
+    Replica(u64),
     /// The attached app's `direct_store().resources()`.
-    App(*const ResourceStore),
+    App(u64, *const ResourceStore),
 }
 
 pub(crate) struct RuntimeInner {
@@ -112,10 +114,14 @@ impl RuntimeInner {
         match self.app.as_ref().and_then(|a| a.direct_store()) {
             Some(store) => (
                 store,
-                PublishedResources::App(store.resources()),
+                PublishedResources::App(store.instance_id(), store.resources()),
                 &mut self.state,
             ),
-            None => (&self.replica_store, PublishedResources::Replica, &mut self.state),
+            None => (
+                &self.replica_store,
+                PublishedResources::Replica(self.replica_store.instance_id()),
+                &mut self.state,
+            ),
         }
     }
 
@@ -131,10 +137,10 @@ impl RuntimeInner {
     pub(crate) fn published_resources(&self) -> Option<&ResourceStore> {
         match self.state.published_resources {
             PublishedResources::None => None,
-            PublishedResources::Replica => Some(self.replica_store.resources()),
+            PublishedResources::Replica(_) => Some(self.replica_store.resources()),
             // SAFETY: Set by `publish_scene` from the attached app's boxed store; any app detach,
             // swap, or store move invalidates the view (`published_view_is_current`) first.
-            PublishedResources::App(p) => Some(unsafe { &*p }),
+            PublishedResources::App(_, p) => Some(unsafe { &*p }),
         }
     }
 
@@ -204,12 +210,8 @@ impl RuntimeInner {
     }
 
     fn reset_replica_and_state(replica_store: &mut NodeStore, state: &mut SurfaceState) {
-        state.scene_epoch = state.scene_epoch.wrapping_add(1);
-        state.epoch_resources = PublishedResources::None;
-        state.invalidate_published_view();
+        state.reset_scene_epoch();
         state.metrics.live_nodes = 0;
-        state.delta.reset();
-        state.scene.reset();
         state.wire_decoder = WireDecoder::default();
         state.has_replica_state = false;
         *replica_store = NodeStore::replica();
@@ -237,6 +239,7 @@ impl RuntimeInner {
         let (store, resources, state) = self.split_store_and_state();
         state.invalidate_published_view();
         state.frame_id = state.frame_id.wrapping_add(1).max(1);
+        state.adopt_store(store);
         let t_lay = Timer::start();
         let laid_out = if has_changes {
             let changes = std::mem::take(&mut state.merged_changes);

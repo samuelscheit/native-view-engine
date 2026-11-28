@@ -275,7 +275,8 @@ fn ancestor_typography_edits_remeasure_descendants_and_color_does_not() {
         // SAFETY: As above.
         unsafe { std::mem::take(&mut *seen) }
     };
-    let edits: [(&str, Edit, fn(&Measured) -> bool); 8] = [
+    type Check = fn(&Measured) -> bool;
+    let edits: [(&str, Edit, Check); 8] = [
         ("line_height", |tx, c| {
             tx.edit::<Typography>(c).line_height(Length::points(30.0));
         }, |m| m.line_height == (30.0, NVE_LINE_HEIGHT_POINTS)),

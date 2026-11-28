@@ -3,9 +3,17 @@
 //! changes move no rect), so retained hosts restyle `dirty_indices` without whole-tree walks.
 
 use nve_components::tables::{Layout, TextContent, TextInput, Typography};
+use std::sync::Arc;
+
+use nve_engine::{LayoutRect, Viewport};
+use nve_layout::{StoreLayoutEngine, TextMeasurer};
 use nve_runtime::{RuntimeBuilder, SurfaceRuntime};
 use nve_store::wire::WireEncoder;
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba, Transaction};
+
+#[path = "support/counting_alloc.rs"]
+mod counting_alloc;
+use counting_alloc::count_allocs;
 
 struct Session {
     store: NodeStore,
@@ -40,6 +48,10 @@ fn fixed(tx: &mut Transaction<'_>, id: NodeId) {
 }
 
 fn mount() -> (SurfaceRuntime, Session, Tree) {
+    mount_with(RuntimeBuilder::new())
+}
+
+fn mount_with(builder: RuntimeBuilder) -> (SurfaceRuntime, Session, Tree) {
     let mut s = Session { store: NodeStore::new(), encoder: WireEncoder::default() };
     let mut tree = None;
     let keyframe = s.frame(|tx| {
@@ -66,7 +78,7 @@ fn mount() -> (SurfaceRuntime, Session, Tree) {
         tx.set_children(NodeId::ROOT, &[t.outer, t.other_text]);
         tree = Some(t);
     });
-    let mut rt = RuntimeBuilder::new().build();
+    let mut rt = builder.build();
     rt.submit_nve2(&keyframe).expect("keyframe");
     (rt, s, tree.expect("tree"))
 }
@@ -141,4 +153,96 @@ fn edits_without_typography_changes_dirty_no_descendants() {
     }))
     .expect("text edit");
     assert_eq!(dirty(&rt), indexes(&[t.mid_text]));
+}
+
+/// Moves `inner` (`Typography` weight 700, holding `deep_text`) between `outer` and the root.
+fn move_inner(tx: &mut Transaction<'_>, t: &Tree, under_root: bool) {
+    if under_root {
+        tx.set_children(t.outer, &[t.mid_text, t.input, t.plain]);
+        tx.set_children(NodeId::ROOT, &[t.outer, t.other_text, t.inner]);
+    } else {
+        tx.set_children(NodeId::ROOT, &[t.outer, t.other_text]);
+        tx.set_children(t.outer, &[t.inner, t.mid_text, t.input, t.plain]);
+    }
+}
+
+#[test]
+fn a_reparented_subtree_dirties_its_inheriting_text_descendants() {
+    let (mut rt, mut s, t) = mount();
+    // `plain` (a leaf container without text) moves too: only text / input descendants join.
+    let wrapper_text = {
+        let mut created = None;
+        rt.submit_nve2(&s.frame(|tx| {
+            let text = tx.create();
+            fixed(tx, text);
+            tx.edit::<TextContent>(text).text("wrapped");
+            tx.set_children(t.plain, &[text]);
+            created = Some(text);
+        }))
+        .expect("wrap");
+        created.expect("text")
+    };
+    rt.submit_nve2(&s.frame(|tx| {
+        tx.set_children(t.outer, &[t.inner, t.mid_text, t.input]);
+        tx.set_children(t.inner, &[t.deep_text, t.plain]);
+    }))
+    .expect("move plain under inner");
+    let d = dirty(&rt);
+    assert!(d.contains(&(wrapper_text.index() as u32)), "text inside the moved container: {d:?}");
+    assert!(!d.contains(&(t.mid_text.index() as u32)), "staying siblings stay clean: {d:?}");
+    assert!(!d.contains(&(t.other_text.index() as u32)), "{d:?}");
+
+    let tree = &t;
+    rt.submit_nve2(&s.frame(|tx| move_inner(tx, tree, true))).expect("inner to root");
+    let d = dirty(&rt);
+    for text in [t.deep_text, wrapper_text] {
+        assert!(d.contains(&(text.index() as u32)), "{text:?} inherits from a new ancestor: {d:?}");
+    }
+    assert!(!d.contains(&(t.mid_text.index() as u32)), "{d:?}");
+    let mut unique = d.clone();
+    unique.dedup();
+    assert_eq!(d, unique, "a node reached from several roots is listed once");
+}
+
+/// Never lays out (Taffy's flexbox pass allocates per run): isolates the runtime's own frame
+/// path — decode, commit, inherited-typography walk, delta, publish.
+struct NoLayout;
+
+impl StoreLayoutEngine for NoLayout {
+    fn name(&self) -> &'static str {
+        "none"
+    }
+    fn sync_changes(&mut self, _store: &NodeStore, _changes: &ChangeSet) {}
+    fn compute_layout(&mut self, _store: &NodeStore, _root: NodeId, _viewport: Viewport) -> bool {
+        false
+    }
+    fn layout_of(&self, _id: NodeId) -> Option<LayoutRect> {
+        None
+    }
+    fn set_text_measurer(&mut self, _measurer: Arc<dyn TextMeasurer>) {}
+    fn reset(&mut self) {}
+}
+
+#[test]
+fn steady_state_typography_and_reparent_frames_are_zero_alloc() {
+    let (mut rt, mut s, t) = mount_with(RuntimeBuilder::new().layout(Box::new(NoLayout)));
+    let frames: Vec<Vec<u8>> = (0..24u8)
+        .map(|i| {
+            let tree = &t;
+            s.frame(|tx| {
+                move_inner(tx, tree, i % 2 == 0);
+                tx.edit::<Typography>(tree.outer).color(Rgba::rgb(i, 0, 0));
+            })
+        })
+        .collect();
+    let (warm, measured) = frames.split_at(8);
+    for f in warm {
+        rt.submit_nve2(f).expect("warm-up frame");
+    }
+    let (results, allocs) = count_allocs(|| {
+        measured.iter().map(|f| rt.submit_nve2(f).is_ok()).fold(true, |a, ok| a & ok)
+    });
+    assert!(results, "every frame applies");
+    assert_eq!(allocs, 0, "typography + reparent frames allocate nothing once warm");
+    assert!(dirty(&rt).contains(&(t.deep_text.index() as u32)));
 }

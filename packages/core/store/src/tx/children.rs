@@ -29,15 +29,21 @@ impl Transaction<'_> {
         );
     }
 
+    /// A still-live child that left its parent without joining another: its row (`parent`)
+    /// changed and it no longer renders, so hosts and layout must see it.
+    const DETACHED_EFFECTS: u8 = effect::LAYOUT | effect::PAINT;
+
     /// `set`: clears the parent pointer of every child of `parent` and flags it `CHILD_SEEN`;
-    /// `!set`: drops those flags again (zero allocations).
+    /// `!set`: drops those flags again, touching every flagged child that stayed detached (zero
+    /// allocations).
     fn flag_children(&mut self, parent: NodeId, set: bool) {
         let NodeStore {
-            nodes, children, ..
+            nodes, children, touched, ..
         } = &mut *self.store;
         let owner = nodes[parent.node_index()].children;
         for &c in children.get(owner) {
-            let Some(r) = nodes.get_mut(c.node_index()) else {
+            let idx = c.node_index();
+            let Some(r) = nodes.get_mut(idx) else {
                 continue;
             };
             if set {
@@ -46,6 +52,9 @@ impl Transaction<'_> {
                     r.flags |= CHILD_SEEN;
                 }
             } else {
+                if r.flags & CHILD_SEEN != 0 && r.parent.is_null() {
+                    touch(r, touched, idx, Self::DETACHED_EFFECTS);
+                }
                 r.flags &= !CHILD_SEEN;
             }
         }
@@ -204,7 +213,9 @@ impl Transaction<'_> {
             let new_span = s.children.remove_at(span, at);
             s.nodes[parent_idx].children = new_span;
         }
-        s.nodes[child.node_index()].parent = NodeId::NULL;
+        let child_idx = child.node_index();
+        s.nodes[child_idx].parent = NodeId::NULL;
+        touch(&mut s.nodes[child_idx], &mut s.touched, child_idx, Self::DETACHED_EFFECTS);
         self.mark_children(parent_idx);
     }
 }

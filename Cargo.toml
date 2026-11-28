@@ -164,6 +164,7 @@ dioxus-core-macro = "0.7.10"
 taffy = { version = "0.16.0", default-features = false, features = ["std", "flexbox", "grid", "content_size"] }
 cc = "1.11"
 libloading = "0.9.1"
+libc = "0.2.191"
 clap = { version = "4.6.10", features = ["derive"] }
 notify = "9.0.0"
 serde = { version = "1.0.229", features = ["derive"] }

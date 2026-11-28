@@ -5,6 +5,7 @@
 //! `NveDevApi`), and exposes direct zero-cost calls + state-preserving generation reloads.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use libloading::Library;
@@ -27,6 +28,9 @@ pub enum LoaderError {
     MissingEntry(libloading::Error),
     MissingSurfaceInterface,
     NullHandle,
+    /// Loading in place (no staging root) a file this process already loaded in place: the OS
+    /// loader would hand back the mapped image, silently running the old code.
+    AlreadyLoadedInPlace(PathBuf),
 }
 
 impl std::fmt::Display for LoaderError {
@@ -42,27 +46,99 @@ impl std::error::Error for LoaderError {}
 /// Android (API 29+ SELinux `execute_no_trans` / W^X) only executes code from the APK's
 /// `nativeLibraryDir`, and `std::env::temp_dir()` there (`/data/local/tmp`) is not app-writable;
 /// iOS only loads signed images from the bundle. Mobile hot reload therefore relies on the dev
-/// tooling pushing a uniquely named (versioned) library per generation.
+/// tooling pushing a uniquely named (versioned) library per generation, or on an app-private,
+/// loadable staging root in [`MODULE_STAGE_DIR_ENV`] (Android `Context.getCodeCacheDir()`).
 pub const STAGES_PRIVATE_COPY: bool = !cfg!(any(target_os = "android", target_os = "ios"));
 
+/// Environment variable naming the staging root (instead of `std::env::temp_dir()`); set, it
+/// stages on every platform.
+pub const MODULE_STAGE_DIR_ENV: &str = "NVE_MODULE_STAGE_DIR";
+
+/// Where staged copies go: [`MODULE_STAGE_DIR_ENV`], else the temp dir when
+/// [`STAGES_PRIVATE_COPY`]; `None` loads in place.
+fn stage_root() -> Option<PathBuf> {
+    match std::env::var_os(MODULE_STAGE_DIR_ENV).filter(|v| !v.is_empty()) {
+        Some(root) => Some(PathBuf::from(root)),
+        None => STAGES_PRIVATE_COPY.then(std::env::temp_dir),
+    }
+}
+
+/// The private directory staged copies for `subdir` go to (`<root>/<subdir>-<euid>` on unix, so
+/// users sharing `/tmp` never collide; `temp_dir()` is already per user on Windows); `None` when
+/// loading in place.
+pub fn staging_dir(subdir: &str) -> Option<PathBuf> {
+    stage_root().map(|root| staging_dir_in(&root, subdir))
+}
+
+fn staging_dir_in(root: &Path, subdir: &str) -> PathBuf {
+    #[cfg(unix)]
+    // SAFETY: `geteuid` has no preconditions and cannot fail.
+    return root.join(format!("{subdir}-{}", unsafe { libc::geteuid() }));
+    #[cfg(not(unix))]
+    return root.join(subdir);
+}
+
+/// `(device, inode)` of every file loaded in place by this process.
+static IN_PLACE_FILES: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
+
+/// Exclusive claim on a file loaded in place, released (after the unload) on drop.
+struct InPlaceClaim((u64, u64));
+
+impl InPlaceClaim {
+    fn new(path: &Path) -> Result<Self, LoaderError> {
+        let meta = std::fs::metadata(path).map_err(LoaderError::Io)?;
+        #[cfg(unix)]
+        let id = {
+            use std::os::unix::fs::MetadataExt;
+            (meta.dev(), meta.ino())
+        };
+        // In-place loading only happens on Android / iOS (unix); the claim is moot elsewhere.
+        #[cfg(not(unix))]
+        let id = {
+            let _ = meta;
+            (0, IN_PLACE_FILES_UNIQUE.fetch_add(1, Ordering::Relaxed))
+        };
+        let mut loaded = IN_PLACE_FILES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if loaded.contains(&id) {
+            return Err(LoaderError::AlreadyLoadedInPlace(path.to_path_buf()));
+        }
+        loaded.push(id);
+        Ok(Self(id))
+    }
+}
+
+#[cfg(not(unix))]
+static IN_PLACE_FILES_UNIQUE: AtomicU64 = AtomicU64::new(0);
+
+impl Drop for InPlaceClaim {
+    fn drop(&mut self) {
+        let mut loaded = IN_PLACE_FILES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(at) = loaded.iter().position(|&id| id == self.0) {
+            loaded.swap_remove(at);
+        }
+    }
+}
+
 /// Canonical RAII dynamic-library loader. On desktop it stages a unique copy in a private
-/// (`0700`, exclusively created) staging directory before calling `dlopen` (a rebuilt file at the
-/// same path always runs new code; no Windows DLL locks) and unloads before removing the copy.
-/// On Android / iOS it loads the file in place ([`STAGES_PRIVATE_COPY`]).
+/// (`0700`, per-user, exclusively created) staging directory before calling `dlopen` (a rebuilt
+/// file at the same path always runs new code; no Windows DLL locks) and unloads before removing
+/// the copy. On Android / iOS it loads the file in place ([`STAGES_PRIVATE_COPY`]) unless
+/// [`MODULE_STAGE_DIR_ENV`] names a staging root, refusing a file it already loaded in place.
 pub struct StagedDylib {
     lib: Option<Library>,
     get_interface: NveGetInterfaceFn,
     loaded_path: PathBuf,
     /// `true` when `loaded_path` is our private copy (removed after unloading).
     owns_copy: bool,
+    /// Held while loaded in place; dropped after `lib`.
+    _in_place: Option<InPlaceClaim>,
 }
 
 impl StagedDylib {
     pub fn load(dylib_path: &Path, subdir: &str, label: &str) -> Result<Self, LoaderError> {
-        let (loaded_path, owns_copy) = if STAGES_PRIVATE_COPY {
-            (stage_private_copy(dylib_path, subdir, label)?, true)
-        } else {
-            (dylib_path.to_path_buf(), false)
+        let (loaded_path, owns_copy, in_place) = match stage_root() {
+            Some(root) => (stage_private_copy(&root, dylib_path, subdir, label)?, true, None),
+            None => (dylib_path.to_path_buf(), false, Some(InPlaceClaim::new(dylib_path)?)),
         };
         let discard = |path: &Path| {
             if owns_copy {
@@ -93,6 +169,7 @@ impl StagedDylib {
             get_interface,
             loaded_path,
             owns_copy,
+            _in_place: in_place,
         })
     }
 
@@ -117,10 +194,17 @@ impl Drop for StagedDylib {
     }
 }
 
-/// Copies `dylib_path` into `<temp>/<subdir>` under a unique name. The directory is private
-/// (created `0700`; an existing one must be a real directory we own, tightened to `0700`) and
-/// the copy is created exclusively, so no other user can swap the code between copy and `dlopen`.
-fn stage_private_copy(dylib_path: &Path, subdir: &str, label: &str) -> Result<PathBuf, LoaderError> {
+/// Copies `dylib_path` into [`staging_dir_in`] under a unique name. The directory is private
+/// (created `0700`; an existing one must
+/// be a real directory owned by the effective user, tightened to `0700`) and the copy is created
+/// exclusively without following symlinks, so no other user can swap the code between copy and
+/// `dlopen`.
+fn stage_private_copy(
+    root: &Path,
+    dylib_path: &Path,
+    subdir: &str,
+    label: &str,
+) -> Result<PathBuf, LoaderError> {
     /// Fresh names tried when a stale copy (a crashed process with a recycled pid) holds one.
     const MAX_NAME_ATTEMPTS: u32 = 16;
     let ext = dylib_path
@@ -131,12 +215,15 @@ fn stage_private_copy(dylib_path: &Path, subdir: &str, label: &str) -> Result<Pa
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("nve_app");
-    let dir = ensure_private_dir(std::env::temp_dir().join(subdir)).map_err(LoaderError::Io)?;
+    let dir = ensure_private_dir(staging_dir_in(root, subdir)).map_err(LoaderError::Io)?;
     let mut src = std::fs::File::open(dylib_path).map_err(LoaderError::Io)?;
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o700);
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o700).custom_flags(libc::O_NOFOLLOW);
+    }
     let mut attempt = 0u32;
     let (copy, mut dst) = loop {
         let seq = STAGED_COPY_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -175,9 +262,15 @@ fn ensure_private_dir(dir: PathBuf) -> std::io::Result<PathBuf> {
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        // Tightening the mode only succeeds for the directory's owner, so a directory another
-        // user planted is rejected (EPERM) and one we created earlier becomes private.
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // SAFETY: `geteuid` has no preconditions and cannot fail.
+        let euid = unsafe { libc::geteuid() };
+        if meta.uid() != euid {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("staging dir {} is owned by uid {}, not {euid}", dir.display(), meta.uid()),
+            ));
+        }
         if meta.permissions().mode() & 0o077 != 0 {
             std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
         }
@@ -440,8 +533,43 @@ impl Drop for HotAppInstance {
 
 #[cfg(all(test, unix))]
 mod staging_tests {
-    use super::ensure_private_dir;
+    use super::{InPlaceClaim, LoaderError, ensure_private_dir, stage_private_copy, staging_dir_in};
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn copies_stage_in_a_per_user_private_dir() {
+        let root = scratch("root");
+        std::fs::create_dir(&root).expect("test fs op");
+        let src = root.join("libapp.so");
+        std::fs::write(&src, b"code").expect("test fs op");
+        let copy = stage_private_copy(&root, &src, "mods", "g1").expect("stage");
+        let dir = staging_dir_in(&root, "mods");
+        // SAFETY: `geteuid` has no preconditions.
+        assert_eq!(dir, root.join(format!("mods-{}", unsafe { libc::geteuid() })));
+        assert_eq!(copy.parent(), Some(dir.as_path()));
+        assert_eq!(std::fs::read(&copy).expect("test fs op"), b"code");
+        assert_eq!(mode(&dir), 0o700);
+        std::fs::remove_dir_all(&root).expect("test fs op");
+    }
+
+    #[test]
+    fn a_file_loaded_in_place_is_claimed_until_unloaded() {
+        let dir = scratch("claim");
+        std::fs::create_dir(&dir).expect("test fs op");
+        let (file, alias) = (dir.join("libapp.so"), dir.join("libapp-v2.so"));
+        std::fs::write(&file, b"code").expect("test fs op");
+        std::fs::hard_link(&file, &alias).expect("test fs op");
+        let claim = InPlaceClaim::new(&file).expect("first load");
+        for again in [&file, &alias] {
+            assert!(
+                matches!(InPlaceClaim::new(again), Err(LoaderError::AlreadyLoadedInPlace(_))),
+                "the same inode (also through another name) would map the old image"
+            );
+        }
+        drop(claim);
+        drop(InPlaceClaim::new(&alias).expect("released on unload"));
+        std::fs::remove_dir_all(&dir).expect("test fs op");
+    }
 
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("nve-loader-test-{name}-{}", std::process::id()));

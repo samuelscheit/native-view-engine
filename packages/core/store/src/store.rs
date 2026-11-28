@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use nve_abi::table::{MAX_TABLE_SLOTS, TableDesc, Word};
 
@@ -163,7 +164,12 @@ pub struct NodeStore {
     pub(crate) realization: RealizationOrder,
     pub(crate) realization_mask: TableSet,
     pub(crate) frame: u64,
+    /// Process-unique identity of this store (and its [`ResourceStore`], which never leaves it).
+    instance: u64,
 }
+
+/// Source of [`NodeStore::instance_id`]; starts at 1 so 0 means "no store".
+static NEXT_STORE_INSTANCE: AtomicU64 = AtomicU64::new(1);
 
 impl Default for NodeStore {
     fn default() -> Self {
@@ -200,7 +206,16 @@ impl NodeStore {
             realization: RealizationOrder::default(),
             realization_mask: TableSet::EMPTY,
             frame: 0,
+            instance: NEXT_STORE_INSTANCE.fetch_add(1, Ordering::Relaxed),
         }
+    }
+
+    /// Process-unique, never-reused identity of this store and its resource namespace (never 0).
+    /// Unlike its address it changes when a store is replaced in place (`*store =
+    /// NodeStore::new()`), so consumers caching per-store state detect every switch.
+    #[inline]
+    pub fn instance_id(&self) -> u64 {
+        self.instance
     }
 
     /// Creates an empty replica store (no root): every node, including the root, arrives through

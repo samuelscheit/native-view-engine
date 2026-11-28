@@ -204,7 +204,8 @@ fn text_content_and_inherited_typography_reopen_the_pass() {
 fn every_inherited_measure_field_reopens_and_color_stays_skipped() {
     let mut f = Fixture::new();
     let (parent, label) = (f.parent, f.label);
-    let edits: [(&str, fn(&mut Transaction<'_>, NodeId)); 8] = [
+    type Edit = fn(&mut Transaction<'_>, NodeId);
+    let edits: [(&str, Edit); 8] = [
         ("line_height", |tx, p| {
             tx.edit::<Typography>(p).line_height(Length::points(40.0));
         }),

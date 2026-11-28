@@ -12,6 +12,29 @@ use crate::state::{layout_rect_to_abi, PublishedResources, SurfaceState};
 impl SurfaceState {
     /// Clears all borrowed pointers in `published_view` and `published_tables` so an early error,
     /// app detach/swap, or unwind can never expose dangling pointers to `scene_acquire`.
+    /// Discards the committed scene, layout caches and published delta into a new
+    /// `scene_epoch` (the next commit starts from a different or reset store).
+    pub(crate) fn reset_scene_epoch(&mut self) {
+        self.scene_epoch = self.scene_epoch.wrapping_add(1);
+        self.committed_store = 0;
+        self.invalidate_published_view();
+        self.delta.reset();
+        self.scene.reset();
+    }
+
+    /// Called before every layout commit: the scene's caches and the published delta belong to
+    /// the store they were committed from, so another store (switched, or replaced in place at
+    /// the same address) starts a new epoch first.
+    pub(crate) fn adopt_store(&mut self, store: &NodeStore) {
+        let id = store.instance_id();
+        if self.committed_store != id {
+            if self.committed_store != 0 {
+                self.reset_scene_epoch();
+            }
+            self.committed_store = id;
+        }
+    }
+
     pub(crate) fn invalidate_published_view(&mut self) {
         self.published_view = NveSceneView {
             schema_hash: NVE_RUNTIME_SCHEMA_HASH,
@@ -95,10 +118,6 @@ impl SurfaceState {
         laid_out: bool,
     ) {
         let t_pub = Timer::start();
-        if self.epoch_resources != PublishedResources::None && self.epoch_resources != resources {
-            self.scene_epoch = self.scene_epoch.wrapping_add(1);
-        }
-        self.epoch_resources = resources;
         let scene = &self.scene;
         self.delta.record(store, changes, laid_out, |id| {
             scene.layout_of(id).map(layout_rect_to_abi)
