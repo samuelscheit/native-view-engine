@@ -10,7 +10,8 @@ import {
   NVE_EVENT_BATCH_LAYOUT, NVE_EVENT_FLAG_BUTTON_MASK, NVE_EVENT_FLAG_BUTTON_SHIFT, NVE_EVENT_FLAG_CAPTURE,
   NVE_EVENT_FLAG_COMPOSING, NVE_EVENT_FLAG_CUSTOM_NAMED, NVE_EVENT_FLAG_INLINE_KEY_UTF8, NVE_EVENT_FLAG_KEY_SPLIT_BYTES,
   NVE_EVENT_FLAG_MOD_ALT, NVE_EVENT_FLAG_MOD_CTRL, NVE_EVENT_FLAG_MOD_META, NVE_EVENT_FLAG_MOD_REPEAT,
-  NVE_EVENT_FLAG_MOD_SHIFT, NVE_EVENT_FLAG_UTF8_BYTES, NVE_EVENT_INLINE_KEY_CAP, NVE_EVENT_LAYOUT, NVE_EVENT_SIZE,
+  NVE_EVENT_FLAG_MOD_SHIFT, NVE_EVENT_FLAG_NO_BUBBLE, NVE_EVENT_FLAG_UTF8_BYTES, NVE_EVENT_INLINE_KEY_CAP,
+  NVE_EVENT_LAYOUT, NVE_EVENT_SIZE,
   NVE_INTERACTION_EVENT, NVE_LAYOUT_EVENT, NVE_SCROLL_EVENT, NVE_TABLE_CUSTOM, NVE_TABLE_INTERACTION, NVE_TABLE_LAYOUT,
   NVE_TABLE_SCROLL, NVE_TABLE_TEXT_INPUT, NVE_TEXT_INPUT_EVENT, RAW_EVENT_BYTES_LAYOUT,
 } from './generated/nve_abi.generated.ts';
@@ -175,6 +176,7 @@ export class EventView {
   get pointerButton(): number { return (this.flags & NVE_EVENT_FLAG_BUTTON_MASK) >>> NVE_EVENT_FLAG_BUTTON_SHIFT; }
   get isCapture(): boolean { return (this.flags & NVE_EVENT_FLAG_CAPTURE) !== 0; }
   get isComposing(): boolean { return (this.flags & NVE_EVENT_FLAG_COMPOSING) !== 0; }
+  get bubbles(): boolean { return (this.flags & NVE_EVENT_FLAG_NO_BUBBLE) === 0; }
   get isCustom(): boolean { return this.table.equals(NVE_TABLE_CUSTOM) && (this.flags & NVE_EVENT_FLAG_CUSTOM_NAMED) !== 0; }
 
   /** Zero-copy view of this event's companion byte slice in the batch arena. */
@@ -430,10 +432,11 @@ export class EventBatchBuilder {
   pushLayout(surface: number, node: number, timestamp: Key64, x: number, y: number, width: number, height: number): void {
     this.pushTableEvent(NVE_TABLE_LAYOUT, surface, node, timestamp, NVE_LAYOUT_EVENT.LAYOUT, 0, [f32ToBits(x), f32ToBits(y), f32ToBits(width), f32ToBits(height), 0, 0]);
   }
-  pushCustom(surface: number, node: number, timestamp: Key64, name: string, data: Uint8Array = EMPTY_BYTES): void {
+  pushCustom(surface: number, node: number, timestamp: Key64, name: string, data: Uint8Array = EMPTY_BYTES, flags = 0): void {
     requireWellFormed(name);
     const nameBytes = name.length === 0 ? EMPTY_BYTES : UTF8_ENCODER.encode(name);
-    this.pushSealedPair(NVE_TABLE_CUSTOM, surface, node, timestamp, 0, NVE_EVENT_FLAG_CUSTOM_NAMED, [nameBytes.length, 0, 0, 0, 0, 0], nameBytes, data);
+    const f = ((flags & ~INTERNAL_FRAMING_MASK) | NVE_EVENT_FLAG_CUSTOM_NAMED) >>> 0;
+    this.pushSealedPair(NVE_TABLE_CUSTOM, surface, node, timestamp, 0, f, [nameBytes.length, 0, 0, 0, 0, 0], nameBytes, data);
   }
 
   private pushSealedPair(

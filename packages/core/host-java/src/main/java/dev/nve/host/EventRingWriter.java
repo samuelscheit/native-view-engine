@@ -237,6 +237,11 @@ public final class EventRingWriter {
 
     /** Named custom event with opaque {@code data} ({@code null} = none). */
     public EventRingWriter custom(int nodeId, long timestampUs, String name, byte[] data) {
+        return custom(nodeId, timestampUs, name, data, 0);
+    }
+
+    /** Named custom event with opaque {@code data} ({@code null} = none) and caller {@code flags} (e.g. {@code NveAbi.EVENT_FLAG_NO_BUBBLE}). */
+    public EventRingWriter custom(int nodeId, long timestampUs, String name, byte[] data, int flags) {
         final int nameLen = Utf8.encodedLength(name);
         final int dataLen = data == null ? 0 : data.length;
         final long total = (long) nameLen + dataLen;
@@ -244,7 +249,8 @@ public final class EventRingWriter {
         final int off = total == 0 ? 0 : arenaLen;
         if (nameLen > 0) appendUtf8(name, nameLen);
         if (dataLen > 0) appendBytes(data, dataLen);
-        return writeEvent(TABLE_CUSTOM, 0, nodeId, timestampUs, NveAbi.EVENT_FLAG_CUSTOM_NAMED,
+        final int f = (flags & ~INTERNAL_FRAMING_MASK) | NveAbi.EVENT_FLAG_CUSTOM_NAMED;
+        return writeEvent(TABLE_CUSTOM, 0, nodeId, timestampUs, f,
                 nameLen, 0, 0, 0, 0, 0, off, (int) total);
     }
 

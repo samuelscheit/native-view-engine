@@ -168,6 +168,10 @@ public final class EventRingReader {
         return buf.getInt(eventAt(i) + NveAbi.EVENT_OFFSET_FLAGS);
     }
 
+    public boolean bubbles(int i) {
+        return (flags(i) & NveAbi.EVENT_FLAG_NO_BUBBLE) == 0;
+    }
+
     public int payloadU32(int i, int slot) {
         if (slot < 0 || slot >= 6) throw new IndexOutOfBoundsException("payload slot " + slot);
         return buf.getInt(eventAt(i) + NveAbi.EVENT_OFFSET_PAYLOAD + slot * 4);

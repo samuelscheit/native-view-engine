@@ -290,9 +290,10 @@ class HostSession {
   }
 
   /// Dispatches one `nve.custom` named event and pumps.
-  bool dispatch_custom(uint32_t node, std::string_view name, std::span<const uint8_t> data = {}) {
+  bool dispatch_custom(uint32_t node, std::string_view name, std::span<const uint8_t> data = {},
+                       uint32_t flags = 0u) {
     OwnedEvents tmp;
-    if (!tmp.push_custom(events_.surface_id, node, EventFactory::now_us(), name, data)) return false;
+    if (!tmp.push_custom(events_.surface_id, node, EventFactory::now_us(), name, data, flags)) return false;
     return dispatch(tmp);
   }
 

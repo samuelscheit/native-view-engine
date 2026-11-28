@@ -7,6 +7,8 @@ import 'generated/nve_abi_const.generated.dart';
 import 'key64.dart';
 
 const int _modMask = 0x1F;
+const int _internalFramingMask =
+    nveEventFlagUtf8Bytes | nveEventFlagInlineKeyUtf8 | nveEventFlagCustomNamed | nveEventFlagKeySplitBytes;
 
 /// One uniform 64-byte `NveEvent` record with its decoded payload (web- and FFI-safe).
 final class RuntimeEvent {
@@ -43,6 +45,7 @@ final class RuntimeEvent {
     String name, {
     Object? value,
     Uint8List? data,
+    int flags = 0,
     int surfaceId = 0,
     int timestampUs = 0,
     Key64? timestamp,
@@ -53,7 +56,7 @@ final class RuntimeEvent {
           nodeId: nodeId,
           timestampUs: timestampUs,
           timestamp: timestamp,
-          flags: nveEventFlagCustomNamed,
+          flags: (flags & ~_internalFramingMask) | nveEventFlagCustomNamed,
           name: name,
           data: data,
           value: value,
@@ -305,4 +308,5 @@ final class RuntimeEvent {
   int get pointerButton => (flags & nveEventFlagButtonMask) >>> nveEventFlagButtonShift;
   bool get isCapture => (flags & nveEventFlagCapture) != 0;
   bool get isComposing => (flags & nveEventFlagComposing) != 0;
+  bool get bubbles => (flags & nveEventFlagNoBubble) == 0;
 }
