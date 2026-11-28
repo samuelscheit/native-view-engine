@@ -275,7 +275,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     /// Effective non-identity 2D transform of `node` including any in-flight animated override.
     #[inline]
     pub fn effective_transform(&self, store: &NodeStore, node: NodeId) -> Option<Transform2D> {
-        let base = self.layout_tree.scene().effective_transform(store, node);
+        let base = self.layout_tree.effective_transform(store, node);
         self.frame_hooks
             .resolve_transform(node, base)
             .filter(|tf| !tf.is_identity())
@@ -287,8 +287,9 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         self.advance_animations_tracking(store, dt_s, None).0
     }
 
-    /// Like [`Self::advance_animations`], optionally recording nodes whose transform/bounds may
-    /// have changed into `transform_dirty` and returning `(still_animating, needs_full_sync)`.
+    /// Like [`Self::advance_animations`], optionally recording deduplicated nodes whose effective
+    /// transform changed (including settling back to [`Transform2D::IDENTITY`]) into
+    /// `transform_dirty` and returning `(still_animating, needs_full_sync)`.
     pub fn advance_animations_tracking(
         &mut self,
         store: &NodeStore,
@@ -312,9 +313,12 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
                 if !composite_dirty.is_empty() {
                     if let Some(out) = transform_dirty {
                         for &id in &composite_dirty {
-                            if self.effective_transform(store, id).is_some()
-                                || store.has::<nve_tables::tables::Transform>(id)
-                            {
+                            let prev_tf = self
+                                .scene
+                                .transform_for_node(id)
+                                .and_then(|n| n.has_transform().then_some(n.local_transform));
+                            let next_tf = self.effective_transform(store, id);
+                            if prev_tf != next_tf && !out.contains(&id) {
                                 out.push(id);
                             }
                         }

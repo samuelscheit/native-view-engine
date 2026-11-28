@@ -155,7 +155,7 @@ pub(crate) fn build_a11y_node(
     let has_sticky = sx_delta != 0.0 || sy_delta != 0.0;
     let has_scroll_shift = is_scroll && (shift_x != 0.0 || shift_y != 0.0);
     let node_affine = geo
-        .node_affine(id)
+        .node_affine(store, id)
         .filter(|tf| tf.as_coeffs().iter().all(|c| c.is_finite()));
     if has_scale || has_sticky || has_scroll_shift || node_affine.is_some() {
         let mut tf = Affine::IDENTITY;

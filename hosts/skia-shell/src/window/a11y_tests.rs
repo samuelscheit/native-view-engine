@@ -546,8 +546,10 @@ fn display_contents_subtree_and_virtualized_sticky_coords_match_skia_visual_rect
 fn real_desktop_session_scroll_typing_ime_drag_and_animation_sync_in_o1() {
     struct StepTransformHook {
         target: NodeId,
+        steps: Vec<(f32, f32)>,
+        cursor: usize,
         tx: f32,
-        remaining: u8,
+        opacity: f32,
     }
     impl SkiaFrameHook for StepTransformHook {
         fn register_tables(&self) {}
@@ -560,11 +562,12 @@ fn real_desktop_session_scroll_typing_ime_drag_and_animation_sync_in_o1() {
         }
         fn sync_nodes(&mut self, _: &NodeStore, _: &[NodeId], _: nve_backend_skia::TargetsOf<'_>) {}
         fn advance(&mut self, _: f32) -> bool {
-            if self.remaining == 0 {
+            let Some(&(next_tx, next_opacity)) = self.steps.get(self.cursor) else {
                 return false;
-            }
-            self.remaining -= 1;
-            self.tx += 12.0;
+            };
+            self.cursor += 1;
+            self.tx = next_tx;
+            self.opacity = next_opacity;
             true
         }
         fn advance_collecting(
@@ -581,10 +584,15 @@ fn real_desktop_session_scroll_typing_ime_drag_and_animation_sync_in_o1() {
             }
         }
         fn needs_next_frame(&self) -> bool {
-            self.remaining > 0
+            self.cursor < self.steps.len()
         }
         fn set_reduced_motion(&mut self, _: bool) -> bool {
             false
+        }
+        fn apply_visual(&self, node: NodeId, style: &mut nve_tables::snapshots::VisualSnapshot) {
+            if node == self.target {
+                style.opacity = self.opacity;
+            }
         }
         fn resolve_transform(&self, node: NodeId, target: Option<Transform2D>) -> Option<Transform2D> {
             if node == self.target && self.tx != 0.0 {
@@ -654,8 +662,10 @@ fn real_desktop_session_scroll_typing_ime_drag_and_animation_sync_in_o1() {
     );
     session.replica.backend_mut().register_frame_hook(StepTransformHook {
         target: anim_id,
+        steps: vec![(12.0, 1.0), (0.0, 1.0), (0.0, 0.5)],
+        cursor: 0,
         tx: 0.0,
-        remaining: 1,
+        opacity: 1.0,
     });
     session.render_and_rasterize().expect("render");
     let mut bridge = AccessKitTreeBridge::new();
@@ -720,7 +730,7 @@ fn real_desktop_session_scroll_typing_ime_drag_and_animation_sync_in_o1() {
     assert_ne!(sel.anchor.character_index, sel.focus.character_index);
     session.handle_pointer_up_logical();
 
-    // 4. Real transform animation tick -> marks dirty & updates AccessKit transform in O(1)!
+    // 4a. Real transform animation tick -> marks dirty & updates AccessKit transform in O(1)!
     let _ = session.tick_animations();
     assert!(session.has_pending_a11y_dirty());
     let anim_upd = session
@@ -733,6 +743,24 @@ fn real_desktop_session_scroll_typing_ime_drag_and_animation_sync_in_o1() {
         anim_upd.nodes[0].1.transform(),
         Some(&Affine::translate((12.0, 0.0)))
     );
+
+    // 4b. Settling frame returning to Transform2D::IDENTITY on a node without a static Transform
+    // row MUST emit an O(1) update clearing AccessKit `transform()` to `None`!
+    let _ = session.tick_animations();
+    assert!(session.has_pending_a11y_dirty());
+    let settle_upd = session
+        .sync_a11y_incremental(&mut bridge, "Perf", false)
+        .expect("settling to identity must emit AccessKit update");
+    assert!(bridge.last_sync_nodes_built() <= 2);
+    assert_eq!(settle_upd.nodes.len(), 1);
+    assert_eq!(settle_upd.nodes[0].0, bridge.encode_store_node_id(anim_id));
+    assert_eq!(settle_upd.nodes[0].1.transform(), None);
+
+    // 4c. Pure opacity-only animation step MUST NOT mark a11y dirty or emit an update!
+    let _ = session.tick_animations();
+    assert!(!session.has_pending_a11y_dirty());
+    assert!(session.sync_a11y_incremental(&mut bridge, "Perf", false).is_none());
+    assert_eq!(bridge.last_sync_nodes_built(), 0);
 }
 
 #[test]
@@ -971,4 +999,302 @@ fn accesskit_action_dispatch_enforces_visibility_focusable_target_scroll_and_no_
     assert_eq!(emitted.len(), 1);
     assert_eq!(emitted[0].0, scroll_id);
     assert!(emitted[0].2 > 100.0);
+}
+
+#[test]
+fn inactive_bridge_keeps_a11y_dirty_nodes_bounded_and_cleared_across_120_plus_frames() {
+    struct ContinuousTransformHook {
+        target: NodeId,
+        tick: u32,
+    }
+    impl SkiaFrameHook for ContinuousTransformHook {
+        fn register_tables(&self) {}
+        fn after_commit(&mut self, _: &NodeStore, _: &ChangeSet, _: nve_backend_skia::TargetsOf<'_>) {}
+        fn sync_nodes(&mut self, _: &NodeStore, _: &[NodeId], _: nve_backend_skia::TargetsOf<'_>) {}
+        fn advance(&mut self, _: f32) -> bool {
+            self.tick = self.tick.wrapping_add(1);
+            true
+        }
+        fn advance_collecting(
+            &mut self,
+            dt_s: f32,
+            composite_dirty: &mut Vec<NodeId>,
+            _: &mut Vec<NodeId>,
+        ) -> bool {
+            self.advance(dt_s);
+            composite_dirty.push(self.target);
+            true
+        }
+        fn needs_next_frame(&self) -> bool {
+            true
+        }
+        fn set_reduced_motion(&mut self, _: bool) -> bool {
+            false
+        }
+        fn resolve_transform(&self, node: NodeId, target: Option<Transform2D>) -> Option<Transform2D> {
+            if node == self.target {
+                let mut t = target.unwrap_or_default();
+                t.translate_x = (self.tick % 64) as f32 + 1.0;
+                Some(t)
+            } else {
+                target
+            }
+        }
+        fn reset(&mut self) {}
+    }
+
+    register_core_tables();
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let (input_id, anim_id) = {
+        let mut tx = store.tx();
+        tx.edit::<Layout>(NodeId::ROOT)
+            .width(Length::points(320.0))
+            .height(Length::points(260.0))
+            .flex_direction(FlexDirection::Column);
+        let input = tx.create();
+        tx.edit::<Layout>(input)
+            .width(Length::points(240.0))
+            .height(Length::points(32.0))
+            .flex_shrink(0.0);
+        tx.edit::<TextInput>(input).value("hello world");
+
+        let anim = tx.create();
+        tx.edit::<Layout>(anim)
+            .width(Length::points(100.0))
+            .height(Length::points(24.0))
+            .flex_shrink(0.0);
+        tx.edit::<Accessibility>(anim).role(Some(AriaRole::Button)).label("Spinner");
+
+        let scroll = tx.create();
+        tx.edit::<Layout>(scroll)
+            .width(Length::points(300.0))
+            .height(Length::points(140.0))
+            .flex_direction(FlexDirection::Column)
+            .flex_shrink(0.0);
+        tx.edit::<Scroll>(scroll).axes(ScrollAxes::Vertical);
+        tx.edit::<Visual>(scroll).overflow_y(Overflow::Scroll);
+        let mut rows = Vec::new();
+        for i in 0..20u32 {
+            let r = tx.create();
+            tx.edit::<Layout>(r)
+                .width(Length::points(280.0))
+                .height(Length::points(24.0))
+                .flex_shrink(0.0);
+            tx.edit::<TextContent>(r).text(&format!("Line {i}"));
+            rows.push(r);
+        }
+        tx.set_children(scroll, &rows);
+        tx.set_children(NodeId::ROOT, &[input, anim, scroll]);
+        tx.commit_into(&mut changes);
+        (input, anim)
+    };
+
+    let mut session = DesktopSession::new(
+        RecordingApp::from_store(&store),
+        SurfaceId::ROOT,
+        Viewport { width: 320.0, height: 260.0, scale_factor: 1.0 },
+        ColorRgba::BLACK,
+        false,
+    );
+    session.replica.backend_mut().register_frame_hook(ContinuousTransformHook {
+        target: anim_id,
+        tick: 0,
+    });
+    session.render_and_rasterize().expect("render");
+    let mut inactive_bridge = AccessKitTreeBridge::new();
+    assert!(!inactive_bridge.is_active());
+
+    // 1. Even without syncing, continuous transform ticks deduplicate `a11y_dirty_nodes`.
+    for _ in 0..140 {
+        assert!(session.tick_animations());
+    }
+    assert_eq!(session.a11y_dirty_nodes_len(), 1);
+
+    // 2. Inactive sync clears pending dirty nodes & flags immediately across 140 mixed frames.
+    assert!(session.sync_a11y_incremental(&mut inactive_bridge, "Inactive", false).is_none());
+    assert_eq!(session.a11y_dirty_nodes_len(), 0);
+    assert!(!session.has_pending_a11y_dirty());
+
+    assert!(session.focus_node(Some(input_id)).unwrap());
+    for frame in 0..140u32 {
+        assert!(session.tick_animations());
+        let dy = if frame % 2 == 0 { 8.0 } else { -8.0 };
+        let _ = session.handle_scroll_logical(60.0, 120.0, 0.0, dy).unwrap();
+        let _ = session
+            .handle_keyboard_input(&Key::Character("a".into()), Some("a"), ModifiersState::empty())
+            .unwrap();
+        let _ = session.handle_ime(&Ime::Preedit("x".into(), Some((0, 1)))).unwrap();
+        let _ = session.handle_ime(&Ime::Commit("x".into())).unwrap();
+        let _ = session
+            .handle_pointer_down_logical(4.0, 16.0, 0, ModifiersState::empty())
+            .unwrap();
+        let _ = session.handle_pointer_move_logical(64.0, 16.0).unwrap();
+        session.handle_pointer_up_logical();
+
+        assert!(session.sync_a11y_incremental(&mut inactive_bridge, "Inactive", false).is_none());
+        assert_eq!(
+            session.a11y_dirty_nodes_len(),
+            0,
+            "inactive bridge must drain a11y_dirty_nodes every frame (frame {frame})"
+        );
+        assert!(!session.has_pending_a11y_dirty());
+    }
+
+    // 3. `tick_animations_for_a11y(false)` skips dirty tracking completely while inactive.
+    for _ in 0..140 {
+        assert!(session.tick_animations_for_a11y(false));
+        assert_eq!(session.a11y_dirty_nodes_len(), 0);
+        assert!(!session.has_pending_a11y_dirty());
+    }
+}
+
+#[test]
+fn hover_wire_frame_during_cursor_moved_and_leave_syncs_accesskit() {
+    struct HoverTooltipApp {
+        store: NodeStore,
+        changes: ChangeSet,
+        encoder: WireEncoder,
+        frame_buf: Vec<u8>,
+        trigger_id: NodeId,
+        tooltip_id: NodeId,
+        generation: u64,
+    }
+    impl HoverTooltipApp {
+        fn new() -> Self {
+            register_core_tables();
+            let mut store = NodeStore::new();
+            let mut changes = ChangeSet::default();
+            let (trigger_id, tooltip_id) = {
+                let mut tx = store.tx();
+                tx.edit::<Layout>(NodeId::ROOT)
+                    .width(Length::points(320.0))
+                    .height(Length::points(200.0))
+                    .flex_direction(FlexDirection::Column);
+                let trigger = tx.create();
+                tx.edit::<Layout>(trigger)
+                    .width(Length::points(120.0))
+                    .height(Length::points(40.0))
+                    .flex_shrink(0.0);
+                tx.edit::<Accessibility>(trigger)
+                    .role(Some(AriaRole::Button))
+                    .label("Info");
+                tx.edit::<Interaction>(trigger)
+                    .listen(InteractionEvent::PointerEnter)
+                    .listen(InteractionEvent::PointerLeave);
+
+                let tip = tx.create();
+                tx.edit::<Layout>(tip)
+                    .display(Display::None)
+                    .width(Length::points(160.0))
+                    .height(Length::points(28.0))
+                    .flex_shrink(0.0);
+                tx.edit::<Accessibility>(tip)
+                    .role(Some(AriaRole::Tooltip))
+                    .label("Helpful hover tip");
+
+                tx.set_children(NodeId::ROOT, &[trigger, tip]);
+                tx.commit_into(&mut changes);
+                (trigger, tip)
+            };
+            let mut encoder = WireEncoder::default();
+            let mut frame_buf = Vec::new();
+            encoder.encode_full(&store, &mut frame_buf);
+            Self {
+                store,
+                changes,
+                encoder,
+                frame_buf,
+                trigger_id,
+                tooltip_id,
+                generation: 1,
+            }
+        }
+    }
+    impl DesktopApp for HoverTooltipApp {
+        fn render(&mut self, _: FrameId) -> &[u8] {
+            &self.frame_buf
+        }
+        fn dispatch_events(&mut self, batch: ValidatedEvents<'_>) -> bool {
+            let mut changed = false;
+            for ev in batch.iter() {
+                if ev.node() != self.trigger_id {
+                    continue;
+                }
+                let next_display = match ev.interaction() {
+                    Some(InteractionEvent::PointerEnter) => Some(Display::Flex),
+                    Some(InteractionEvent::PointerLeave) => Some(Display::None),
+                    _ => None,
+                };
+                if let Some(display) = next_display {
+                    let mut tx = self.store.tx();
+                    tx.edit::<Layout>(self.tooltip_id).display(display);
+                    tx.commit_into(&mut self.changes);
+                    self.frame_buf.clear();
+                    self.encoder
+                        .encode(&self.store, &self.changes, &mut self.frame_buf);
+                    changed = true;
+                }
+            }
+            changed
+        }
+        fn apply_hot_patch(&mut self, _: &[u8]) -> bool {
+            false
+        }
+        fn reload(&mut self, _: &std::path::Path, _: SurfaceId) -> Result<u64, DesktopHostError> {
+            self.generation += 1;
+            Ok(self.generation)
+        }
+        fn generation(&self) -> u64 {
+            self.generation
+        }
+    }
+
+    let app = HoverTooltipApp::new();
+    let tooltip_id = app.tooltip_id;
+    let mut session = DesktopSession::new(
+        app,
+        SurfaceId::ROOT,
+        Viewport { width: 320.0, height: 200.0, scale_factor: 1.0 },
+        ColorRgba::BLACK,
+        false,
+    );
+    session.render_and_rasterize().expect("initial render");
+
+    let mut bridge = AccessKitTreeBridge::new();
+    bridge.activate();
+    let full = session.build_a11y_full_tree(&mut bridge, "Hover Demo");
+    let initial_map: HashMap<_, _> = full.nodes.into_iter().collect();
+    assert!(!initial_map.contains_key(&bridge.encode_store_node_id(tooltip_id)));
+    assert!(!session.has_pending_a11y_dirty());
+
+    // Hovering onto trigger renders a synchronous wire frame showing the tooltip.
+    assert!(session.handle_pointer_move_logical(40.0, 20.0).unwrap());
+    assert!(
+        session.has_pending_a11y_dirty(),
+        "hover wire frame during CursorMoved must mark pending a11y dirty"
+    );
+    let show_upd = session
+        .sync_a11y_incremental(&mut bridge, "Hover Demo", false)
+        .expect("tooltip reveal must sync to AccessKit");
+    let show_map: HashMap<_, _> = show_upd.nodes.into_iter().collect();
+    let tip = show_map
+        .get(&bridge.encode_store_node_id(tooltip_id))
+        .expect("tooltip node emitted");
+    assert_eq!(tip.role(), Role::Tooltip);
+    assert_eq!(tip.label(), Some("Helpful hover tip"));
+    assert!(!session.has_pending_a11y_dirty());
+
+    // Leaving window/trigger hides the tooltip and marks pending a11y dirty again.
+    assert!(session.handle_pointer_leave());
+    assert!(session.has_pending_a11y_dirty());
+    let hide_upd = session
+        .sync_a11y_incremental(&mut bridge, "Hover Demo", false)
+        .expect("tooltip hide must sync to AccessKit");
+    let hide_map: HashMap<_, _> = hide_upd.nodes.into_iter().collect();
+    let root = hide_map
+        .get(&bridge.encode_store_node_id(NodeId::ROOT))
+        .expect("root children updated");
+    assert!(!root.children().contains(&bridge.encode_store_node_id(tooltip_id)));
+    assert!(!session.has_pending_a11y_dirty());
 }

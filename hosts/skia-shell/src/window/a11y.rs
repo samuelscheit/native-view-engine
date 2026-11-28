@@ -6,8 +6,8 @@ use std::borrow::Cow;
 use accesskit::{Affine, TreeUpdate};
 use nve_abi::{EventBatchBuf, NodeId, TimestampUs};
 use nve_accessibility::{
-    char_index_to_byte_offset, A11yAction, A11yGeometryProvider, AccessKitTreeBridge,
-    ResolvedA11yAction,
+    char_index_to_byte_offset, transform_2d_to_affine, A11yAction, A11yGeometryProvider,
+    AccessKitTreeBridge, ResolvedA11yAction,
 };
 use nve_engine::LayoutRect;
 use nve_store::{ChangeSet, NodeStore};
@@ -114,18 +114,10 @@ impl A11yGeometryProvider for SkiaA11yGeometry<'_> {
     }
 
     #[inline]
-    fn node_affine(&self, id: NodeId) -> Option<Affine> {
-        let tf = self.backend.effective_transform(self.store, id)?;
+    fn node_affine(&self, store: &NodeStore, id: NodeId) -> Option<Affine> {
+        let tf = self.backend.effective_transform(store, id)?;
         let r = self.backend.layout_tree().layout_of(id)?;
-        let m = tf.to_surface_matrix_2d(r.x, r.y, r.width, r.height);
-        Some(Affine::new([
-            f64::from(m[0]),
-            f64::from(m[1]),
-            f64::from(m[2]),
-            f64::from(m[3]),
-            f64::from(m[4]),
-            f64::from(m[5]),
-        ]))
+        Some(transform_2d_to_affine(tf, r))
     }
 
     #[inline]
@@ -149,22 +141,22 @@ impl A11yGeometryProvider for SkiaA11yGeometry<'_> {
     }
 
     #[inline]
-    fn is_display_none(&self, id: NodeId) -> bool {
+    fn is_display_none(&self, store: &NodeStore, id: NodeId) -> bool {
         if id == NodeId::ROOT {
             return false;
         }
-        if self.backend.is_node_display_none_effective(self.store, id) {
+        if self.backend.is_node_display_none_effective(store, id) {
             return true;
         }
-        if self.backend.is_node_display_contents_effective(self.store, id) {
+        if self.backend.is_node_display_contents_effective(store, id) {
             return false;
         }
         self.root_has_layout && self.backend.layout_tree().layout_of(id).is_none()
     }
 
     #[inline]
-    fn is_display_contents(&self, id: NodeId) -> bool {
-        self.backend.is_node_display_contents_effective(self.store, id)
+    fn is_display_contents(&self, store: &NodeStore, id: NodeId) -> bool {
+        self.backend.is_node_display_contents_effective(store, id)
     }
 }
 
@@ -178,7 +170,15 @@ impl<A: DesktopApp> DesktopSession<A> {
 
     #[inline]
     pub(crate) fn has_pending_a11y_dirty(&self) -> bool {
-        self.a11y_needs_full_sync || !self.a11y_dirty_nodes.is_empty()
+        self.a11y_needs_full_sync
+            || !self.a11y_dirty_nodes.is_empty()
+            || self.replica.last_changes().frame != self.a11y_synced_wire_frame
+    }
+
+    #[cfg(test)]
+    #[inline]
+    pub(crate) fn a11y_dirty_nodes_len(&self) -> usize {
+        self.a11y_dirty_nodes.len()
     }
 
     /// Builds a complete AccessKit [`TreeUpdate`] for the current replica store and records the
@@ -208,13 +208,14 @@ impl<A: DesktopApp> DesktopSession<A> {
         window_title: &str,
         force_geometry_or_scroll: bool,
     ) -> Option<TreeUpdate> {
-        let mut dirty = std::mem::take(&mut self.a11y_dirty_nodes);
-        let force = force_geometry_or_scroll || std::mem::take(&mut self.a11y_needs_full_sync);
         if !bridge.is_active() {
-            dirty.clear();
-            self.a11y_dirty_nodes = dirty;
+            self.a11y_dirty_nodes.clear();
+            self.a11y_needs_full_sync = false;
+            self.a11y_synced_wire_frame = self.replica.last_changes().frame;
             return None;
         }
+        let mut dirty = std::mem::take(&mut self.a11y_dirty_nodes);
+        let force = force_geometry_or_scroll || std::mem::take(&mut self.a11y_needs_full_sync);
         let empty = ChangeSet::default();
         let last_changes = self.replica.last_changes();
         let has_fresh_wire = last_changes.frame != self.a11y_synced_wire_frame;
@@ -492,9 +493,6 @@ impl<A: DesktopApp> SurfaceWindow<A> {
             self.a11y_synced_store_gen = cur_gen;
             self.a11y_bridge.advance_epoch();
         }
-        if !self.a11y_bridge.is_active() {
-            return;
-        }
         if let Some(update) = self.session.sync_a11y_incremental(
             &mut self.a11y_bridge,
             &self.base_title,
@@ -523,6 +521,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             accesskit_winit::WindowEvent::AccessibilityDeactivated => {
                 if let Some(sw) = self.windows.get_mut(&window_id) {
                     sw.a11y_bridge.deactivate();
+                    sw.sync_a11y_state(false);
                 }
             }
             accesskit_winit::WindowEvent::ActionRequested(req) => {

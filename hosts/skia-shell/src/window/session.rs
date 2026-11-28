@@ -450,9 +450,10 @@ impl<A: DesktopApp> DesktopSession<A> {
         Ok(())
     }
 
-    /// Advances frame-hook animations by the wall-clock time since the previous tick (clamped to
-    /// 100 ms) and re-rasterizes; returns whether another frame must be scheduled.
-    pub fn tick_animations(&mut self) -> bool {
+    /// Advances frame-hook animations by wall-clock delta (clamped to 100 ms) and re-rasterizes.
+    #[cfg(test)] pub fn tick_animations(&mut self) -> bool { self.tick_animations_for_a11y(true) }
+
+    pub(crate) fn tick_animations_for_a11y(&mut self, track_a11y: bool) -> bool {
         if !self.replica.backend().needs_next_frame() {
             self.last_animation_tick = None;
             return false;
@@ -463,9 +464,12 @@ impl<A: DesktopApp> DesktopSession<A> {
             .replace(now)
             .map_or(0.0, |prev| now.duration_since(prev).as_secs_f32().min(0.1));
         let (store, backend) = self.replica.store_and_backend_mut();
-        let (animating, needs_full) =
-            backend.advance_animations_tracking(store, dt_s, Some(&mut self.a11y_dirty_nodes));
-        if needs_full {
+        let (animating, needs_full) = backend.advance_animations_tracking(
+            store,
+            dt_s,
+            track_a11y.then_some(&mut self.a11y_dirty_nodes),
+        );
+        if track_a11y && needs_full {
             self.a11y_needs_full_sync = true;
         }
         self.rasterize_current();
