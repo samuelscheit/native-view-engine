@@ -83,7 +83,7 @@ void paint_input(QPainter& p, const QRectF& box, const QuickNodeView& v, bool fo
   const QRectF content = v.paint.content_box.translated(box.topLeft());
   QtTextStyle style = v.paint.style;
   // Text areas wrap like a browser's (`overflow-wrap: break-word`); single-line fields never.
-  style.wrap = in.multiline ? host::TextWrap::WordOrAnywhere : host::TextWrap::None;
+  style.wrap = in.multiline ? host::TextWrap::BreakWord : host::TextWrap::None;
   style.max_lines = in.multiline ? 0 : 1;
   const QString shown = in.secure ? QString(in.edit.size(), QChar(0x2022)) : in.edit;
   const int caret = std::clamp(in.caret, 0, static_cast<int>(shown.size()));

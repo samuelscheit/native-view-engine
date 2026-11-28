@@ -331,20 +331,52 @@ int main() {
       CHECK(near(sv.documentView.frame.size.height, 300.0));
     }
 
-    // 7a. `max_width == 0` measures min-content: the widest word, wrapped onto more lines.
+    // 7a. CSS Text 3 min-content parity across `Word`, `BreakWord`, `Anywhere`, `BreakAll`, and
+    //     `None` (`white-space: nowrap | pre` never collapses to single words).
     {
-      NveRuntimeTextStyle style{};
-      style.font_size = 14.0f;
-      style.font_weight = 400u;
-      const std::string_view sentence = "a considerably long sentence";
-      const NveStrSlice s{reinterpret_cast<const uint8_t *>(sentence.data()), sentence.size()};
-      float lw = 0.0f, lh = 0.0f, mw = 0.0f, mh = 0.0f, ww = 0.0f, wh = 0.0f;
-      nve::apple::native_text_measure(nullptr, s, &style, INFINITY, &lw, &lh);
-      nve::apple::native_text_measure(nullptr, s, &style, 0.0f, &mw, &mh);
-      const std::string_view word = "considerably";
-      nve::apple::native_text_measure(nullptr, NveStrSlice{reinterpret_cast<const uint8_t *>(word.data()), word.size()},
-                                      &style, INFINITY, &ww, &wh);
-      CHECK(mw > 0.0f && mw < lw && mh > lh && std::fabs(mw - ww) <= 1.0f);
+      NveRuntimeTextStyle base{};
+      base.font_size = 14.0f;
+      base.font_weight = 400u;
+      const auto measure = [](std::string_view sv, const NveRuntimeTextStyle &st, float max_w) {
+        float w = 0.0f, h = 0.0f;
+        nve::apple::native_text_measure(nullptr, NveStrSlice{reinterpret_cast<const uint8_t *>(sv.data()), sv.size()},
+                                        &st, max_w, &w, &h);
+        return std::pair{w, h};
+      };
+      constexpr std::string_view kPhrase = "considerably long";
+      const auto [lw, lh] = measure(kPhrase, base, INFINITY);
+      const auto [ww, wh] = measure("considerably", base, INFINITY);
+      const auto [mw_word, mh_word] = measure(kPhrase, base, 0.0f);
+      CHECK(mw_word > 0.0f && mw_word < lw && mh_word > lh && std::fabs(mw_word - ww) <= 1.0f);
+
+      NveRuntimeTextStyle break_word = base;
+      break_word.overflow_wrap = NVE_OVERFLOW_WRAP_BREAK_WORD;
+      const auto [mw_bw, mh_bw] = measure(kPhrase, break_word, 0.0f);
+      CHECK(std::fabs(mw_bw - ww) <= 1.0f && mh_bw > lh);
+
+      NveRuntimeTextStyle anywhere = base;
+      anywhere.overflow_wrap = NVE_OVERFLOW_WRAP_ANYWHERE;
+      const auto [mw_any, mh_any] = measure(kPhrase, anywhere, 0.0f);
+      CHECK(mw_any > 0.0f && mw_any < ww && mh_any > mh_word);
+
+      NveRuntimeTextStyle wb_word = base;
+      wb_word.word_break = NVE_WORD_BREAK_BREAK_WORD;
+      const auto [mw_wbw, mh_wbw] = measure(kPhrase, wb_word, 0.0f);
+      CHECK(mw_wbw > 0.0f && mw_wbw < ww && mh_wbw > mh_word);
+
+      NveRuntimeTextStyle break_all = base;
+      break_all.word_break = NVE_WORD_BREAK_BREAK_ALL;
+      const auto [mw_ba, mh_ba] = measure(kPhrase, break_all, 0.0f);
+      CHECK(mw_ba > 0.0f && mw_ba < ww && mh_ba > mh_word);
+
+      for (const uint8_t ws : {uint8_t{NVE_WHITE_SPACE_NO_WRAP}, uint8_t{NVE_WHITE_SPACE_PRE}}) {
+        NveRuntimeTextStyle nw = base;
+        nw.white_space = ws;
+        const auto [nw0, nh0] = measure(kPhrase, nw, 0.0f);
+        const auto [nw40, nh40] = measure(kPhrase, nw, 40.0f);
+        CHECK(near(nw0, lw) && near(nh0, lh) && near(nw40, lw) && near(nh40, lh));
+      }
+      (void)wh;
     }
 
     // 7b. Inherited typography cascades through dirty non-typography children to a recycled

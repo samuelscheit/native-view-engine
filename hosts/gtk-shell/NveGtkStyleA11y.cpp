@@ -251,8 +251,9 @@ std::string font_family_css(std::string_view authored) {
 
 PangoWrapMode pango_wrap(host::TextWrap wrap) noexcept {
   switch (wrap) {
-    case host::TextWrap::Anywhere: return PANGO_WRAP_CHAR;
-    case host::TextWrap::WordOrAnywhere: return PANGO_WRAP_WORD_CHAR;
+    case host::TextWrap::BreakAll: return PANGO_WRAP_CHAR;
+    case host::TextWrap::BreakWord:
+    case host::TextWrap::Anywhere: return PANGO_WRAP_WORD_CHAR;
     case host::TextWrap::None:
     case host::TextWrap::Word: break;
   }

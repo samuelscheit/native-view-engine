@@ -110,6 +110,28 @@ void test_directwrite_measurer() {
   NVE_CHECK(m.measure(sentence, nowrap, 60.0f).height == one_line.height);
   const NveIntrinsicSize min_content = m.measure(sentence, base, 0.0f);
   NVE_CHECK(min_content.width > 0.0f && min_content.width < one_line.width && min_content.height > one_line.height);
+  // CSS Text 3 min-content parity across `Word`, `BreakWord`, `Anywhere`, `BreakAll`, and `None`.
+  constexpr std::string_view kPhrase = "considerably long";
+  const float full_w = m.measure(kPhrase, base, kInf).width;
+  const float word_w = m.measure("considerably", base, kInf).width;
+  const NveIntrinsicSize mc_word = m.measure(kPhrase, base, 0.0f);
+  NveRuntimeTextStyle break_word = base;
+  break_word.overflow_wrap = NVE_OVERFLOW_WRAP_BREAK_WORD;
+  const NveIntrinsicSize mc_break_word = m.measure(kPhrase, break_word, 0.0f);
+  NveRuntimeTextStyle anywhere = base;
+  anywhere.overflow_wrap = NVE_OVERFLOW_WRAP_ANYWHERE;
+  const NveIntrinsicSize mc_anywhere = m.measure(kPhrase, anywhere, 0.0f);
+  NveRuntimeTextStyle break_all = base;
+  break_all.word_break = NVE_WORD_BREAK_BREAK_ALL;
+  const NveIntrinsicSize mc_break_all = m.measure(kPhrase, break_all, 0.0f);
+  NveRuntimeTextStyle pre = base;
+  pre.white_space = NVE_WHITE_SPACE_PRE;
+  NVE_CHECK(std::fabs(mc_word.width - word_w) <= 1.0f);
+  NVE_CHECK(std::fabs(mc_break_word.width - word_w) <= 1.0f);
+  NVE_CHECK(mc_anywhere.width > 0.0f && mc_anywhere.width < word_w);
+  NVE_CHECK(mc_break_all.width > 0.0f && mc_break_all.width < word_w);
+  NVE_CHECK(std::fabs(m.measure(kPhrase, nowrap, 0.0f).width - full_w) <= 1.0f);
+  NVE_CHECK(std::fabs(m.measure(kPhrase, pre, 0.0f).width - full_w) <= 1.0f);
   NveRuntimeTextStyle tall = base;
   tall.line_height = 250.0f;
   tall.line_height_unit = NVE_LINE_HEIGHT_PERCENT;  // 40pt lines

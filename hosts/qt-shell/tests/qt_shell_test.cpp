@@ -188,6 +188,35 @@ void test_measurer_typography_matches_paint() {
   NVE_CHECK(measure_text(sentence, nowrap, 60.0f).height == one_line.height);
   const NveIntrinsicSize min_content = measure_text(sentence, base, 0.0f);  // 0 wraps, it is not "unbounded"
   NVE_CHECK(min_content.width < one_line.width && min_content.height > one_line.height);
+  // CSS Text 3 min-content parity across `Word`, `BreakWord`, `Anywhere`, `BreakAll`, and `None`.
+  constexpr std::string_view kPhrase = "considerably long";
+  const NveIntrinsicSize phrase_full = measure_text(kPhrase, base, kInf);
+  const float word_w = measure_text("considerably", base, kInf).width;
+  const NveIntrinsicSize mc_word = measure_text(kPhrase, base, 0.0f);
+  NveRuntimeTextStyle break_word = base;
+  break_word.overflow_wrap = NVE_OVERFLOW_WRAP_BREAK_WORD;
+  const NveIntrinsicSize mc_break_word = measure_text(kPhrase, break_word, 0.0f);
+  NveRuntimeTextStyle anywhere = base;
+  anywhere.overflow_wrap = NVE_OVERFLOW_WRAP_ANYWHERE;
+  const NveIntrinsicSize mc_anywhere = measure_text(kPhrase, anywhere, 0.0f);
+  NveRuntimeTextStyle word_break_word = base;
+  word_break_word.word_break = NVE_WORD_BREAK_BREAK_WORD;
+  const NveIntrinsicSize mc_wb_word = measure_text(kPhrase, word_break_word, 0.0f);
+  NveRuntimeTextStyle break_all = base;
+  break_all.word_break = NVE_WORD_BREAK_BREAK_ALL;
+  const NveIntrinsicSize mc_break_all = measure_text(kPhrase, break_all, 0.0f);
+  NveRuntimeTextStyle pre = base;
+  pre.white_space = NVE_WHITE_SPACE_PRE;
+  NVE_CHECK(approx(mc_word.width, word_w, 1.0) && mc_word.height > phrase_full.height);
+  NVE_CHECK(approx(mc_break_word.width, word_w, 1.0) && mc_break_word.height > phrase_full.height);
+  NVE_CHECK(measure_text("considerably", break_word, 30.0f).width < word_w);  // paint/layout still emergency-breaks
+  NVE_CHECK(mc_anywhere.width > 0.0f && mc_anywhere.width < word_w);
+  NVE_CHECK(mc_wb_word.width > 0.0f && mc_wb_word.width < word_w);
+  NVE_CHECK(mc_break_all.width > 0.0f && mc_break_all.width < word_w);
+  NVE_CHECK(measure_text(kPhrase, nowrap, 0.0f).width == phrase_full.width &&
+            measure_text(kPhrase, nowrap, 0.0f).height == phrase_full.height);
+  NVE_CHECK(measure_text(kPhrase, pre, 0.0f).width == phrase_full.width &&
+            measure_text(kPhrase, pre, 0.0f).height == phrase_full.height);
   NveRuntimeTextStyle tall = base;
   tall.line_height = 250.0f;
   tall.line_height_unit = NVE_LINE_HEIGHT_PERCENT;  // 40px line boxes

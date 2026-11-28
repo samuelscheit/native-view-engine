@@ -70,21 +70,30 @@ enum class NodeKind : uint8_t { View, Text, Image, TextInput, Scroll, Link };
 }
 
 /// How a line breaker wraps text at the available width, from CSS `white-space`, `word-break`
-/// and `overflow-wrap` (matching the runtime measurer's contract).
+/// and `overflow-wrap` (matching CSS Text 3 and the runtime measurer's contract).
 enum class TextWrap : uint8_t {
-  None,            // `white-space: nowrap | pre`: lines break only at `\n`
-  Word,            // at word boundaries; an over-long word overflows (min-content = longest word)
-  Anywhere,        // `word-break: break-all`: between any two characters
-  WordOrAnywhere,  // `overflow-wrap: anywhere | break-word`, `word-break: break-word`
+  None,       // `white-space: nowrap | pre`: lines break only at `\n`
+  Word,       // at word boundaries; an over-long word overflows (min-content = longest word)
+  BreakWord,  // `overflow-wrap: break-word`: emergency break on overflow (min-content = longest word)
+  Anywhere,   // `overflow-wrap: anywhere` / `word-break: break-word`: emergency break (min-content = 1 cluster)
+  BreakAll,   // `word-break: break-all`: between any two characters (paint & min-content)
 };
 
 [[nodiscard]] constexpr TextWrap text_wrap(uint32_t white_space, uint32_t word_break, uint32_t overflow_wrap) noexcept {
   if (white_space == NVE_WHITE_SPACE_NO_WRAP || white_space == NVE_WHITE_SPACE_PRE) return TextWrap::None;
-  if (word_break == NVE_WORD_BREAK_BREAK_ALL) return TextWrap::Anywhere;
-  if (word_break == NVE_WORD_BREAK_BREAK_WORD || overflow_wrap != NVE_OVERFLOW_WRAP_NORMAL) {
-    return TextWrap::WordOrAnywhere;
+  if (word_break == NVE_WORD_BREAK_BREAK_ALL) return TextWrap::BreakAll;
+  if (word_break == NVE_WORD_BREAK_BREAK_WORD || overflow_wrap == NVE_OVERFLOW_WRAP_ANYWHERE) {
+    return TextWrap::Anywhere;
   }
+  if (overflow_wrap == NVE_OVERFLOW_WRAP_BREAK_WORD) return TextWrap::BreakWord;
   return TextWrap::Word;
+}
+
+/// Effective wrap mode for a `max_width == 0` min-content probe (CSS Text 3 §5.5): soft wrap
+/// opportunities from `overflow-wrap: break-word` do not shrink min-content (longest word, like
+/// `Word`), whereas `Anywhere` and `BreakAll` allow breaking within words.
+[[nodiscard]] constexpr TextWrap min_content_wrap(TextWrap wrap) noexcept {
+  return wrap == TextWrap::BreakWord ? TextWrap::Word : wrap;
 }
 
 /// Fully resolved (inherited) text style.

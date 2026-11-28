@@ -1,5 +1,7 @@
 #import "NveAppleSupport.h"
 
+#include <nve/host/scene_nodes.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -62,17 +64,40 @@ void native_text_measure(void *ctx, NveStrSlice text, const NveRuntimeTextStyle 
   @autoreleasepool {
     NSString *str = [[NSString alloc] initWithBytes:text.ptr length:text.len encoding:NSUTF8StringEncoding];
     if (str == nil) return;
+    const host::TextWrap wrap = host::text_wrap(style->white_space, style->word_break, style->overflow_wrap);
+    const host::TextWrap probe = max_width == 0.0f ? host::min_content_wrap(wrap) : wrap;
+    NSMutableParagraphStyle *para = [[NSMutableParagraphStyle alloc] init];
+    para.lineBreakMode =
+        (probe == host::TextWrap::BreakAll || (max_width == 0.0f && probe == host::TextWrap::Anywhere))
+            ? NSLineBreakByCharWrapping
+            : NSLineBreakByWordWrapping;
     NSDictionary *attrs = @{
-      NSFontAttributeName : platform_font(style->font_size, style->font_weight, style->font_style != NVE_FONT_STYLE_NORMAL)
+      NSFontAttributeName : platform_font(style->font_size, style->font_weight, style->font_style != NVE_FONT_STYLE_NORMAL),
+      NSParagraphStyleAttributeName : para,
     };
-    CGFloat limit = (max_width > 0.0f && std::isfinite(max_width)) ? static_cast<CGFloat>(max_width) : CGFLOAT_MAX;
-    if (max_width == 0.0f) {
-      // Min-content probe: wrap at the widest unbreakable (whitespace-delimited) run.
-      limit = 0.0;
-      for (NSString *word in [str componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]) {
-        if (word.length > 0u) limit = std::max(limit, std::ceil(text_bounds(word, attrs, CGFLOAT_MAX).width));
+    CGFloat limit = CGFLOAT_MAX;
+    if (probe != host::TextWrap::None) {
+      if (max_width == 0.0f) {
+        // Min-content probe (CSS Text 3 §5.5): `Word`/`BreakWord` use the widest word;
+        // `Anywhere`/`BreakAll` use the widest composed character sequence.
+        __block CGFloat widest = 0.0;
+        if (probe == host::TextWrap::Anywhere || probe == host::TextWrap::BreakAll) {
+          [str enumerateSubstringsInRange:NSMakeRange(0u, str.length)
+                                  options:NSStringEnumerationByComposedCharacterSequences
+                               usingBlock:^(NSString *cluster, NSRange, NSRange, BOOL *) {
+                                 if (cluster.length > 0u) {
+                                   widest = std::max(widest, std::ceil(text_bounds(cluster, attrs, CGFLOAT_MAX).width));
+                                 }
+                               }];
+        } else {
+          for (NSString *word in [str componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]) {
+            if (word.length > 0u) widest = std::max(widest, std::ceil(text_bounds(word, attrs, CGFLOAT_MAX).width));
+          }
+        }
+        limit = widest > 0.0 ? widest : CGFLOAT_MAX;  // whitespace only: nothing to wrap
+      } else if (max_width > 0.0f && std::isfinite(max_width)) {
+        limit = static_cast<CGFloat>(max_width);
       }
-      if (limit <= 0.0) limit = CGFLOAT_MAX;  // whitespace only: nothing to wrap
     }
     const CGSize bounds = text_bounds(str, attrs, limit);
 #if TARGET_OS_OSX

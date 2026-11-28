@@ -135,12 +135,17 @@ void test_text_style_helpers() {
                             NVE_WHITE_SPACE_BREAK_SPACES}) {
     CHECK(text_wrap(ws, NVE_WORD_BREAK_NORMAL, NVE_OVERFLOW_WRAP_NORMAL) == TextWrap::Word);
     CHECK(text_wrap(ws, NVE_WORD_BREAK_KEEP_ALL, NVE_OVERFLOW_WRAP_NORMAL) == TextWrap::Word);
-    CHECK(text_wrap(ws, NVE_WORD_BREAK_BREAK_ALL, NVE_OVERFLOW_WRAP_NORMAL) == TextWrap::Anywhere);
-    CHECK(text_wrap(ws, NVE_WORD_BREAK_BREAK_ALL, NVE_OVERFLOW_WRAP_ANYWHERE) == TextWrap::Anywhere);
-    CHECK(text_wrap(ws, NVE_WORD_BREAK_BREAK_WORD, NVE_OVERFLOW_WRAP_NORMAL) == TextWrap::WordOrAnywhere);
-    CHECK(text_wrap(ws, NVE_WORD_BREAK_NORMAL, NVE_OVERFLOW_WRAP_ANYWHERE) == TextWrap::WordOrAnywhere);
-    CHECK(text_wrap(ws, NVE_WORD_BREAK_NORMAL, NVE_OVERFLOW_WRAP_BREAK_WORD) == TextWrap::WordOrAnywhere);
+    CHECK(text_wrap(ws, NVE_WORD_BREAK_BREAK_ALL, NVE_OVERFLOW_WRAP_NORMAL) == TextWrap::BreakAll);
+    CHECK(text_wrap(ws, NVE_WORD_BREAK_BREAK_ALL, NVE_OVERFLOW_WRAP_ANYWHERE) == TextWrap::BreakAll);
+    CHECK(text_wrap(ws, NVE_WORD_BREAK_BREAK_WORD, NVE_OVERFLOW_WRAP_NORMAL) == TextWrap::Anywhere);
+    CHECK(text_wrap(ws, NVE_WORD_BREAK_NORMAL, NVE_OVERFLOW_WRAP_ANYWHERE) == TextWrap::Anywhere);
+    CHECK(text_wrap(ws, NVE_WORD_BREAK_NORMAL, NVE_OVERFLOW_WRAP_BREAK_WORD) == TextWrap::BreakWord);
   }
+  CHECK(nve::host::min_content_wrap(TextWrap::None) == TextWrap::None);
+  CHECK(nve::host::min_content_wrap(TextWrap::Word) == TextWrap::Word);
+  CHECK(nve::host::min_content_wrap(TextWrap::BreakWord) == TextWrap::Word);
+  CHECK(nve::host::min_content_wrap(TextWrap::Anywhere) == TextWrap::Anywhere);
+  CHECK(nve::host::min_content_wrap(TextWrap::BreakAll) == TextWrap::BreakAll);
 
   using Entry = std::pair<std::string_view, bool>;
   std::vector<Entry> names;

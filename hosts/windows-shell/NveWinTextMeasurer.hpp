@@ -104,17 +104,23 @@ class DirectWriteTextMeasurer {
                                          float max_width) const {
     const TextPaint paint = TextPaint::from(style);
     const host::TextWrap wrap = paint.wrap();
-    // `max_width == 0` probes min-content: the widest unbreakable run of the wrap mode. Words
-    // (`normal`): the longest word, laid out at that (ceiled: sizes are whole pixels) width; any
-    // other wrapping breaks between characters: one cluster per line.
+    // `max_width == 0` probes min-content (CSS Text 3 §5.5): `Word` and `BreakWord` resolve to
+    // the longest word (ceiled to whole pixels); `Anywhere` and `BreakAll` break between
+    // characters (one cluster per line); `None` ignores `max_width`.
     const bool min_content = max_width == 0.0f && wrap != host::TextWrap::None;
-    IDWriteTextLayout* layout = create_layout(text, paint, min_content ? kNarrowest : max_width, 0.0f);
+    const host::TextWrap probe_wrap = min_content ? host::min_content_wrap(wrap) : wrap;
+    TextPaint probe = paint;
+    if (min_content && wrap == host::TextWrap::BreakWord) {
+      probe.overflow_wrap = NVE_OVERFLOW_WRAP_NORMAL;
+      probe.word_break = NVE_WORD_BREAK_NORMAL;
+    }
+    IDWriteTextLayout* layout = create_layout(text, probe, min_content ? kNarrowest : max_width, 0.0f);
     if (layout == nullptr) return NveIntrinsicSize{0.0f, 0.0f};
     FLOAT min_width = 0.0f;
-    if (min_content && wrap == host::TextWrap::Word && SUCCEEDED(layout->DetermineMinWidth(&min_width)) &&
+    if (min_content && probe_wrap == host::TextWrap::Word && SUCCEEDED(layout->DetermineMinWidth(&min_width)) &&
         min_width > 0.0f) {
       layout->Release();
-      layout = create_layout(text, paint, std::ceil(min_width), 0.0f);
+      layout = create_layout(text, probe, std::ceil(min_width), 0.0f);
       if (layout == nullptr) return NveIntrinsicSize{0.0f, 0.0f};
     }
     DWRITE_TEXT_METRICS m{};
@@ -177,8 +183,9 @@ class DirectWriteTextMeasurer {
     switch (wrap) {
       case host::TextWrap::None: return DWRITE_WORD_WRAPPING_NO_WRAP;
       case host::TextWrap::Word: return DWRITE_WORD_WRAPPING_WHOLE_WORD;
-      case host::TextWrap::Anywhere: return DWRITE_WORD_WRAPPING_CHARACTER;
-      case host::TextWrap::WordOrAnywhere: return DWRITE_WORD_WRAPPING_EMERGENCY_BREAK;
+      case host::TextWrap::BreakWord:
+      case host::TextWrap::Anywhere: return DWRITE_WORD_WRAPPING_EMERGENCY_BREAK;
+      case host::TextWrap::BreakAll: return DWRITE_WORD_WRAPPING_CHARACTER;
     }
     return DWRITE_WORD_WRAPPING_WRAP;
   }

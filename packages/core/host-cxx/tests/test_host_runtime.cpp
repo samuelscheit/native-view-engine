@@ -339,7 +339,7 @@ void test_read_node_seals_floats() {
   const NodeData four = read_node(guard->reader(), t, 4u, inherit_text_style(parent, t, guard->reader(), 4u));
   CHECK(four.text_style.font_size == 0.0f && four.text_style.line_height.unit == NVE_LENGTH_AUTO);
   CHECK(four.text_style.word_break == NVE_WORD_BREAK_BREAK_ALL &&
-        four.text_style.overflow_wrap == NVE_OVERFLOW_WRAP_ANYWHERE && four.text_style.wrap() == TextWrap::Anywhere);
+        four.text_style.overflow_wrap == NVE_OVERFLOW_WRAP_ANYWHERE && four.text_style.wrap() == TextWrap::BreakAll);
 
   // Box-shadow resources are sealed the same way.
   const BoxShadow bad[] = {{nan, inf, -inf, -2.0f, 7u, false}};

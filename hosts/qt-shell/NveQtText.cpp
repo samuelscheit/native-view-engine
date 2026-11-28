@@ -150,8 +150,9 @@ namespace {
   switch (wrap) {
     case host::TextWrap::None: return QTextOption::NoWrap;
     case host::TextWrap::Word: return QTextOption::WordWrap;
-    case host::TextWrap::Anywhere: return QTextOption::WrapAnywhere;
-    case host::TextWrap::WordOrAnywhere: return QTextOption::WrapAtWordBoundaryOrAnywhere;
+    case host::TextWrap::BreakWord:
+    case host::TextWrap::Anywhere: return QTextOption::WrapAtWordBoundaryOrAnywhere;
+    case host::TextWrap::BreakAll: return QTextOption::WrapAnywhere;
   }
   return QTextOption::WordWrap;
 }
@@ -249,7 +250,9 @@ QSizeF TextLayoutCache::paint(const QString& text, const QtTextStyle& style, qre
 
 NveIntrinsicSize measure_text(std::string_view text, const NveRuntimeTextStyle& style, float max_width) {
   if (text.empty()) return NveIntrinsicSize{0.0f, 0.0f};
-  const QSizeF size = layout_text(display_text(text), text_style(style), max_width);
+  QtTextStyle resolved = text_style(style);
+  if (max_width == 0.0f) resolved.wrap = host::min_content_wrap(resolved.wrap);
+  const QSizeF size = layout_text(display_text(text), resolved, max_width);
   return NveIntrinsicSize{static_cast<float>(std::ceil(size.width())), static_cast<float>(std::ceil(size.height()))};
 }
 

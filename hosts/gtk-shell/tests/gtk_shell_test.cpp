@@ -67,13 +67,29 @@ void test_measure_typography(const NveGtkHost& host) {
   NVE_CHECK(min_content.width == longest_word && min_content.height > wrapped.height);
   NVE_CHECK(host.measure_text("Supercalifragilistic", sans, 30.0f).width >
             host.measure_text("Super", sans).width);  // an over-long word overflows
+  // CSS Text 3 min-content parity across `Word`, `BreakWord`, `Anywhere`, `BreakAll`, and `None`.
+  constexpr std::string_view kPhrase = "considerably long";
+  const NveIntrinsicSize phrase_full = host.measure_text(kPhrase, sans);
+  const float phrase_word = host.measure_text("considerably", sans).width;
+  NveRuntimeTextStyle break_word = sans;
+  break_word.overflow_wrap = NVE_OVERFLOW_WRAP_BREAK_WORD;
+  NVE_CHECK(host.measure_text(kPhrase, sans, 0.0f).width == phrase_word);
+  NVE_CHECK(host.measure_text(kPhrase, break_word, 0.0f).width == phrase_word);
+  NVE_CHECK(host.measure_text("considerably", break_word, 30.0f).width < phrase_word);
   for (const auto& [word_break, overflow_wrap] :
        {std::pair{uint8_t{NVE_WORD_BREAK_BREAK_ALL}, uint8_t{NVE_OVERFLOW_WRAP_NORMAL}},
+        std::pair{uint8_t{NVE_WORD_BREAK_BREAK_WORD}, uint8_t{NVE_OVERFLOW_WRAP_NORMAL}},
         std::pair{uint8_t{NVE_WORD_BREAK_NORMAL}, uint8_t{NVE_OVERFLOW_WRAP_ANYWHERE}}}) {
     NveRuntimeTextStyle s = sans;
     s.word_break = word_break;
     s.overflow_wrap = overflow_wrap;
-    NVE_CHECK(host.measure_text(sentence, s, 0.0f).width < longest_word);
+    NVE_CHECK(host.measure_text(kPhrase, s, 0.0f).width < phrase_word);
+  }
+  for (const uint8_t ws : {uint8_t{NVE_WHITE_SPACE_NO_WRAP}, uint8_t{NVE_WHITE_SPACE_PRE}}) {
+    NveRuntimeTextStyle s = sans;
+    s.white_space = ws;
+    NVE_CHECK(host.measure_text(kPhrase, s, 0.0f).width == phrase_full.width &&
+              host.measure_text(kPhrase, s, 0.0f).height == phrase_full.height);
   }
 
   // Letter spacing widens by about one spacing per character.

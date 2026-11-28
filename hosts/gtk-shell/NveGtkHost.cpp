@@ -347,7 +347,7 @@ NveIntrinsicSize NveGtkHost::measure_text(std::string_view text, const NveRuntim
   pango_layout_set_width(layout, wraps ? static_cast<int>(std::min(static_cast<double>(max_width) * PANGO_SCALE,
                                                                    static_cast<double>(std::numeric_limits<int>::max())))
                                        : -1);
-  pango_layout_set_wrap(layout, gtk_internal::pango_wrap(wrap));
+  pango_layout_set_wrap(layout, gtk_internal::pango_wrap(max_width == 0.0f ? host::min_content_wrap(wrap) : wrap));
   const bool limited = style.max_lines > 0u;
   pango_layout_set_ellipsize(layout, limited ? PANGO_ELLIPSIZE_END : PANGO_ELLIPSIZE_NONE);
   pango_layout_set_height(

@@ -111,9 +111,10 @@ NvePlatformColor * _Nonnull color_from_rgba(uint32_t rgba);
 
 /// `NveRuntimeMeasureTextFn` for runtime layout: the system font the views paint (size / CSS
 /// weight / italic, `platform_font`) via `boundingRectWithSize:` (macOS adds
-/// `NSTextFieldCell`'s 4pt horizontal inset); `max_width == 0` measures min-content (wrapped at
-/// the widest whitespace-delimited word). Apple views do not paint family, letter spacing,
-/// line height, or max lines yet, so measurement ignores them too (paint parity).
+/// `NSTextFieldCell`'s 4pt horizontal inset), routed through `nve::host::text_wrap` /
+/// `min_content_wrap` (`nowrap`/`pre` never wrap, `Word`/`BreakWord` min-content is the widest
+/// word, `Anywhere`/`BreakAll` min-content is the widest grapheme cluster). Apple views do not
+/// paint family, letter spacing, line height, or max lines yet, so measurement ignores them too.
 void native_text_measure(void *_Nullable ctx, NveStrSlice text, const NveRuntimeTextStyle *_Nonnull style,
                          float max_width, float *_Nonnull out_width, float *_Nonnull out_height);
 
