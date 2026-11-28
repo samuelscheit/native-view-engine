@@ -38,6 +38,14 @@ impl RequestTable {
         }
     }
 
+    /// Returns `true` if `request_id` is currently tracked (either `Pending` or `Completed`).
+    pub fn contains(&self, request_id: u64) -> bool {
+        self.inline
+            .iter()
+            .any(|slot| matches!(slot, Some((id, _)) if *id == request_id))
+            || (!self.overflow.is_empty() && self.overflow.contains_key(&request_id))
+    }
+
     /// Registers a `Pending` slot for `request_id`.
     ///
     /// Returns `false` without overwriting if `request_id` already exists (either `Pending` or

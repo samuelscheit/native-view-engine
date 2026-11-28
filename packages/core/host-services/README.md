@@ -4,6 +4,7 @@ Minimal binary `NVE_IFACE_HOST = 5` host-service transport, FFI client, binary c
 
 ## Key Public API
 
+- `ServiceSlots`, `ServiceSlotsBuilder`, `ServiceSlot`, `ServiceSlotId`, `ServiceHandle` (lock-free dense O(1) typed slot table with zero double-`Arc` and zero atomic refcount increments on `get`)
 - `HostServiceProvider`, `HostServiceHandler`, `HostServiceRegistry`, `MemoryHostServices`, `HostCallbackBridge`
 - `FfiHostServices`, `RequestTable`, `TypedEventBus`, `TypedAsyncTable`
 - `ByteReader`, `ByteWriter`, `codec::validate_url`, `error::ServiceError`

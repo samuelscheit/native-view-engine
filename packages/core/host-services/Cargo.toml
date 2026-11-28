@@ -21,5 +21,9 @@ harness = false
 name = "batch"
 harness = false
 
+[[bench]]
+name = "service_slots_bench"
+harness = false
+
 [lints]
 workspace = true

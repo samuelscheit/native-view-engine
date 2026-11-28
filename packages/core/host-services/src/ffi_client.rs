@@ -511,3 +511,82 @@ impl HostServiceProvider for FfiHostServices {
         self.cancel_all_pending()
     }
 }
+
+impl nve_codec::ByteTransport for FfiHostServices {
+    fn call_sync(
+        &self,
+        service_id: u32,
+        method_id: u32,
+        req: &[u8],
+        on_reply: &mut dyn FnMut(&[u8]),
+    ) -> Result<(), nve_codec::TransportError> {
+        let resp = self.invoke_sync(service_id, method_id, req)?;
+        on_reply(resp.as_slice());
+        Ok(())
+    }
+
+    fn call_async(
+        &self,
+        service_id: u32,
+        method_id: u32,
+        req: &[u8],
+        on_done: nve_codec::TransportDoneFn,
+    ) {
+        let (cb, request_id) = match self.prepare_invoke() {
+            Ok(pair) => pair,
+            Err(err) => {
+                on_done(Err(err.into()));
+                return;
+            }
+        };
+        let Some(invoke_fn) = cb.invoke else {
+            on_done(Err(nve_codec::TransportError::Unsupported));
+            return;
+        };
+        {
+            let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.requests.contains(request_id) {
+                drop(guard);
+                on_done(Err(nve_codec::TransportError::Invalid(format!(
+                    "duplicate pending request_id {request_id}"
+                ))));
+                return;
+            }
+            let _ = guard.requests.register_pending(
+                request_id,
+                Some(Box::new(move |res| match res {
+                    Ok(bytes) => on_done(Ok(&bytes)),
+                    Err(err) => on_done(Err(err.into())),
+                })),
+            );
+        }
+        match self.exec_invoke_with_retry(
+            cb.host_ctx,
+            invoke_fn,
+            service_id,
+            method_id,
+            request_id,
+            req,
+        ) {
+            Ok(InvokeResult::Ready(bytes)) => {
+                let callback = {
+                    let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                    guard.requests.remove_sync_slot(request_id)
+                };
+                if let Some(cb_fn) = callback {
+                    cb_fn(Ok(bytes.into_vec()));
+                }
+            }
+            Ok(InvokeResult::Pending { .. }) => {}
+            Err(err) => {
+                let callback = {
+                    let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                    guard.requests.remove_sync_slot(request_id)
+                };
+                if let Some(cb_fn) = callback {
+                    cb_fn(Err(err));
+                }
+            }
+        }
+    }
+}
