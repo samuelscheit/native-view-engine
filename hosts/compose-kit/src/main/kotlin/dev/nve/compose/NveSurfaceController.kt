@@ -1,14 +1,48 @@
 package dev.nve.compose
 
+import android.os.Handler
+import android.os.Looper
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import dev.nve.host.NativeRuntime
-import dev.nve.host.SceneReader
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import dev.nve.host.BinCodecException
+import dev.nve.host.BinReader
+import dev.nve.host.BinWriter
+import dev.nve.host.EventRingReader
 import dev.nve.host.FrameHost
+import dev.nve.host.NativeRuntime
 import dev.nve.host.RuntimeSurface
+import dev.nve.host.SceneReader
+import dev.nve.host.generated.NveAbi
 import dev.nve.host.generated.NveRuntimeAbi
 import java.util.concurrent.Executor
+
+/** Thin raw callback bridge for `NVE_IFACE_HOST = 5` (passthrough to [NativeRuntime.HostCallbackBridge]). */
+typealias NveHostBridge = NativeRuntime.HostCallbackBridge
+
+/** One outbound event drained from an attached app via `NveComponentApi::drain_emitted_events`. */
+class NveEmittedEvent(
+    val tableBits: Long,
+    val eventId: Int,
+    val nodeId: Int,
+    val timestampUs: Long,
+    val flags: Int,
+    val name: String,
+    val payloadBytes: ByteArray,
+) {
+    /** `true` when this event is a named `nve.custom` event (`TABLE_CUSTOM` + `EVENT_FLAG_CUSTOM_NAMED`). */
+    val isCustom: Boolean
+        get() = tableBits == NveAbi.TABLE_CUSTOM.value() && (flags and NveAbi.EVENT_FLAG_CUSTOM_NAMED) != 0
+
+    /** Opens a bounds-checked [BinReader] over [payloadBytes]. */
+    fun payloadReader(): BinReader = BinReader(payloadBytes)
+}
 
 /** What a surface shows: a local app `.so` (hot-reloadable) or a paired `nve pair` server. */
 sealed interface NveSource {
@@ -22,6 +56,9 @@ sealed interface NveSource {
 interface NveRuntimeHost : AutoCloseable {
     /** Receives every new frame while it is acquired (resources readable only during the call). */
     fun setFrameListener(listener: (SceneReader, NveResourceLookup) -> Unit)
+
+    /** Receives raw `NVEV` v2 batches drained after renders, event dispatches, prop updates, and hot patches. */
+    fun setEmittedEventListener(listener: ((ByteArray) -> Unit)?)
 
     fun start(source: NveSource): Int
 
@@ -39,6 +76,50 @@ interface NveRuntimeHost : AutoCloseable {
     fun send(write: FrameHost.EventWriter): Int
 
     fun scrollBy(nodeId: Int, dxDp: Float, dyDp: Float): Int
+
+    /** Forwards embedding-host props encoded as a single `BinWriter` `NveBinValue` map. */
+    fun setProps(binMap: ByteArray): Int
+
+    /** Manually drains outbound app events as an `NVEV` v2 byte array (`null` when empty/unsupported). */
+    fun drainEmittedEvents(): ByteArray?
+
+    /** Snapshots the attached app's state (`null` on error). */
+    fun snapshotState(): ByteArray?
+
+    /** Restores a state snapshot into the attached app. */
+    fun restoreState(state: ByteArray): Int
+
+    fun saveStateFile(path: String, schemaVersion: Int): Int
+
+    fun restoreStateFile(path: String, schemaVersion: Int): Int
+
+    fun clearStateFile(path: String): Int
+
+    fun saveFrame0File(path: String, appBuildId: Long = 0L, envHash: Long = 0L): Int
+
+    fun bootFrame0File(path: String, appBuildId: Long = 0L, envHash: Long = 0L): Int
+
+    fun bootFrame0Bytes(envelope: ByteArray, appBuildId: Long = 0L, envHash: Long = 0L): Int
+
+    fun applyHotPatch(patchNvp1: ByteArray): Int
+
+    fun measureSurface(
+        minWidthDp: Float,
+        minHeightDp: Float,
+        maxWidthDp: Float,
+        maxHeightDp: Float,
+        flags: Int = NveRuntimeAbi.MEASURE_FLAG_DRY_RUN,
+    ): RuntimeSurface.SurfaceMeasure?
+
+    fun setIntrinsicSizeInvalidatedListener(listener: Runnable?): Int
+
+    fun setHostCallbackBridge(bridge: NveHostBridge?): Int
+
+    fun completeHostRequest(requestId: Long, hostStatus: Int, payload: ByteArray? = null): Int
+
+    fun pushHostEvent(serviceId: Int, eventId: Int, payload: ByteArray? = null): Int
+
+    fun publishHostChannel(channelId: Int, flags: Int = 0, payload: ByteArray? = null): Int
 
     /** `true` when dispatched events render synchronously (local app); `false` while paired. */
     val dispatchIsSynchronous: Boolean
@@ -59,6 +140,10 @@ class NativeRuntimeHost(surfaceId: Int, widthDp: Float, heightDp: Float, density
         }
     }
 
+    override fun setEmittedEventListener(listener: ((ByteArray) -> Unit)?) {
+        surface.setEmittedEventConsumer(listener?.let { cb -> RuntimeSurface.EmittedEventConsumer { cb(it) } })
+    }
+
     override fun start(source: NveSource): Int = when (source) {
         is NveSource.App -> surface.attachApp(source.soPath, source.carryState)
         is NveSource.Paired -> surface.pair(source.uri, source.token)
@@ -75,6 +160,54 @@ class NativeRuntimeHost(surfaceId: Int, widthDp: Float, heightDp: Float, density
 
     override fun scrollBy(nodeId: Int, dxDp: Float, dyDp: Float): Int = surface.scrollBy(nodeId, dxDp, dyDp)
 
+    override fun setProps(binMap: ByteArray): Int = surface.setProps(binMap)
+
+    override fun drainEmittedEvents(): ByteArray? = surface.drainEmittedEvents()
+
+    override fun snapshotState(): ByteArray? = surface.snapshotState()
+
+    override fun restoreState(state: ByteArray): Int = surface.restoreState(state)
+
+    override fun saveStateFile(path: String, schemaVersion: Int): Int = surface.saveStateFile(path, schemaVersion)
+
+    override fun restoreStateFile(path: String, schemaVersion: Int): Int =
+        surface.restoreStateFile(path, schemaVersion)
+
+    override fun clearStateFile(path: String): Int = surface.clearStateFile(path)
+
+    override fun saveFrame0File(path: String, appBuildId: Long, envHash: Long): Int =
+        surface.saveFrame0File(path, appBuildId, envHash)
+
+    override fun bootFrame0File(path: String, appBuildId: Long, envHash: Long): Int =
+        surface.bootFrame0File(path, appBuildId, envHash)
+
+    override fun bootFrame0Bytes(envelope: ByteArray, appBuildId: Long, envHash: Long): Int =
+        surface.bootFrame0Bytes(envelope, appBuildId, envHash)
+
+    override fun applyHotPatch(patchNvp1: ByteArray): Int = surface.applyHotPatch(patchNvp1)
+
+    override fun measureSurface(
+        minWidthDp: Float,
+        minHeightDp: Float,
+        maxWidthDp: Float,
+        maxHeightDp: Float,
+        flags: Int,
+    ): RuntimeSurface.SurfaceMeasure? = surface.measureSurface(minWidthDp, minHeightDp, maxWidthDp, maxHeightDp, flags)
+
+    override fun setIntrinsicSizeInvalidatedListener(listener: Runnable?): Int =
+        surface.setIntrinsicSizeInvalidatedListener(listener)
+
+    override fun setHostCallbackBridge(bridge: NveHostBridge?): Int = surface.setHostCallbackBridge(bridge)
+
+    override fun completeHostRequest(requestId: Long, hostStatus: Int, payload: ByteArray?): Int =
+        surface.completeHostRequest(requestId, hostStatus, payload)
+
+    override fun pushHostEvent(serviceId: Int, eventId: Int, payload: ByteArray?): Int =
+        surface.pushHostEvent(serviceId, eventId, payload)
+
+    override fun publishHostChannel(channelId: Int, flags: Int, payload: ByteArray?): Int =
+        surface.publishHostChannel(channelId, flags, payload)
+
     override val dispatchIsSynchronous: Boolean get() = surface.dispatchesSynchronously()
 
     override val lastError: String get() = surface.lastError()
@@ -89,9 +222,41 @@ class NativeRuntimeHost(surfaceId: Int, widthDp: Float, heightDp: Float, density
 }
 
 /**
+ * Remembers and manages a [NveSurfaceController] bound to [source], closing its native runtime
+ * surface automatically when leaving composition.
+ */
+@Composable
+fun rememberNveSurfaceController(
+    source: NveSource,
+    surfaceId: Int = 1,
+    hostFactory: ((surfaceId: Int, widthDp: Float, heightDp: Float, density: Float, ownerThread: Executor) -> NveRuntimeHost)? = null,
+): NveSurfaceController {
+    val context = LocalContext.current
+    val density = LocalDensity.current.density.let { if (it > 0f) it else 1f }
+    val controller = remember(surfaceId, hostFactory) {
+        val metrics = context.resources.displayMetrics
+        val wDp = if (metrics.widthPixels > 0) metrics.widthPixels / density else 412f
+        val hDp = if (metrics.heightPixels > 0) metrics.heightPixels / density else 915f
+        val main = Handler(Looper.getMainLooper())
+        val executor = Executor { main.post(it) }
+        val host = hostFactory?.invoke(surfaceId, wDp, hDp, density, executor)
+            ?: NativeRuntimeHost(surfaceId, wDp, hDp, density, executor)
+        NveSurfaceController(host)
+    }
+    DisposableEffect(controller) {
+        onDispose { controller.close() }
+    }
+    LaunchedEffect(controller, source) {
+        controller.start(source)
+    }
+    return controller
+}
+
+/**
  * Compose-facing state of one runtime surface: the [NveSceneState] (one per-node observable slot
- * each, updated in O(changed)) plus input entry points that become `EventRing` events. Use on
- * the main thread.
+ * each, updated in O(changed)) plus input, Runtime ABI v6 props/events/state/Frame-0/hot-patch,
+ * measurement, and thin host-bridge entry points. Use on the main thread (except cross-thread host
+ * completion/push/channel helpers).
  */
 class NveSurfaceController(private val host: NveRuntimeHost) : AutoCloseable {
     val scene = NveSceneState()
@@ -108,10 +273,40 @@ class NveSurfaceController(private val host: NveRuntimeHost) : AutoCloseable {
     var error: String? by mutableStateOf(null)
         private set
 
+    /** Listener receiving each outbound event drained from the attached app after renders and dispatches. */
+    var onEvent: ((NveEmittedEvent) -> Unit)? = null
+
     private var lastViewport = FloatArray(3)
+    private val scratchWriter = BinWriter()
 
     init {
         host.setFrameListener { reader, resources -> NveSceneCapture.capture(reader, resources, scene) }
+        host.setEmittedEventListener { batch -> dispatchEmittedBatch(batch) }
+    }
+
+    private fun dispatchEmittedBatch(batchBytes: ByteArray) {
+        val listener = onEvent ?: return
+        if (batchBytes.isEmpty()) return
+        val reader = try {
+            EventRingReader().attach(batchBytes)
+        } catch (_: BinCodecException) {
+            return
+        }
+        for (i in 0 until reader.count()) {
+            val tableBits = reader.tableBits(i)
+            val flags = reader.flags(i)
+            val custom = tableBits == NveAbi.TABLE_CUSTOM.value() && (flags and NveAbi.EVENT_FLAG_CUSTOM_NAMED) != 0
+            val ev = NveEmittedEvent(
+                tableBits = tableBits,
+                eventId = reader.event(i),
+                nodeId = reader.node(i),
+                timestampUs = reader.timestamp(i),
+                flags = flags,
+                name = if (custom) reader.customName(i) else "",
+                payloadBytes = if (custom) reader.customData(i) else reader.bytes(i),
+            )
+            listener(ev)
+        }
     }
 
     /** Attaches the app or pairing session and renders the first frame; `false` (with [error]) on failure. */
@@ -139,6 +334,25 @@ class NveSurfaceController(private val host: NveRuntimeHost) : AutoCloseable {
         host.render()
     }
 
+    /** Forwards embedding-host props encoded as a single `BinWriter` `NveBinValue` map and renders on success. */
+    fun setProps(binMap: ByteArray): Boolean {
+        val st = host.setProps(binMap)
+        if (st != NveRuntimeAbi.STATUS_OK) {
+            error = "setProps failed ($st): ${host.lastError}"
+            return false
+        }
+        error = null
+        host.render()
+        return true
+    }
+
+    /** Encodes a `BinWriter` `NveBinValue` map and forwards it via [setProps]. */
+    fun setProps(encode: (BinWriter) -> Unit): Boolean {
+        scratchWriter.clear()
+        encode(scratchWriter)
+        return setProps(scratchWriter.toByteArray())
+    }
+
     fun press(nodeId: Int, xDp: Float, yDp: Float) {
         host.send { it.press(nodeId, now(), xDp, yDp) }
     }
@@ -155,11 +369,107 @@ class NveSurfaceController(private val host: NveRuntimeHost) : AutoCloseable {
         host.send { if (focused) it.focus(nodeId, now()) else it.blur(nodeId, now()) }
     }
 
+    /** Sends a named `nve.custom` event (e.g. imperative exported commands) to the runtime. */
+    fun dispatchCustom(name: String, payload: ByteArray? = null, nodeId: Int = 0): Int =
+        host.send { it.custom(nodeId, now(), name, payload) }
+
+    /** Encodes a `BinWriter` payload and sends a named `nve.custom` event to the runtime. */
+    fun dispatchCustom(name: String, nodeId: Int = 0, encode: (BinWriter) -> Unit): Int {
+        scratchWriter.clear()
+        encode(scratchWriter)
+        return dispatchCustom(name, scratchWriter.toByteArray(), nodeId)
+    }
+
     /** Native scroll moved by `(dx, dy)` to `(x, y)`: syncs runtime hit testing and tells the app. */
     fun scrolled(nodeId: Int, dxDp: Float, dyDp: Float, xDp: Float, yDp: Float, contentWDp: Float, contentHDp: Float) {
         host.scrollBy(nodeId, dxDp, dyDp)
         host.send { it.scroll(nodeId, now(), xDp, yDp, contentWDp, contentHDp) }
     }
+
+    /** Manually drains outbound app events as an `NVEV` v2 byte array (`null` when empty/unsupported). */
+    fun drainEmittedEvents(): ByteArray? = host.drainEmittedEvents()
+
+    /** Snapshots the attached app's state (`null` when unavailable/unsupported). */
+    fun snapshotState(): ByteArray? = host.snapshotState()
+
+    /** Restores a state snapshot and renders on success. */
+    fun restoreState(state: ByteArray): Boolean {
+        val st = host.restoreState(state)
+        if (st != NveRuntimeAbi.STATUS_OK) {
+            error = "restoreState failed ($st): ${host.lastError}"
+            return false
+        }
+        error = null
+        host.render()
+        return true
+    }
+
+    fun saveStateFile(path: String, schemaVersion: Int): Boolean =
+        host.saveStateFile(path, schemaVersion) == NveRuntimeAbi.STATUS_OK
+
+    fun restoreStateFile(path: String, schemaVersion: Int): Boolean {
+        val st = host.restoreStateFile(path, schemaVersion)
+        if (st != NveRuntimeAbi.STATUS_OK) return false
+        host.render()
+        return true
+    }
+
+    fun clearStateFile(path: String): Boolean = host.clearStateFile(path) == NveRuntimeAbi.STATUS_OK
+
+    fun saveFrame0File(path: String, appBuildId: Long = 0L, envHash: Long = 0L): Boolean =
+        host.saveFrame0File(path, appBuildId, envHash) == NveRuntimeAbi.STATUS_OK
+
+    fun bootFrame0File(path: String, appBuildId: Long = 0L, envHash: Long = 0L): Boolean {
+        val st = host.bootFrame0File(path, appBuildId, envHash)
+        if (st != NveRuntimeAbi.STATUS_OK) return false
+        error = null
+        host.render()
+        return true
+    }
+
+    fun bootFrame0Bytes(envelope: ByteArray, appBuildId: Long = 0L, envHash: Long = 0L): Boolean {
+        val st = host.bootFrame0Bytes(envelope, appBuildId, envHash)
+        if (st != NveRuntimeAbi.STATUS_OK) return false
+        error = null
+        host.render()
+        return true
+    }
+
+    /** Applies one `NVP1` Tier-1 hot patch and renders on success. */
+    fun applyHotPatch(patchNvp1: ByteArray): Boolean {
+        val st = host.applyHotPatch(patchNvp1)
+        if (st != NveRuntimeAbi.STATUS_OK) {
+            error = "applyHotPatch failed ($st): ${host.lastError}"
+            return false
+        }
+        error = null
+        host.render()
+        return true
+    }
+
+    /** Measures the surface under constraints (`MEASURE_FLAG_DRY_RUN` by default) without mutating committed rects. */
+    fun measureSurface(
+        minWidthDp: Float = 0f,
+        minHeightDp: Float = 0f,
+        maxWidthDp: Float = Float.POSITIVE_INFINITY,
+        maxHeightDp: Float = Float.POSITIVE_INFINITY,
+        flags: Int = NveRuntimeAbi.MEASURE_FLAG_DRY_RUN,
+    ): RuntimeSurface.SurfaceMeasure? =
+        host.measureSurface(minWidthDp, minHeightDp, maxWidthDp, maxHeightDp, flags)
+
+    fun setIntrinsicSizeInvalidatedListener(listener: Runnable?): Int =
+        host.setIntrinsicSizeInvalidatedListener(listener)
+
+    fun setHostBridge(bridge: NveHostBridge?): Int = host.setHostCallbackBridge(bridge)
+
+    fun completeHostRequest(requestId: Long, hostStatus: Int, payload: ByteArray? = null): Int =
+        host.completeHostRequest(requestId, hostStatus, payload)
+
+    fun pushHostEvent(serviceId: Int, eventId: Int, payload: ByteArray? = null): Int =
+        host.pushHostEvent(serviceId, eventId, payload)
+
+    fun publishHostChannel(channelId: Int, flags: Int = 0, payload: ByteArray? = null): Int =
+        host.publishHostChannel(channelId, flags, payload)
 
     /** Wake-driven or explicit re-render (e.g. after resuming). */
     fun render(): Boolean = host.render()

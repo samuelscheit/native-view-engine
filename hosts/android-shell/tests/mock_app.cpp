@@ -1,13 +1,17 @@
 // Mock `nve_get_interface` app for the JVM JNI suites: renders real `NVE2` fixture frames
-// (`nve-host-fixtures`) and logs every dispatched `NveEvent` to `$NVE_MOCK_EVENT_LOG`.
+// (`nve-host-fixtures`), logs every dispatched `NveEvent` to `$NVE_MOCK_EVENT_LOG`, and implements
+// `NVE_IFACE_COMPONENT`, `NVE_IFACE_DEV`, and `NVE_IFACE_HOST` so ABI v6 JNI bindings are tested
+// end-to-end against real `libnve_runtime`.
 //
 // Build-time knobs: `NVE_MOCK_FRAME` (first frame), optional `NVE_MOCK_NEXT_FRAME` (rendered after
 // the first dispatched batch), `NVE_MOCK_BAD_IFACE` (exports an interface getter returning null).
 #include <nve/generated/nve_abi.generated.h>
+#include <nve/host/bin_codec.hpp>
 #include <nve/host/owned_events.hpp>
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -27,6 +31,7 @@ std::vector<uint8_t> load(const char* path) {
 }
 
 struct MockApp {
+  uint32_t surface_id = 1u;
   std::vector<uint8_t> first = load(NVE_MOCK_FRAME);
 #if defined(NVE_MOCK_NEXT_FRAME)
   std::vector<uint8_t> next = load(NVE_MOCK_NEXT_FRAME);
@@ -34,7 +39,58 @@ struct MockApp {
   std::vector<uint8_t> next;
 #endif
   int pending = 1;  // 1: first frame due, 2: next frame due, 0: clean
+  nve::host::OwnedEvents emitted;
+  nve::host::OwnedEvents drained;
+  std::vector<uint8_t> state{'i', 'n', 'i', 't'};
+  NveHostCallbacks host_cb{};
+  bool has_host_cb = false;
 };
+
+void write_nve_value(nve::host::BinWriter& w, const NveValue& v) {
+  switch (v.tag) {
+    case NVE_VAL_NULL:
+      w.write_null();
+      return;
+    case NVE_VAL_BOOL:
+      w.write_bool(v.data.bool_val != 0u);
+      return;
+    case NVE_VAL_I64:
+      w.write_i64(v.data.i64_val);
+      return;
+    case NVE_VAL_F64:
+      w.write_f64(v.data.f64_val);
+      return;
+    case NVE_VAL_STR:
+      w.write_str(v.data.str_val.ptr != nullptr
+                      ? std::string_view(reinterpret_cast<const char*>(v.data.str_val.ptr), v.data.str_val.len)
+                      : std::string_view());
+      return;
+    case NVE_VAL_BYTES:
+      w.write_bytes(v.data.bytes_val.ptr != nullptr
+                        ? std::span<const uint8_t>(v.data.bytes_val.ptr, v.data.bytes_val.len)
+                        : std::span<const uint8_t>());
+      return;
+    case NVE_VAL_ARRAY: {
+      const auto m = w.begin_array(static_cast<uint32_t>(v.data.array_val.len));
+      for (size_t i = 0u; i < v.data.array_val.len; ++i) write_nve_value(w, v.data.array_val.ptr[i]);
+      w.end(m);
+      return;
+    }
+    case NVE_VAL_MAP: {
+      const auto m = w.begin_map(static_cast<uint32_t>(v.data.map_val.len));
+      for (size_t i = 0u; i < v.data.map_val.len; ++i) {
+        const NveMapEntry& e = v.data.map_val.ptr[i];
+        w.write_map_key(e.key.ptr != nullptr
+                            ? std::string_view(reinterpret_cast<const char*>(e.key.ptr), e.key.len)
+                            : std::string_view());
+        write_nve_value(w, e.value);
+      }
+      w.end(m);
+      return;
+    }
+  }
+  w.write_null();
+}
 
 /// Printable copy of borrowed bytes (`\xNN` for control bytes, so binary table payloads stay on one line).
 std::string slice(const uint8_t* p, size_t n) {
@@ -79,7 +135,11 @@ void log_event(const NveEvent& ev, NveEventBatch batch) {
   }
 }
 
-NveAppHandle create(uint32_t) { return new MockApp(); }
+NveAppHandle create(uint32_t surface_id) {
+  auto* app = new MockApp();
+  app->surface_id = surface_id;
+  return app;
+}
 
 void destroy(NveAppHandle h) { delete static_cast<MockApp*>(h); }
 
@@ -93,18 +153,138 @@ NveBufferSlice render(NveAppHandle h, uint64_t) {
 
 uint32_t dispatch(NveAppHandle h, NveEventBatch batch) {
   auto* app = static_cast<MockApp*>(h);
-  for (uint32_t i = 0u; i < batch.event_count; ++i) log_event(batch.events[i], batch);
+  for (uint32_t i = 0u; i < batch.event_count; ++i) {
+    const NveEvent& ev = batch.events[i];
+    log_event(ev, batch);
+    if (nve::host::is_custom_event(ev)) {
+      const std::string_view cname = nve::host::event_custom_name(ev, batch);
+      const std::span<const uint8_t> cdata = nve::host::event_custom_data(ev, batch);
+      if (cname == "host_call_sync" && app->has_host_cb && app->host_cb.invoke != nullptr) {
+        uint8_t reply[256];
+        size_t out_len = 0u;
+        const NveBufferSlice req{cdata.empty() ? nullptr : cdata.data(), cdata.size()};
+        const int32_t rc = app->host_cb.invoke(app->host_cb.host_ctx, 0x0010u, 1u, 101u, req, reply, sizeof reply,
+                                               &out_len);
+        nve::host::BinWriter w;
+        const auto m = w.begin_map(2u);
+        w.write_map_key("status");
+        w.write_i64(rc);
+        w.write_map_key("reply");
+        w.write_bytes(rc == NVE_HOST_OK && out_len <= sizeof reply ? std::span<const uint8_t>(reply, out_len)
+                                                                   : std::span<const uint8_t>());
+        w.end(m);
+        (void)app->emitted.push_custom(app->surface_id, 0u, ev.timestamp, "onHostSyncReply", w.bytes());
+      } else if (cname == "host_call_async" && app->has_host_cb && app->host_cb.invoke != nullptr) {
+        uint8_t reply[16];
+        size_t out_len = 0u;
+        const NveBufferSlice req{cdata.empty() ? nullptr : cdata.data(), cdata.size()};
+        const int32_t rc = app->host_cb.invoke(app->host_cb.host_ctx, 0x0010u, 2u, 202u, req, reply, sizeof reply,
+                                               &out_len);
+        nve::host::BinWriter w;
+        const auto m = w.begin_map(1u);
+        w.write_map_key("status");
+        w.write_i64(rc);
+        w.end(m);
+        (void)app->emitted.push_custom(app->surface_id, 0u, ev.timestamp, "onHostAsyncStart", w.bytes());
+      } else if (cname == "host_publish" && app->has_host_cb && app->host_cb.channel_publish != nullptr) {
+        const NveBufferSlice pay{cdata.empty() ? nullptr : cdata.data(), cdata.size()};
+        const int32_t rc = app->host_cb.channel_publish(app->host_cb.host_ctx, 42u, 1u, pay);
+        nve::host::BinWriter w;
+        const auto m = w.begin_map(1u);
+        w.write_map_key("status");
+        w.write_i64(rc);
+        w.end(m);
+        (void)app->emitted.push_custom(app->surface_id, 0u, ev.timestamp, "onHostPublish", w.bytes());
+      }
+    }
+  }
   if (batch.event_count == 0u || app->next.empty()) return 0u;
   app->pending = 2;
   return 1u;
 }
 
+uint32_t set_props(NveAppHandle h, const NveMapEntry* entries, uint32_t count) {
+  auto* app = static_cast<MockApp*>(h);
+  nve::host::BinWriter w;
+  const auto m = w.begin_map(count);
+  for (uint32_t i = 0u; i < count; ++i) {
+    const NveMapEntry& e = entries[i];
+    w.write_map_key(e.key.ptr != nullptr ? std::string_view(reinterpret_cast<const char*>(e.key.ptr), e.key.len)
+                                         : std::string_view());
+    write_nve_value(w, e.value);
+  }
+  w.end(m);
+  (void)app->emitted.push_custom(app->surface_id, 0u, 99u, "onPropsEcho", w.bytes());
+  if (!app->next.empty()) app->pending = 2;
+  return 1u;
+}
+
+NveEventBatch drain_emitted_events(NveAppHandle h) {
+  auto* app = static_cast<MockApp*>(h);
+  app->drained.clear();
+  app->drained.swap(app->emitted);
+  return app->drained.batch();
+}
+
+uint32_t apply_hot_patch(NveAppHandle h, NveBufferSlice patch_nvp1) {
+  auto* app = static_cast<MockApp*>(h);
+  nve::host::BinWriter w;
+  const auto m = w.begin_map(1u);
+  w.write_map_key("patchBytes");
+  w.write_i64(static_cast<int64_t>(patch_nvp1.len));
+  w.end(m);
+  (void)app->emitted.push_custom(app->surface_id, 0u, 100u, "onHotPatch", w.bytes());
+  if (!app->next.empty()) app->pending = 2;
+  return 1u;
+}
+
+NveBufferSlice snapshot_state(NveAppHandle h) {
+  auto* app = static_cast<MockApp*>(h);
+  return NveBufferSlice{app->state.empty() ? nullptr : app->state.data(), app->state.size()};
+}
+
+void restore_state(NveAppHandle h, NveBufferSlice state) {
+  auto* app = static_cast<MockApp*>(h);
+  app->state.clear();
+  if (state.ptr != nullptr && state.len > 0u) app->state.assign(state.ptr, state.ptr + state.len);
+  if (!app->next.empty()) app->pending = 2;
+}
+
+void bind_host(NveAppHandle h, const NveHostCallbacks* callbacks) {
+  auto* app = static_cast<MockApp*>(h);
+  if (callbacks == nullptr) {
+    app->host_cb = NveHostCallbacks{};
+    app->has_host_cb = false;
+  } else {
+    app->host_cb = *callbacks;
+    app->has_host_cb = true;
+  }
+}
+
+uint32_t dispatch_host_events(NveAppHandle h, NveBufferSlice batch) {
+  auto* app = static_cast<MockApp*>(h);
+  nve::host::BinWriter w;
+  const auto m = w.begin_map(1u);
+  w.write_map_key("batchBytes");
+  w.write_i64(static_cast<int64_t>(batch.len));
+  w.end(m);
+  (void)app->emitted.push_custom(app->surface_id, 0u, 101u, "onHostEvents", w.bytes());
+  return 1u;
+}
+
 constexpr NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch};
+constexpr NveComponentApi kComponent{&set_props, &drain_emitted_events};
+constexpr NveDevApi kDev{&apply_hot_patch, &snapshot_state, &restore_state};
+constexpr NveHostApi kHost{&bind_host, &dispatch_host_events};
 
 }  // namespace
 
 extern "C" __attribute__((visibility("default"))) const void* nve_get_interface(uint32_t id) {
-  return id == NVE_IFACE_SURFACE ? &kSurface : nullptr;
+  if (id == NVE_IFACE_SURFACE) return &kSurface;
+  if (id == NVE_IFACE_COMPONENT) return &kComponent;
+  if (id == NVE_IFACE_DEV) return &kDev;
+  if (id == NVE_IFACE_HOST) return &kHost;
+  return nullptr;
 }
 
 #endif

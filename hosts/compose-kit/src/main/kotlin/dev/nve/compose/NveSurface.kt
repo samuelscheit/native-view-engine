@@ -60,12 +60,33 @@ import kotlin.math.roundToInt
  * layout measured by Compose's own text stack and input sent back as runtime events.
  */
 @Composable
-fun NveSurface(controller: NveSurfaceController, modifier: Modifier = Modifier) {
+fun NveSurface(
+    controller: NveSurfaceController,
+    modifier: Modifier = Modifier,
+    onEvent: ((NveEmittedEvent) -> Unit)? = null,
+    hostBridge: NveHostBridge? = null,
+) {
     val density = LocalDensity.current
     val measurer = rememberTextMeasurer()
     DisposableEffect(controller, measurer, density) {
         controller.setTextMeasurer(NveComposeTextMeasurer(measurer, density))
         onDispose { controller.setTextMeasurer(null) }
+    }
+    if (onEvent != null) {
+        val currentOnEvent by rememberUpdatedState(onEvent)
+        DisposableEffect(controller) {
+            val handler: (NveEmittedEvent) -> Unit = { currentOnEvent(it) }
+            controller.onEvent = handler
+            onDispose {
+                if (controller.onEvent === handler) controller.onEvent = null
+            }
+        }
+    }
+    if (hostBridge != null) {
+        DisposableEffect(controller, hostBridge) {
+            controller.setHostBridge(hostBridge)
+            onDispose { controller.setHostBridge(null) }
+        }
     }
     val scene = controller.scene
     val root = scene.rootBox

@@ -2,8 +2,10 @@ package dev.nve.host;
 
 import dev.nve.host.generated.NveJniFrame;
 import dev.nve.host.generated.NveRuntimeAbi;
+import java.nio.Buffer;
 import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -32,6 +34,34 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
         void onFrame(SceneReader scene, RuntimeSurface surface);
     }
 
+    /** Receives raw {@code NVEV} v2 outbound batches drained from the attached app (read via {@link EventRingReader}). */
+    public interface EmittedEventConsumer {
+        void onEmittedEvents(byte[] nvevBatch);
+    }
+
+    /** Measured surface dimensions and optional baselines returned by {@link #measureSurface}. */
+    public static final class SurfaceMeasure {
+        public final float width;
+        public final float height;
+        public final float firstBaseline;
+        public final float lastBaseline;
+
+        public SurfaceMeasure(float width, float height, float firstBaseline, float lastBaseline) {
+            this.width = width;
+            this.height = height;
+            this.firstBaseline = firstBaseline;
+            this.lastBaseline = lastBaseline;
+        }
+
+        public boolean hasFirstBaseline() {
+            return !Float.isNaN(firstBaseline);
+        }
+
+        public boolean hasLastBaseline() {
+            return !Float.isNaN(lastBaseline);
+        }
+    }
+
     static final int INITIAL_RING_BYTES = 64 * 1024;
     static final int MAX_RING_BYTES = 16 * 1024 * 1024;
     /** Frames one {@link #render} delivers back to back before posting the rest (UI fairness). */
@@ -52,9 +82,12 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
     private final int[] out = new int[1];
     private final long[] kind = new long[1];
     private final float[] scrollOut = new float[2];
+    private final float[] measureOut = new float[4];
     private EventRingWriter ring;
+    private ByteBuffer scratchDirect;
     private volatile long handle;
     private FrameConsumer consumer;
+    private EmittedEventConsumer emittedEventConsumer;
     private boolean needsFrame = true;
     private boolean inFrame;
     private boolean closeAfterFrame;
@@ -87,6 +120,14 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
     public void setFrameConsumer(FrameConsumer consumer) {
         this.consumer = consumer;
         needsFrame = true;
+    }
+
+    /**
+     * Installs ({@code null} removes) the listener receiving outbound app events drained after
+     * every tick, event dispatch, prop update, and hot patch.
+     */
+    public void setEmittedEventConsumer(EmittedEventConsumer listener) {
+        this.emittedEventConsumer = listener;
     }
 
     /** The runtime's last error, else why the last frame was rejected, else {@code ""}. */
@@ -170,6 +211,201 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
         return afterStructuralChange(NativeRuntime.setTextMeasurer(handle, measurer));
     }
 
+    /** Copies {@code bytes} into the owner-thread reusable direct scratch buffer ({@code null} for empty). */
+    private ByteBuffer toScratchDirect(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) return null;
+        if (scratchDirect == null || scratchDirect.capacity() < bytes.length) {
+            int cap = scratchDirect == null ? 256 : scratchDirect.capacity();
+            while (cap < bytes.length && cap < (Integer.MAX_VALUE >>> 1)) cap *= 2;
+            if (cap < bytes.length) cap = bytes.length;
+            scratchDirect = ByteBuffer.allocateDirect(cap).order(ByteOrder.LITTLE_ENDIAN);
+        }
+        ((Buffer) scratchDirect).clear();
+        scratchDirect.put(bytes);
+        ((Buffer) scratchDirect).flip();
+        return scratchDirect;
+    }
+
+    /** Forwards embedding-host props encoded as a single {@link BinWriter} {@code NveBinValue} map (direct buffer). */
+    public int setProps(ByteBuffer binMap, int length) {
+        structural("setProps");
+        out[0] = 0;
+        final int st = NativeRuntime.setProps(handle, binMap, length, out);
+        if (st == NveRuntimeAbi.STATUS_OK) {
+            if (out[0] != 0) needsFrame = true;
+            drainEmittedIfListening();
+        }
+        return st;
+    }
+
+    /** Forwards embedding-host props encoded as a single {@link BinWriter} {@code NveBinValue} map. */
+    public int setProps(byte[] binMap) {
+        structural("setProps");
+        final int len = binMap == null ? 0 : binMap.length;
+        return setProps(toScratchDirect(binMap), len);
+    }
+
+    /** Manually drains outbound app events as an {@code NVEV} v2 byte array ({@code null} when empty or unsupported). */
+    public byte[] drainEmittedEvents() {
+        structural("drainEmittedEvents");
+        out[0] = NveRuntimeAbi.STATUS_OK;
+        return NativeRuntime.drainEmittedEvents(handle, out);
+    }
+
+    /** Snapshots the attached app's state ({@code null} on error; see {@link #lastError}). */
+    public byte[] snapshotState() {
+        structural("snapshotState");
+        out[0] = NveRuntimeAbi.STATUS_OK;
+        return NativeRuntime.snapshotState(handle, out);
+    }
+
+    /** Restores a state snapshot (direct buffer) into the attached app. */
+    public int restoreState(ByteBuffer state, int length) {
+        structural("restoreState");
+        return afterStructuralChange(NativeRuntime.restoreState(handle, state, length));
+    }
+
+    /** Restores a state snapshot into the attached app. */
+    public int restoreState(byte[] state) {
+        structural("restoreState");
+        final int len = state == null ? 0 : state.length;
+        return restoreState(toScratchDirect(state), len);
+    }
+
+    public int saveStateFile(String path, int schemaVersion) {
+        structural("saveStateFile");
+        return NativeRuntime.saveStateFile(handle, path, schemaVersion);
+    }
+
+    public int restoreStateFile(String path, int schemaVersion) {
+        structural("restoreStateFile");
+        return afterStructuralChange(NativeRuntime.restoreStateFile(handle, path, schemaVersion));
+    }
+
+    public int clearStateFile(String path) {
+        structural("clearStateFile");
+        return NativeRuntime.clearStateFile(handle, path);
+    }
+
+    public int saveFrame0File(String path, long appBuildId, long envHash) {
+        structural("saveFrame0File");
+        return NativeRuntime.saveFrame0File(handle, path, appBuildId, envHash);
+    }
+
+    public int bootFrame0File(String path, long appBuildId, long envHash) {
+        structural("bootFrame0File");
+        return source(NativeRuntime.bootFrame0File(handle, path, appBuildId, envHash), false);
+    }
+
+    public int bootFrame0Bytes(ByteBuffer envelope, int length, long appBuildId, long envHash) {
+        structural("bootFrame0Bytes");
+        return source(NativeRuntime.bootFrame0Bytes(handle, envelope, length, appBuildId, envHash), false);
+    }
+
+    public int bootFrame0Bytes(byte[] envelope, long appBuildId, long envHash) {
+        structural("bootFrame0Bytes");
+        final int len = envelope == null ? 0 : envelope.length;
+        return bootFrame0Bytes(toScratchDirect(envelope), len, appBuildId, envHash);
+    }
+
+    /** Applies an {@code NVP1} hot patch (direct buffer); sets {@code needsFrame} when changed. */
+    public int applyHotPatch(ByteBuffer patchNvp1, int length) {
+        structural("applyHotPatch");
+        out[0] = 0;
+        final int st = NativeRuntime.applyHotPatch(handle, patchNvp1, length, out);
+        if (st == NveRuntimeAbi.STATUS_OK) {
+            if (out[0] != 0) needsFrame = true;
+            drainEmittedIfListening();
+        }
+        return st;
+    }
+
+    /** Applies an {@code NVP1} hot patch; sets {@code needsFrame} when changed. */
+    public int applyHotPatch(byte[] patchNvp1) {
+        structural("applyHotPatch");
+        final int len = patchNvp1 == null ? 0 : patchNvp1.length;
+        return applyHotPatch(toScratchDirect(patchNvp1), len);
+    }
+
+    /** Measures the surface into caller-owned {@code outMeasure[0..4)} ({@code [w, h, firstBaseline, lastBaseline]}). */
+    public int measureSurface(
+            float minWidth, float minHeight, float maxWidth, float maxHeight, int flags, float[] outMeasure) {
+        structural("measureSurface");
+        return NativeRuntime.measureSurface(handle, minWidth, minHeight, maxWidth, maxHeight, flags, outMeasure);
+    }
+
+    /** Measures the surface, returning {@code null} on failure (see {@link #lastError}). */
+    public SurfaceMeasure measureSurface(
+            float minWidth, float minHeight, float maxWidth, float maxHeight, int flags) {
+        if (measureSurface(minWidth, minHeight, maxWidth, maxHeight, flags, measureOut) != NveRuntimeAbi.STATUS_OK) {
+            return null;
+        }
+        return new SurfaceMeasure(measureOut[0], measureOut[1], measureOut[2], measureOut[3]);
+    }
+
+    public int setIntrinsicSizeInvalidatedListener(Runnable listener) {
+        structural("setIntrinsicSizeInvalidatedListener");
+        return NativeRuntime.setIntrinsicSizeInvalidatedListener(handle, listener);
+    }
+
+    public int setHostCallbackBridge(NativeRuntime.HostCallbackBridge bridge) {
+        structural("setHostCallbackBridge");
+        return NativeRuntime.setHostCallbackBridge(handle, bridge);
+    }
+
+    /** Cross-thread safe: completes a {@code PENDING} host request without racing {@link #close}. */
+    public int completeHostRequest(long requestId, int hostStatus, ByteBuffer payload, int length) {
+        synchronized (handleLock) {
+            final long h = handle;
+            return h == 0L ? NveRuntimeAbi.STATUS_INVALID_ARG
+                    : NativeRuntime.completeHostRequest(h, requestId, hostStatus, payload, length);
+        }
+    }
+
+    /** Cross-thread safe: completes a {@code PENDING} host request without racing {@link #close}. */
+    public int completeHostRequest(long requestId, int hostStatus, byte[] payload) {
+        final ByteBuffer direct = (payload == null || payload.length == 0) ? null : HybridRuntime.directBuffer(payload);
+        return completeHostRequest(requestId, hostStatus, direct, payload == null ? 0 : payload.length);
+    }
+
+    /** Cross-thread safe: pushes an unsolicited host event without racing {@link #close}. */
+    public int pushHostEvent(int serviceId, int eventId, ByteBuffer payload, int length) {
+        synchronized (handleLock) {
+            final long h = handle;
+            return h == 0L ? NveRuntimeAbi.STATUS_INVALID_ARG
+                    : NativeRuntime.pushHostEvent(h, serviceId, eventId, payload, length);
+        }
+    }
+
+    /** Cross-thread safe: pushes an unsolicited host event without racing {@link #close}. */
+    public int pushHostEvent(int serviceId, int eventId, byte[] payload) {
+        final ByteBuffer direct = (payload == null || payload.length == 0) ? null : HybridRuntime.directBuffer(payload);
+        return pushHostEvent(serviceId, eventId, direct, payload == null ? 0 : payload.length);
+    }
+
+    /** Cross-thread safe: publishes an inbound host channel message without racing {@link #close}. */
+    public int publishHostChannel(int channelId, int flags, ByteBuffer payload, int length) {
+        synchronized (handleLock) {
+            final long h = handle;
+            return h == 0L ? NveRuntimeAbi.STATUS_INVALID_ARG
+                    : NativeRuntime.publishHostChannel(h, channelId, flags, payload, length);
+        }
+    }
+
+    /** Cross-thread safe: publishes an inbound host channel message without racing {@link #close}. */
+    public int publishHostChannel(int channelId, int flags, byte[] payload) {
+        final ByteBuffer direct = (payload == null || payload.length == 0) ? null : HybridRuntime.directBuffer(payload);
+        return publishHostChannel(channelId, flags, direct, payload == null ? 0 : payload.length);
+    }
+
+    private void drainEmittedIfListening() {
+        final EmittedEventConsumer listener = emittedEventConsumer;
+        if (listener == null || handle == 0L || inFrame || closeAfterFrame) return;
+        out[0] = NveRuntimeAbi.STATUS_OK;
+        final byte[] batch = NativeRuntime.drainEmittedEvents(handle, out);
+        if (batch != null && batch.length > 0) listener.onEmittedEvents(batch);
+    }
+
     /**
      * Writes events with {@code writer} and dispatches them (rendering when the app changed), or,
      * inside {@code onFrame}, right after the frame is released. A batch that does not fit flushes
@@ -219,7 +455,10 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
         out[0] = 0;
         final int st = NativeRuntime.dispatchEvents(handle, ring.buffer(), ring.length(), out);
         ring.reset();
-        if (st == NveRuntimeAbi.STATUS_OK && out[0] != 0) needsFrame = true;
+        if (st == NveRuntimeAbi.STATUS_OK) {
+            if (out[0] != 0) needsFrame = true;
+            drainEmittedIfListening();
+        }
         return st;
     }
 
@@ -270,7 +509,7 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
                 }
                 if (!deliverFrame()) break;
                 delivered = true;
-                if (closeAfterFrame || (!replayDeferred() && !needsFrame)) break;
+                if (handle == 0L || closeAfterFrame || (!replayDeferred() && !needsFrame)) break;
             }
         } finally {
             rendering = false;
@@ -287,9 +526,17 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
     private boolean deliverFrame() {
         out[0] = 0;
         final int st = NativeRuntime.tick(handle, tickSeconds(), out);
-        if (st != NveRuntimeAbi.STATUS_OK || (out[0] == 0 && !needsFrame) || consumer == null) return false;
-        if (NativeRuntime.acquireScene(handle, header, slabs) != NveRuntimeAbi.STATUS_OK) return false;
+        if (st != NveRuntimeAbi.STATUS_OK) return false;
+        if ((out[0] == 0 && !needsFrame) || consumer == null) {
+            drainEmittedIfListening();
+            return false;
+        }
+        if (NativeRuntime.acquireScene(handle, header, slabs) != NveRuntimeAbi.STATUS_OK) {
+            drainEmittedIfListening();
+            return false;
+        }
         inFrame = true;
+        boolean ok = false;
         try {
             needsFrame = false;  // retrying a rejected frame would fail the same way
             try {
@@ -300,13 +547,15 @@ public final class RuntimeSurface implements AutoCloseable, FrameHost {
             }
             frameError = null;
             consumer.onFrame(reader, this);
-            return true;
+            ok = true;
         } finally {
             reader.detach();
             Arrays.fill(slabs, null);
             NativeRuntime.releaseScene(handle);
             inFrame = false;
         }
+        drainEmittedIfListening();
+        return ok;
     }
 
     /** Seconds since the previous tick, clamped to {@code [0, MAX_TICK_SECONDS]} (0 on the first). */
