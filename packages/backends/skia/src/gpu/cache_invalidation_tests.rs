@@ -217,3 +217,249 @@ fn skia_image_cache_never_pins_evicted_decoded_images_and_invalidates_on_same_ur
     cold_surface.copy_to_pixel_buffer(&mut cold_buf).unwrap();
     assert!(compare_buffers(&warm_buf, &cold_buf).exact_match);
 }
+
+#[test]
+fn hud_banner_bypasses_text_blob_cache_and_paints_visible_ink() {
+    let engine = CosmicTextEngine::shared();
+    if !engine.has_system_fonts() {
+        assert!(
+            std::env::var_os("NVE_ALLOW_NO_SYSTEM_FONTS").is_some(),
+            "system fonts unavailable (set NVE_ALLOW_NO_SYSTEM_FONTS=1 only in fontless containers)"
+        );
+        return;
+    }
+
+    let mut surface = CpuSkiaSurface::new(320, 80).unwrap();
+    let empty = DisplayList::default();
+    for frame in 0..20u32 {
+        let banner = format!("FPS {:>3}.0 | Frame 0.{frame:02}ms", 60 + frame);
+        surface
+            .execute_frame(&empty, 1.0, ColorRgba::BLACK, Some(&banner))
+            .expect("hud frame");
+    }
+
+    let st = surface.cache_stats();
+    assert_eq!(st.text_blob_entries, 0, "HUD banner must bypass text_blobs cache");
+    assert_eq!(st.text_blob_misses, 0, "HUD banner must not pollute text_blob_misses");
+    assert_eq!(st.text_blob_hits, 0, "HUD banner must not touch text_blob_hits");
+
+    let mut out = PixelBuffer::new(320, 80);
+    surface.copy_to_pixel_buffer(&mut out).unwrap();
+    assert!(
+        count_lit_ink(&out, 10, 10, 260, 44) > 5_000,
+        "transient HUD TextBlob must still paint visible text"
+    );
+}
+
+#[test]
+fn small_typeface_byte_cap_still_caches_failed_typeface_once() {
+    let engine = Arc::new(CosmicTextEngine::new());
+    if !engine.has_system_fonts() {
+        assert!(
+            std::env::var_os("NVE_ALLOW_NO_SYSTEM_FONTS").is_some(),
+            "system fonts unavailable (set NVE_ALLOW_NO_SYSTEM_FONTS=1 only in fontless containers)"
+        );
+        return;
+    }
+
+    let mut surface = CpuSkiaSurface::with_text_engine(220, 60, 1.0, Arc::clone(&engine)).unwrap();
+    // Cap strictly below `FAILED_TYPEFACE_BYTES` (64): clamped charge must still admit the failure.
+    surface.renderer().set_base_typefaces_byte_cap_for_test(16);
+    engine.fail_face_load.store(true, Ordering::Relaxed);
+    for idx in 0..20u32 {
+        let dl = DisplayList {
+            ops: vec![PaintOp::DrawText {
+                rect: LayoutRect { x: 8.0, y: 8.0, width: 200.0, height: 40.0 },
+                text: format!("Tiny Cap Fail #{idx}"),
+                font_size: 16.0,
+                font_weight: 500,
+                text_align: TextAlign::Left,
+                color: ColorRgba::WHITE,
+            }],
+        };
+        surface
+            .render_cached_with_plugins(&dl, 1.0, ColorRgba::BLACK, None)
+            .expect("small-cap failed font frame");
+    }
+    assert_eq!(
+        engine.face_load_calls.load(Ordering::Relaxed),
+        1,
+        "failed typeface must be cached even when byte cap < FAILED_TYPEFACE_BYTES"
+    );
+}
+
+#[test]
+fn opacity_wrapped_plugin_without_plugins_preserves_siblings_and_skips_plugin_draw() {
+    use std::sync::atomic::AtomicU32;
+    use nve_abi::SurfaceId;
+    use nve_engine::{StoreBackend, Viewport};
+    use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
+    use nve_tables::tables::{FlexDirection, Layout, Visual};
+
+    use super::cache_parity_tests::{CountingPluginSystem, ParityPlugin};
+
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    {
+        let mut tx = store.tx();
+        tx.edit::<Layout>(NodeId::ROOT)
+            .width(Length::points(80.0))
+            .height(Length::points(40.0))
+            .flex_direction(FlexDirection::Row);
+        let p = tx.create();
+        tx.edit::<Layout>(p)
+            .width(Length::points(40.0))
+            .height(Length::points(40.0));
+        tx.edit::<Visual>(p).opacity(0.5);
+        tx.edit::<ParityPlugin>(p).color_rgba(ColorRgba::rgb(250, 204, 21).to_u32());
+        let sib = tx.create();
+        tx.edit::<Layout>(sib)
+            .width(Length::points(40.0))
+            .height(Length::points(40.0));
+        tx.edit::<Visual>(sib)
+            .background(Rgba::rgb(40, 180, 220))
+            .opacity(0.5);
+        tx.set_children(NodeId::ROOT, &[p, sib]);
+        tx.commit_into(&mut changes);
+    }
+
+    let calls = Arc::new(AtomicU32::new(0));
+    let mut backend = crate::SkiaBackend::new();
+    backend.register_table_system(CountingPluginSystem { calls: Arc::clone(&calls) });
+    backend.set_viewport(
+        SurfaceId::ROOT,
+        Viewport { width: 80.0, height: 40.0, scale_factor: 1.0 },
+    );
+    backend.commit(&store, &changes).unwrap();
+
+    let mut surface = CpuSkiaSurface::new(80, 40).unwrap();
+    surface
+        .render_scene_cached_with_plugins(backend.scene(), 1.0, ColorRgba::BLACK, None)
+        .unwrap();
+    let mut out = PixelBuffer::new(80, 40);
+    surface.copy_to_pixel_buffer(&mut out).unwrap();
+    assert_eq!(calls.load(Ordering::Relaxed), 0, "plugins=None must not invoke plugin");
+    assert_eq!(out.get_rgb(20, 20), Some((0, 0, 0)), "plugin region must remain clear");
+    let sib_px = out.get_rgb(60, 20).expect("sibling pixel");
+    assert!(
+        sib_px.1 > 70 && sib_px.2 > 90 && sib_px.2 < 140,
+        "opacity-wrapped sibling must still paint at 0.5 alpha, got {sib_px:?}"
+    );
+}
+
+#[cfg(all(feature = "skia-metal", any(target_os = "macos", target_os = "ios")))]
+#[test]
+fn gpu_to_cpu_context_switch_evicts_gpu_images_and_plugins() {
+    use std::sync::atomic::AtomicU32;
+    use nve_abi::EventBatchBuf;
+    use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
+    use nve_tables::tables::Layout;
+    use objc2::rc::Retained;
+    use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice};
+    use skia_safe::gpu::{direct_contexts, mtl};
+
+    use super::cache_parity_tests::{CountingPluginSystem, ParityPlugin};
+    use crate::gpu::ganesh::create_ganesh_offscreen_surface;
+    use crate::gpu::SwapchainExtent;
+    use crate::table_system::SkiaTableRegistry;
+
+    let _img_guard = lock_shared_image_cache();
+    let img_key = "nve-test://p2-2-gpu-to-cpu-evict";
+    register_checker_image(img_key, [220, 60, 40, 255], [40, 180, 240, 255]);
+
+    let Some(device) = MTLCreateSystemDefaultDevice() else {
+        return;
+    };
+    let queue = device.newCommandQueue().expect("Metal command queue");
+    // SAFETY: `device` and `queue` outlive `direct_context` and `gpu_surface` in this test.
+    let backend = unsafe {
+        mtl::BackendContext::new(
+            Retained::as_ptr(&device) as mtl::Handle,
+            Retained::as_ptr(&queue) as mtl::Handle,
+        )
+    };
+    let mut direct_context =
+        direct_contexts::make_metal(&backend, None).expect("Metal DirectContext");
+    let extent = SwapchainExtent { width: 64, height: 64, scale_factor: 1.0 };
+    let mut gpu_surface =
+        create_ganesh_offscreen_surface(&mut direct_context, extent, "Metal").expect("GPU surface");
+
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let plugin_node = {
+        let mut tx = store.tx();
+        let p = tx.create();
+        tx.edit::<Layout>(p).width(Length::points(32.0)).height(Length::points(32.0));
+        tx.edit::<ParityPlugin>(p).color_rgba(ColorRgba::rgb(250, 204, 21).to_u32());
+        tx.set_children(NodeId::ROOT, &[p]);
+        tx.commit_into(&mut changes);
+        p
+    };
+
+    let mut registry = SkiaTableRegistry::new();
+    registry.register(CountingPluginSystem { calls: Arc::new(AtomicU32::new(0)) });
+    let mut events = EventBatchBuf::new();
+
+    let dl = DisplayList {
+        ops: vec![
+            PaintOp::DrawImage {
+                rect: LayoutRect { x: 0.0, y: 0.0, width: 32.0, height: 32.0 },
+                radius: 0.0,
+                src: img_key.to_owned(),
+                fit: ImageFit::Fill,
+                resolved: ImageCache::shared().resolve_cached_handle(img_key),
+            },
+            PaintOp::Plugin {
+                node_id: plugin_node,
+                rect: LayoutRect { x: 32.0, y: 0.0, width: 32.0, height: 32.0 },
+                inherited_text_color: Rgba::WHITE,
+                plugin_epoch: 1,
+            },
+        ],
+    };
+
+    let renderer = SkiaCanvasRenderer::new();
+    renderer.paint_display_list_with_gpu_context(
+        &dl,
+        gpu_surface.canvas(),
+        1.0,
+        Some((&store, &registry, &mut events)),
+        Some(&mut direct_context),
+    );
+    let _ = direct_context.flush_submit_and_sync_cpu();
+    let gpu_stats = renderer.cache_stats();
+    assert_eq!(gpu_stats.image_uploads, 1, "GPU frame must upload image texture");
+    assert_eq!(gpu_stats.plugin_uploads, 1, "GPU frame must upload plugin texture");
+    assert_eq!(gpu_stats.image_entries, 1);
+    assert_eq!(gpu_stats.plugin_entries, 1);
+
+    // Switching the SAME renderer to a CPU canvas (`direct_context = None`) MUST immediately evict
+    // all GPU-backed images and plugins so old Ganesh textures are not kept pinned.
+    let mut cpu_surface = skia_safe::surfaces::raster_n32_premul((64, 64)).expect("CPU surface");
+    renderer.paint_display_list_opt_plugins(
+        &DisplayList::default(),
+        cpu_surface.canvas(),
+        1.0,
+        None,
+    );
+    let cpu_stats = renderer.cache_stats();
+    assert_eq!(cpu_stats.image_entries, 0, "GPU→CPU switch must evict GPU-backed images");
+    assert_eq!(cpu_stats.plugin_entries, 0, "GPU→CPU switch must evict GPU-backed plugins");
+
+    // Subsequent CPU draw repopulates raster entries cleanly without incrementing GPU uploads.
+    renderer.paint_display_list_opt_plugins(
+        &dl,
+        cpu_surface.canvas(),
+        1.0,
+        Some((&store, &registry, &mut events)),
+    );
+    let post_cpu = renderer.cache_stats();
+    assert_eq!(post_cpu.image_entries, 1);
+    assert_eq!(post_cpu.plugin_entries, 1);
+    assert_eq!(post_cpu.image_uploads, 1, "CPU frame must not perform GPU uploads");
+    assert_eq!(post_cpu.plugin_uploads, 1, "CPU frame must not perform GPU uploads");
+
+    drop(gpu_surface);
+    direct_context.release_resources_and_abandon();
+    drop(direct_context);
+}

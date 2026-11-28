@@ -50,9 +50,23 @@ pub use nve_engine::InteractionTracker;
 
 static NEXT_PLUGIN_EPOCH: AtomicU64 = AtomicU64::new(1);
 
+/// Monotonic non-zero `u64` allocator that skips the `0` empty-slot sentinel on wrap-around.
+#[inline]
+pub(crate) fn next_nonzero_u64(counter: &AtomicU64) -> u64 {
+    let mut cur = counter.load(Ordering::Relaxed);
+    loop {
+        let val = if cur == 0 { 1 } else { cur };
+        let next = val.wrapping_add(1).max(1);
+        match counter.compare_exchange_weak(cur, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return val,
+            Err(actual) => cur = actual,
+        }
+    }
+}
+
 #[inline]
 pub(crate) fn next_plugin_epoch() -> u64 {
-    NEXT_PLUGIN_EPOCH.fetch_add(1, Ordering::Relaxed)
+    next_nonzero_u64(&NEXT_PLUGIN_EPOCH)
 }
 
 #[cfg(test)]

@@ -17,7 +17,7 @@ mod png_rows;
 mod tests;
 
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 
 use nve_abi::ColorRgba;
 use nve_tables::tables::ImageFit;
@@ -44,7 +44,7 @@ static NEXT_DECODED_IMAGE_ID: AtomicU64 = AtomicU64::new(1);
 
 #[inline]
 pub(crate) fn next_decoded_image_id() -> u64 {
-    NEXT_DECODED_IMAGE_ID.fetch_add(1, Ordering::Relaxed)
+    crate::next_nonzero_u64(&NEXT_DECODED_IMAGE_ID)
 }
 
 /// Sealed dense slot index inside [`ImageCache`] (`[INV:typed-domain-handles]`).
@@ -104,15 +104,18 @@ pub(crate) fn lock_shared_image_cache() -> std::sync::MutexGuard<'static, ()> {
 }
 
 /// Decoded straight-alpha (unpremultiplied) RGBA8888 image buffer.
+///
+/// Dimensions and pixel bytes are immutable after construction so external code cannot mutate
+/// pixels without minting a fresh allocation [`Self::id`] for GPU texture cache invalidation.
 #[derive(Debug)]
 pub struct DecodedImage {
     /// Process-wide monotonic allocation identity used as an ABA-free, zero-hashing cache key
     /// for GPU texture caches (`SkiaImageCache`). Private so external code cannot forge or alias
     /// identities across distinct pixel buffers.
     id: u64,
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
 }
 
 impl Clone for DecodedImage {
@@ -135,10 +138,28 @@ impl PartialEq for DecodedImage {
 impl Eq for DecodedImage {}
 
 impl DecodedImage {
-    /// Returns the process-wide unique monotonic allocation ID for this decoded buffer.
+    /// Returns the process-wide unique monotonic non-zero allocation ID for this decoded buffer.
     #[inline]
-    pub fn id(&self) -> u64 {
+    pub const fn id(&self) -> u64 {
         self.id
+    }
+
+    /// Returns the image width in pixels.
+    #[inline]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Returns the image height in pixels.
+    #[inline]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Returns a read-only view of the straight-alpha RGBA8888 pixel bytes.
+    #[inline]
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
     }
     /// Creates a validated [`DecodedImage`] from raw straight-alpha RGBA8888 bytes.
     pub fn from_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Result<Self, ImageDecodeError> {

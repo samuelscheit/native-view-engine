@@ -189,6 +189,12 @@ impl ReplaySink for SkiaReplaySink<'_> {
                 self.pop_clip();
                 return;
             }
+            LocalPaintOp::Plugin { .. } if self.plugins.is_none() => return,
+            LocalPaintOp::FillRoundedRectGradient { gradient_idx, .. }
+                if scene.arenas.gradient(gradient_idx).is_none() =>
+            {
+                return;
+            }
             _ => {}
         }
 

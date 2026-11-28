@@ -90,7 +90,7 @@ mod native {
             b.iter(|| {
                 let img = decode_image_uri(black_box(SAMPLE_PNG_DATA_URI))
                     .expect("valid bench PNG data URI");
-                black_box(img.rgba.len())
+                black_box(img.rgba().len())
             });
         });
 

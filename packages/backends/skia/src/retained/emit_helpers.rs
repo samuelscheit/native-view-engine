@@ -303,9 +303,9 @@ pub(crate) fn get_or_alloc_chunk(
             meta.parent_chunk = parent_chunk;
             return (existing, false);
         }
-        // ABA recycled index: retire old generation's ops/children and reset property slot.
+        // ABA recycled index: retire old generation's ops and reset property slot.
+        // (`sync_full_tree` clears `ordered_children` and all `children_len` before walking.)
         arenas.retire_chunk_ops(meta);
-        arenas.retire_children_span(meta);
         *meta = NodeChunkMeta {
             node_id: id,
             parent_chunk,

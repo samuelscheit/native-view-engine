@@ -23,7 +23,7 @@ use crate::image_cache::ImageCache;
 use crate::scroll::compute_scroll_content_size;
 use crate::table_system::SkiaTableRegistry;
 use crate::text::CosmicTextEngine;
-use crate::text_cache::normalize_text_align;
+use crate::text_cache::{canonical_f32, normalize_text_align};
 use crate::TextFocusState;
 
 /// Deterministic `xxh64` digest of inherited text style + visibility propagated to children,
@@ -35,7 +35,8 @@ pub(crate) fn compute_inherit_hash(text: ResolvedChunkText, effective_hidden: bo
     bytes[2] = normalize_text_align(text.text_align) as u8;
     bytes[3] = u8::from(effective_hidden);
     bytes[4..8].copy_from_slice(&text.text_color.to_u32().to_le_bytes());
-    bytes[8..12].copy_from_slice(&text.font_size.to_bits().to_le_bytes());
+    let font_size_bits = canonical_f32(text.font_size).to_bits();
+    bytes[8..12].copy_from_slice(&font_size_bits.to_le_bytes());
     xxh64(&bytes, 0)
 }
 

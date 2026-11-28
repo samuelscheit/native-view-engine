@@ -179,7 +179,6 @@ pub struct ChunkArenas {
     pub dead_str_bytes: usize,
     pub dead_grads: usize,
     pub dead_image_handles: usize,
-    pub dead_children: usize,
     pub live_op_count: usize,
     pub compactions: u64,
 }
@@ -195,16 +194,14 @@ impl ChunkArenas {
         self.dead_str_bytes = 0;
         self.dead_grads = 0;
         self.dead_image_handles = 0;
-        self.dead_children = 0;
         self.live_op_count = 0;
     }
 
     /// Resets `ordered_children` before a full-tree sync rebuilds every parent's child span,
-    /// avoiding dead-span churn and unnecessary compaction passes on `LAYOUT` commits.
+    /// keeping `ordered_children.len()` exact with zero dead spans across `LAYOUT` commits.
     #[inline]
     pub fn reset_children_arena(&mut self) {
         self.ordered_children.clear();
-        self.dead_children = 0;
     }
 
     #[inline]
@@ -308,13 +305,6 @@ impl ChunkArenas {
         meta.op_len = 0;
     }
 
-    #[inline]
-    pub fn retire_children_span(&mut self, meta: &mut NodeChunkMeta) {
-        self.dead_children += meta.children_len as usize;
-        meta.children_start = 0;
-        meta.children_len = 0;
-    }
-
     /// Compacts dead spans in-place once dead usage exceeds 50% and a minimum floor, keeping
     /// arena memory strictly bounded under sustained paint/text churn. Moves gradients via
     /// `Option::take` so stop `Vec`s are never cloned during compaction.
@@ -325,17 +315,13 @@ impl ChunkArenas {
         let compact_grad = self.dead_grads >= 64 && self.dead_grads * 2 >= self.grad_arena.len();
         let compact_img_handles = self.dead_image_handles >= 64
             && self.dead_image_handles * 2 >= self.image_handles.len();
-        let compact_children =
-            self.dead_children >= 256 && self.dead_children * 2 >= self.ordered_children.len();
 
-        if !(compact_ops || compact_str || compact_grad || compact_img_handles || compact_children)
-        {
+        if !(compact_ops || compact_str || compact_grad || compact_img_handles) {
             return;
         }
         self.compactions = self.compactions.wrapping_add(1);
 
-        if compact_ops || compact_str || compact_grad || compact_img_handles {
-            let mut new_ops = Vec::with_capacity(self.live_op_count);
+        let mut new_ops = Vec::with_capacity(self.live_op_count);
             let mut new_str =
                 String::with_capacity(self.str_arena.len().saturating_sub(self.dead_str_bytes));
             let mut new_grads =
@@ -441,39 +427,14 @@ impl ChunkArenas {
                 meta.op_start = op_start;
             }
 
-            self.ops = new_ops;
-            self.str_arena = new_str;
-            self.grad_arena = new_grads;
-            self.image_handles = new_image_handles;
-            self.dead_ops = 0;
-            self.dead_str_bytes = 0;
-            self.dead_grads = 0;
-            self.dead_image_handles = 0;
-            self.live_op_count = self.ops.len();
-        }
-
-        if compact_children {
-            let live_children = self
-                .ordered_children
-                .len()
-                .saturating_sub(self.dead_children);
-            let mut new_children = Vec::with_capacity(live_children);
-            for meta in chunks.iter_mut() {
-                if !meta.is_live() || meta.children_len == 0 {
-                    meta.children_start = 0;
-                    meta.children_len = 0;
-                    continue;
-                }
-                let start = new_children.len() as u32;
-                let old_s = meta.children_start as usize;
-                let old_e = old_s.saturating_add(meta.children_len as usize);
-                if let Some(slice) = self.ordered_children.get(old_s..old_e) {
-                    new_children.extend_from_slice(slice);
-                }
-                meta.children_start = start;
-            }
-            self.ordered_children = new_children;
-            self.dead_children = 0;
-        }
+        self.ops = new_ops;
+        self.str_arena = new_str;
+        self.grad_arena = new_grads;
+        self.image_handles = new_image_handles;
+        self.dead_ops = 0;
+        self.dead_str_bytes = 0;
+        self.dead_grads = 0;
+        self.dead_image_handles = 0;
+        self.live_op_count = self.ops.len();
     }
 }

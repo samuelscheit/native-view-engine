@@ -29,11 +29,11 @@ fn decodes_all_studio_workspace_png_avatars_to_8x8_rgba() {
         AVATAR_YOU,
     ] {
         let img = cache.get_or_decode(uri).expect("valid Studio avatar PNG");
-        assert_eq!(img.width, 8);
-        assert_eq!(img.height, 8);
-        assert_eq!(img.rgba.len(), 8 * 8 * 4);
+        assert_eq!(img.width(), 8);
+        assert_eq!(img.height(), 8);
+        assert_eq!(img.rgba().len(), 8 * 8 * 4);
         let opaque_non_black = img
-            .rgba
+            .rgba()
             .as_chunks::<4>()
             .0
             .iter()
@@ -66,7 +66,7 @@ fn decodes_file_uri_and_raw_rgba_and_evicts_lru() {
 
     let cache = ImageCache::new(2, 1024);
     let from_file = cache.get_or_decode(&file_uri).expect("decode file:// PNG");
-    assert_eq!((from_file.width, from_file.height), (8, 8));
+    assert_eq!((from_file.width(), from_file.height()), (8, 8));
 
     let raw = cache
         .insert_raw_rgba(
@@ -288,4 +288,19 @@ fn adam7_and_pass_indexing_reject_overflow_and_out_of_bounds_cleanly() {
     assert!(decode_pass(hdr, &[], None, None, 0, 0, 1, 1, 1, 1, &mut rgba).is_err());
     let mut tiny = vec![0u8; 2];
     assert!(decode_pass(hdr, &one_row, None, None, 0, 0, 1, 1, 1, 1, &mut tiny).is_err());
+}
+
+#[test]
+fn next_nonzero_u64_skips_zero_sentinel_on_wrap_and_zero_init() {
+    use std::sync::atomic::AtomicU64;
+
+    let wrap = AtomicU64::new(u64::MAX - 1);
+    assert_eq!(crate::next_nonzero_u64(&wrap), u64::MAX - 1);
+    assert_eq!(crate::next_nonzero_u64(&wrap), u64::MAX);
+    assert_eq!(crate::next_nonzero_u64(&wrap), 1);
+    assert_eq!(crate::next_nonzero_u64(&wrap), 2);
+
+    let zero_init = AtomicU64::new(0);
+    assert_eq!(crate::next_nonzero_u64(&zero_init), 1);
+    assert_eq!(crate::next_nonzero_u64(&zero_init), 2);
 }

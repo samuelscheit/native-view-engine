@@ -6,13 +6,14 @@
 use nve_abi::hash::{HashMap, HashSet};
 use nve_backend_skia::{SkiaFrameHook, TargetsOf};
 use nve_tables::snapshots::VisualSnapshot;
+use nve_tables::tables::Interaction;
 use nve_tables::transform::Transform2D;
 use nve_abi::ColorRgba;
 use nve_motion::{
     lerp_color_rgba, lerp_f32, lerp_transform_2d, resolve_transition_for, Motion, MotionPreference,
     TimedTransition, TransitionProperty, Transitions,
 };
-use nve_store::{ChangeSet, NodeId, NodeStore, NveTable};
+use nve_store::{ChangeSet, NodeId, NodeStore, NveTable, ResourceId};
 
 #[cfg(test)]
 mod tests;
@@ -220,6 +221,33 @@ impl MotionDriver {
         false
     }
 
+    /// `id` references a changed `Transitions` resource, or `id` / an ancestor references a
+    /// changed `StateRules` resource (whose in-place `Op::DefineResources` update can alter
+    /// active `:hover`/`:focus`/`:active`/`:disabled` targets or inherited text color).
+    fn affected_by_resource(
+        store: &NodeStore,
+        id: NodeId,
+        res_changed: &impl Fn(ResourceId) -> bool,
+    ) -> bool {
+        if store
+            .try_row::<Motion>(id)
+            .is_some_and(|m| res_changed(m.transitions()))
+        {
+            return true;
+        }
+        let mut cur = Some(id);
+        while let Some(n) = cur {
+            if store
+                .try_row::<Interaction>(n)
+                .is_some_and(|i| res_changed(i.state_rules()))
+            {
+                return true;
+            }
+            cur = store.parent(n);
+        }
+        false
+    }
+
     fn sync_visual(&mut self, store: &NodeStore, id: NodeId, target: VisualSnapshot) {
         let Some(prev) = self.last_target.insert(id, target) else {
             return;
@@ -330,14 +358,45 @@ impl SkiaFrameHook for MotionDriver {
                 self.untrack(id);
             }
         }
-        if self.tracked.is_empty() || (changes.created.is_empty() && changes.touched.is_empty()) {
+        let total_res_changed =
+            changes.resources_defined.len() + changes.resources_released.len();
+        if self.tracked.is_empty()
+            || (changes.created.is_empty()
+                && changes.touched.is_empty()
+                && total_res_changed == 0)
+        {
             return;
         }
         self.changed.clear();
         self.changed.extend(changes.created.iter().chain(changes.touched.iter()).copied());
         let mut ids = std::mem::take(&mut self.scratch);
         ids.clear();
-        ids.extend(self.tracked.iter().copied().filter(|&id| self.affected(store, id)));
+        if total_res_changed > 0 {
+            let res_set = (total_res_changed > 4).then(|| {
+                let mut set = HashSet::default();
+                set.reserve(total_res_changed);
+                set.extend(changes.resources_defined.iter().copied());
+                set.extend(changes.resources_released.iter().copied());
+                set
+            });
+            let res_changed = |rid: ResourceId| -> bool {
+                if rid.is_none() {
+                    return false;
+                }
+                if let Some(ref set) = res_set {
+                    set.contains(&rid)
+                } else {
+                    changes.resources_defined.contains(&rid)
+                        || changes.resources_released.contains(&rid)
+                }
+            };
+            ids.extend(self.tracked.iter().copied().filter(|&id| {
+                self.affected(store, id)
+                    || Self::affected_by_resource(store, id, &res_changed)
+            }));
+        } else {
+            ids.extend(self.tracked.iter().copied().filter(|&id| self.affected(store, id)));
+        }
         for &id in &ids {
             self.sync(store, id, targets);
         }

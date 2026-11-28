@@ -13,9 +13,9 @@ use super::oracle_tests::{assert_scene_matches_fresh_display_list, physical_dims
 use crate::raster::PixelBuffer;
 use crate::{PaintOp, SkiaBackend};
 
-const BG_CLEAR: ColorRgba = ColorRgba::rgb(240, 244, 248);
+pub(super) const BG_CLEAR: ColorRgba = ColorRgba::rgb(240, 244, 248);
 
-fn render_cpu_and_optionally_gpu(
+pub(super) fn render_cpu_and_optionally_gpu(
     backend: &mut SkiaBackend,
     store: &NodeStore,
     w: u32,
@@ -43,50 +43,69 @@ fn render_cpu_and_optionally_gpu(
     (cpu_buf, gpu_buf)
 }
 
-fn luma((r, g, b): (u8, u8, u8)) -> f32 {
+pub(super) fn luma((r, g, b): (u8, u8, u8)) -> f32 {
     0.299 * (r as f32) + 0.587 * (g as f32) + 0.114 * (b as f32)
 }
 
-fn assert_cpu_gpu_parity(
+/// Measures localized CPU↔GPU channel error strictly over the shadow bounding ROI `(x0, y0, x1, y1)`
+/// in physical pixels so empty canvas background never dilutes the error metric, and verifies that
+/// outside-ROI pixels match within strict tolerance (`<= 1`).
+pub(super) fn assert_cpu_gpu_parity_roi(
     cpu: &PixelBuffer,
     gpu: Option<&PixelBuffer>,
-    max_mean_diff: f32,
+    roi: (u32, u32, u32, u32),
+    max_roi_mean_diff: f32,
     label: &str,
 ) {
     let Some(gpu) = gpu else {
         return;
     };
     assert_eq!((cpu.width(), cpu.height()), (gpu.width(), gpu.height()));
-    let mut sum_diff = 0u64;
-    let mut count = 0u64;
-    for (&cp, &gp) in cpu.pixels().iter().zip(gpu.pixels().iter()) {
-        let cr = ((cp >> 16) & 0xFF) as u8;
-        let cg = ((cp >> 8) & 0xFF) as u8;
-        let cb = (cp & 0xFF) as u8;
-        let gr = ((gp >> 16) & 0xFF) as u8;
-        let gg = ((gp >> 8) & 0xFF) as u8;
-        let gb = (gp & 0xFF) as u8;
-        sum_diff += cr.abs_diff(gr) as u64 + cg.abs_diff(gg) as u64 + cb.abs_diff(gb) as u64;
-        count += 3;
+    let (w, h) = (cpu.width(), cpu.height());
+    let (rx0, ry0, rx1, ry1) = (roi.0.min(w), roi.1.min(h), roi.2.min(w), roi.3.min(h));
+    assert!(rx0 < rx1 && ry0 < ry1, "invalid ROI {roi:?} for {label}");
+
+    let mut roi_sum = 0u64;
+    let mut roi_count = 0u64;
+    let mut outside_max = 0u8;
+    for y in 0..h {
+        let in_y = y >= ry0 && y < ry1;
+        for x in 0..w {
+            let (cr, cg, cb) = cpu.get_rgb(x, y).unwrap();
+            let (gr, gg, gb) = gpu.get_rgb(x, y).unwrap();
+            let dr = cr.abs_diff(gr);
+            let dg = cg.abs_diff(gg);
+            let db = cb.abs_diff(gb);
+            if in_y && x >= rx0 && x < rx1 {
+                roi_sum += dr as u64 + dg as u64 + db as u64;
+                roi_count += 3;
+            } else {
+                outside_max = outside_max.max(dr).max(dg).max(db);
+            }
+        }
     }
-    let mean = (sum_diff as f32) / (count.max(1) as f32);
+    let roi_mean = (roi_sum as f32) / (roi_count.max(1) as f32);
     assert!(
-        mean <= max_mean_diff,
-        "CPU vs GPU inset shadow mean channel diff {mean:.2} exceeded {max_mean_diff:.2} for {label}"
+        outside_max <= 1,
+        "CPU vs GPU differed outside shadow ROI {roi:?} by {outside_max} channels for {label}"
+    );
+    assert!(
+        roi_mean <= max_roi_mean_diff,
+        "CPU vs GPU localized shadow ROI {roi:?} mean channel diff {roi_mean:.2} exceeded {max_roi_mean_diff:.2} for {label}"
     );
 }
 
-struct BoxSpec {
-    canvas: (u32, u32),
-    scale: f32,
-    rect: (f32, f32, f32, f32),
-    bg: Rgba,
-    radius: f32,
-    border: (f32, Rgba),
-    shadows: Vec<BoxShadow>,
+pub(super) struct BoxSpec {
+    pub canvas: (u32, u32),
+    pub scale: f32,
+    pub rect: (f32, f32, f32, f32),
+    pub bg: Rgba,
+    pub radius: f32,
+    pub border: (f32, Rgba),
+    pub shadows: Vec<BoxShadow>,
 }
 
-fn build_single_box(spec: BoxSpec) -> (NodeStore, SkiaBackend, NodeId) {
+pub(super) fn build_single_box(spec: BoxSpec) -> (NodeStore, SkiaBackend, NodeId) {
     let (w, h) = spec.canvas;
     let (box_x, box_y, box_w, box_h) = spec.rect;
     let (border_w, border_color) = spec.border;
@@ -172,7 +191,7 @@ fn inset_shadow_basic_blur_zero_bleed_and_oracle_parity() {
             );
         }
     }
-    assert_cpu_gpu_parity(&cpu, gpu.as_ref(), 3.0, "basic inset blur");
+    assert_cpu_gpu_parity_roi(&cpu, gpu.as_ref(), (19, 19, 121, 121), 5.0, "basic inset blur");
 }
 
 #[test]
@@ -203,7 +222,7 @@ fn inset_shadow_offset_positive_and_negative_spread() {
             "{label}: +offset inset must leave bottom ({bottom}) and right ({right}) bright"
         );
     }
-    assert_cpu_gpu_parity(&cpu, gpu.as_ref(), 3.0, "offset inset");
+    assert_cpu_gpu_parity_roi(&cpu, gpu.as_ref(), (19, 19, 121, 121), 5.0, "offset inset");
 
     // 2. Positive spread shrinks hole (thicker shadow); negative spread expands hole (thinner).
     let (s_pos, mut b_pos, _) = build_single_box(BoxSpec {
@@ -256,8 +275,8 @@ fn inset_shadow_offset_positive_and_negative_spread() {
             "{label}: negative spread must pull side shadow outside padding edge"
         );
     }
-    assert_cpu_gpu_parity(&cpu_pos, gpu_pos.as_ref(), 3.0, "positive spread inset");
-    assert_cpu_gpu_parity(&cpu_neg, gpu_neg.as_ref(), 3.0, "negative spread inset");
+    assert_cpu_gpu_parity_roi(&cpu_pos, gpu_pos.as_ref(), (19, 19, 121, 121), 5.0, "positive spread inset");
+    assert_cpu_gpu_parity_roi(&cpu_neg, gpu_neg.as_ref(), (19, 19, 121, 121), 5.0, "negative spread inset");
 }
 
 #[test]
@@ -313,7 +332,7 @@ fn inset_shadow_zero_blur_crisp_invisible_and_collapsed_hole() {
             "{label}: crisp inset hole at (50, 25)"
         );
     }
-    assert_cpu_gpu_parity(&cpu_c, gpu_c.as_ref(), 1.5, "crisp zero-blur inset");
+    assert_cpu_gpu_parity_roi(&cpu_c, gpu_c.as_ref(), (9, 9, 91, 91), 2.5, "crisp zero-blur inset");
 
     // 3. Collapsed hole (spread >= inner_w / 2): fills entire padding box with shadow color.
     let (s_col, mut b_col, _) = build_single_box(BoxSpec {
@@ -351,7 +370,7 @@ fn inset_shadow_zero_blur_crisp_invisible_and_collapsed_hole() {
             "{label}: collapsed hole must never bleed outside border box"
         );
     }
-    assert_cpu_gpu_parity(&cpu_col, gpu_col.as_ref(), 2.5, "collapsed hole inset");
+    assert_cpu_gpu_parity_roi(&cpu_col, gpu_col.as_ref(), (9, 9, 91, 91), 4.0, "collapsed hole inset");
 }
 
 #[test]
@@ -475,5 +494,11 @@ fn inset_shadow_rounded_corners_border_width_paint_order_and_hidpi_parity() {
             "{label}: yellow child must paint on top of inset shadow at (156,72), got ({cr},{cg},{cb})"
         );
     }
-    assert_cpu_gpu_parity(&cpu, gpu.as_ref(), 4.0, "combined rounded+border @2x HiDPI");
+    assert_cpu_gpu_parity_roi(
+        &cpu,
+        gpu.as_ref(),
+        (16, 16, 304, 280),
+        6.0,
+        "combined rounded+border @2x HiDPI",
+    );
 }

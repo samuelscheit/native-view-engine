@@ -21,6 +21,8 @@ mod replay_software;
 mod sync;
 
 #[cfg(test)]
+mod inset_shadow_parity_tests;
+#[cfg(test)]
 mod inset_shadow_tests;
 #[cfg(test)]
 mod oracle_edge_more_tests;
@@ -139,8 +141,8 @@ impl CompositorScene {
     }
 
     #[inline]
-    pub fn dead_children(&self) -> usize {
-        self.arenas.dead_children
+    pub fn ordered_children_len(&self) -> usize {
+        self.arenas.ordered_children.len()
     }
 
     #[inline]
@@ -402,6 +404,7 @@ impl CompositorScene {
                 stf.sticky_y = sty;
             }
         }
+        self.stats.last_dirty_kind = Some(SceneDirtyKind::CompositeOnly);
         self.stats.scroll_fast_paths += 1;
         true
     }
@@ -429,6 +432,7 @@ impl CompositorScene {
             );
             self.props.transforms[cidx.index()].set_transform(eff_tf);
         }
+        self.stats.last_dirty_kind = Some(SceneDirtyKind::CompositeOnly);
         self.stats.composite_fast_paths += 1;
     }
 
@@ -453,6 +457,7 @@ impl CompositorScene {
             self.sync_full_tree(env, &ChangeSet::default(), &[], false, true);
             return;
         }
+        self.stats.last_dirty_kind = Some(SceneDirtyKind::PaintOnly);
         self.stats.paint_incremental_paths += 1;
         self.reemit_dirty_nodes_with_inheritance(env);
     }

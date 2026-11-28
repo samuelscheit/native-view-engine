@@ -178,7 +178,7 @@ pub(crate) fn resolve_typeface(
             let actual_len = data.len();
             font_mgr
                 .new_from_data(data, Some(face_index))
-                .map(|tf| (tf, actual_len, TypefaceBacking::Mmap))
+                .map(|tf| (tf, actual_len, true))
         }
         FontFaceSource::Shared {
             data,
@@ -187,18 +187,16 @@ pub(crate) fn resolve_typeface(
         } => {
             let sk_data = Data::new_with_owner(SharedFontBytes(data));
             let actual_len = sk_data.len();
-            let backing = if is_mmap {
-                TypefaceBacking::Mmap
-            } else {
-                TypefaceBacking::Heap
-            };
             font_mgr
                 .new_from_data(sk_data, Some(face_index))
-                .map(|tf| (tf, actual_len, backing))
+                .map(|tf| (tf, actual_len, is_mmap))
         }
     });
 
-    let Some((base_tf, raw_bytes_len, backing)) = loaded else {
+    let Some((base_tf, raw_bytes_len, is_mmap)) = loaded else {
+        // Clamp charge to `max_bytes()` so even tiny byte caps admit failed faces instead of
+        // retrying decode on every frame.
+        let failed_charge = FAILED_TYPEFACE_BYTES.min(base_typefaces.max_bytes());
         base_typefaces.insert(
             face_id,
             BaseTypefaceEntry {
@@ -208,7 +206,7 @@ pub(crate) fn resolve_typeface(
                 backing: TypefaceBacking::Failed,
                 raw_bytes: FAILED_TYPEFACE_BYTES,
             },
-            FAILED_TYPEFACE_BYTES,
+            failed_charge,
         );
         return None;
     };
@@ -234,11 +232,13 @@ pub(crate) fn resolve_typeface(
     // byte cap while `MAX_BASE_TYPEFACES` bounds entry count and `raw_bytes` reports exact size.
     // Clamp heap face weight to `base_typefaces.max_bytes()` so a single oversized binary face
     // (> 32 MiB) is still admitted (evicting older heap entries) instead of re-parsing per frame.
-    let heap_cap = base_typefaces.max_bytes();
-    let heap_budget_bytes = match backing {
-        TypefaceBacking::Mmap => 0,
-        TypefaceBacking::Heap => raw_bytes.min(heap_cap),
-        TypefaceBacking::Failed => FAILED_TYPEFACE_BYTES.min(heap_cap),
+    let (backing, heap_budget_bytes) = if is_mmap {
+        (TypefaceBacking::Mmap, 0)
+    } else {
+        (
+            TypefaceBacking::Heap,
+            raw_bytes.min(base_typefaces.max_bytes()),
+        )
     };
     base_typefaces.insert(
         face_id,
@@ -252,6 +252,103 @@ pub(crate) fn resolve_typeface(
         heap_budget_bytes,
     );
     Some(result_tf)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assemble_text_blob(
+    font_mgr: &FontMgr,
+    text_engine: &CosmicTextEngine,
+    base_typefaces: &mut SlabLru<cosmic_text::fontdb::ID, BaseTypefaceEntry, FastBuildHasher>,
+    shaped_scratch: &mut SkiaShapedRuns,
+    text: &str,
+    params: TextLayoutParams,
+    typeface_hits: &mut u64,
+    typeface_misses: &mut u64,
+) -> Option<TextBlob> {
+    let has_fonts = text_engine.shape_for_skia_runs(
+        text,
+        params.font_size,
+        params.font_weight,
+        params.text_align,
+        params.wrap_width,
+        params.align_width,
+        shaped_scratch,
+    );
+    if !has_fonts || shaped_scratch.glyphs.is_empty() {
+        return None;
+    }
+
+    let mut builder = TextBlobBuilder::new();
+    let glyphs = &shaped_scratch.glyphs;
+    let mut i = 0usize;
+    while i < glyphs.len() {
+        let run_font_id = glyphs[i].font_id;
+        let run_fs_bits = glyphs[i].font_size.to_bits();
+        let mut j = i + 1;
+        while j < glyphs.len()
+            && glyphs[j].font_id == run_font_id
+            && glyphs[j].font_size.to_bits() == run_fs_bits
+        {
+            j += 1;
+        }
+        let run_slice = &glyphs[i..j];
+        let tf = resolve_typeface(
+            font_mgr,
+            text_engine,
+            base_typefaces,
+            run_font_id,
+            params.font_weight,
+            typeface_hits,
+            typeface_misses,
+        )?;
+        let mut font = Font::from_typeface(tf, glyphs[i].font_size);
+        font.set_subpixel(true);
+        // Parity trade-off: unhinted grayscale AA (`Edging::AntiAlias` + `FontHinting::None`)
+        // trades platform-specific LCD subpixel sharpening / grid-fitting for exact cross-OS
+        // and Software-vs-Skia glyph metrics, ink centroids, and fractional-HiDPI parity.
+        font.set_edging(Edging::AntiAlias);
+        font.set_hinting(FontHinting::None);
+        let (dst_glyphs, dst_pos) = builder.alloc_run_pos(&font, run_slice.len(), None);
+        for (k, g) in run_slice.iter().enumerate() {
+            dst_glyphs[k] = g.glyph_id;
+            dst_pos[k] = Point::new(g.x, g.y);
+        }
+        i = j;
+    }
+    builder.make()
+}
+
+/// Builds a transient `TextBlob` without inserting into `text_blobs` or altering text-blob cache
+/// telemetry (used for per-frame changing developer HUD banners).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_transient_text_blob(
+    font_mgr: &FontMgr,
+    text_engine: &CosmicTextEngine,
+    base_typefaces: &mut SlabLru<cosmic_text::fontdb::ID, BaseTypefaceEntry, FastBuildHasher>,
+    shaped_scratch: &mut SkiaShapedRuns,
+    text: &str,
+    font_size: f32,
+    font_weight: u16,
+    text_align: TextAlign,
+    wrap_width: Option<f32>,
+    align_width: f32,
+    typeface_hits: &mut u64,
+    typeface_misses: &mut u64,
+) -> Option<TextBlob> {
+    if text.is_empty() {
+        return None;
+    }
+    let params = TextLayoutParams::new(font_size, font_weight, text_align, wrap_width, align_width);
+    assemble_text_blob(
+        font_mgr,
+        text_engine,
+        base_typefaces,
+        shaped_scratch,
+        text,
+        params,
+        typeface_hits,
+        typeface_misses,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -286,68 +383,16 @@ pub(crate) fn get_or_build_text_blob(
     }
     *blob_misses = blob_misses.saturating_add(1);
 
-    let has_fonts = text_engine.shape_for_skia_runs(
-        text,
-        params.font_size,
-        params.font_weight,
-        params.text_align,
-        params.wrap_width,
-        params.align_width,
+    let blob = assemble_text_blob(
+        font_mgr,
+        text_engine,
+        base_typefaces,
         shaped_scratch,
+        text,
+        params,
+        typeface_hits,
+        typeface_misses,
     );
-
-    let blob = if has_fonts && !shaped_scratch.glyphs.is_empty() {
-        let mut builder = TextBlobBuilder::new();
-        let glyphs = &shaped_scratch.glyphs;
-        let mut i = 0usize;
-        let mut any_failed = false;
-        while i < glyphs.len() {
-            let run_font_id = glyphs[i].font_id;
-            let run_fs_bits = glyphs[i].font_size.to_bits();
-            let mut j = i + 1;
-            while j < glyphs.len()
-                && glyphs[j].font_id == run_font_id
-                && glyphs[j].font_size.to_bits() == run_fs_bits
-            {
-                j += 1;
-            }
-            let run_slice = &glyphs[i..j];
-            let Some(tf) = resolve_typeface(
-                font_mgr,
-                text_engine,
-                base_typefaces,
-                run_font_id,
-                params.font_weight,
-                typeface_hits,
-                typeface_misses,
-            ) else {
-                // Abort building a partial blob if any run's face failed so secondary runs (e.g.
-                // emoji/CJK) are never silently dropped and cached; caller degrades to bitmap text.
-                any_failed = true;
-                break;
-            };
-            let mut font = Font::from_typeface(tf, glyphs[i].font_size);
-            font.set_subpixel(true);
-            // Parity trade-off: unhinted grayscale AA (`Edging::AntiAlias` + `FontHinting::None`)
-            // trades platform-specific LCD subpixel sharpening / grid-fitting for exact cross-OS
-            // and Software-vs-Skia glyph metrics, ink centroids, and fractional-HiDPI parity.
-            font.set_edging(Edging::AntiAlias);
-            font.set_hinting(FontHinting::None);
-            let (dst_glyphs, dst_pos) = builder.alloc_run_pos(&font, run_slice.len(), None);
-            for (k, g) in run_slice.iter().enumerate() {
-                dst_glyphs[k] = g.glyph_id;
-                dst_pos[k] = Point::new(g.x, g.y);
-            }
-            i = j;
-        }
-        if any_failed {
-            None
-        } else {
-            builder.make()
-        }
-    } else {
-        None
-    };
 
     // Always cache the resulting entry (including `None` when any run's face failed) so broken
     // fonts never trigger per-frame HarfBuzz shaping or mmap retry storms.

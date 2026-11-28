@@ -262,6 +262,16 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         Some(style)
     }
 
+    /// Effective 2D transform of `node` including in-flight animated overrides.
+    pub fn animated_transform(&self, store: &NodeStore, node: NodeId) -> Option<Transform2D> {
+        if !store.is_live(node) {
+            return None;
+        }
+        self.frame_hooks
+            .resolve_transform(node, self.layout_tree.effective_transform(store, node))
+            .or(Some(Transform2D::IDENTITY))
+    }
+
     /// Advances every hook by `dt_s`, applying zero-alloc composite or incremental paint updates
     /// when values changed; returns whether another frame is needed.
     pub fn advance_animations(&mut self, store: &NodeStore, dt_s: f32) -> bool {

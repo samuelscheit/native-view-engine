@@ -16,9 +16,23 @@ use super::renderer_cache::SkiaRendererCaches;
 use super::skia_renderer::to_skia_color;
 use crate::font::{for_each_bitmap_cell_in_glyph, for_each_bitmap_glyph_pass};
 use crate::image_cache::{compute_image_placement, ImageCache, ImageSlotHandle};
+use crate::raster::shadow::{physical_blur_sigma, MAX_BLUR_SIGMA};
 use crate::table_system::SkiaTableRegistry;
 use crate::text::{CosmicTextEngine, TextAlign};
 use crate::text_cache::{sanitize_font_size, sanitize_font_weight, wrap_width_from_rect};
+
+/// Returns `(geom_scale, min_axis_scale)` of `canvas`'s current local-to-device 2D affine CTM.
+/// `geom_scale` (`sqrt(|col0| * |col1|)`) matches Skia's `SkMatrix::mapRadius(1.0)` identically.
+#[inline]
+fn canvas_ctm_blur_scales(canvas: &Canvas) -> (f32, f32) {
+    let m = canvas.local_to_device_as_3x3();
+    let sx = m.scale_x().hypot(m.skew_y());
+    let sy = m.skew_x().hypot(m.scale_y());
+    if !sx.is_finite() || !sy.is_finite() || sx <= 0.0 || sy <= 0.0 {
+        return (0.0, 0.0);
+    }
+    ((sx * sy).sqrt(), sx.min(sy))
+}
 
 #[inline]
 pub(crate) fn rect_is_valid(rect: LayoutRect) -> bool {
@@ -181,18 +195,19 @@ pub(crate) fn draw_shadow_cached(
         return;
     }
     shadow_paint.set_color(to_skia_color(color));
-    if blur_radius > 0.5 {
-        let sigma = (blur_radius * 0.5).max(0.5);
-        shadow_paint.set_mask_filter(caches.get_or_create_blur_filter(sigma));
+    let (ctm_scale, _) = canvas_ctm_blur_scales(canvas);
+    if let Some(phys_sigma) = physical_blur_sigma(blur_radius, ctm_scale) {
+        let logical_sigma = phys_sigma / ctm_scale;
+        shadow_paint.set_mask_filter(caches.get_or_create_blur_filter(logical_sigma));
     } else {
         shadow_paint.set_mask_filter(None);
     }
-    let sr = Rect::from_xywh(
-        rect.x + offset_x - spread_radius,
-        rect.y + offset_y - spread_radius,
-        sw,
-        sh,
-    );
+    let sx = rect.x + offset_x - spread_radius;
+    let sy = rect.y + offset_y - spread_radius;
+    if !sx.is_finite() || !sy.is_finite() {
+        return;
+    }
+    let sr = Rect::from_xywh(sx, sy, sw, sh);
     let r = safe_radius(radius);
     let base_r = if r > 0.01 {
         (r + spread_radius).max(0.0)
@@ -250,21 +265,44 @@ pub(crate) fn draw_inset_shadow_cached(
 
     let hole_w = inner_w - 2.0 * spread_radius;
     let hole_h = inner_h - 2.0 * spread_radius;
+    // Huge negative spread expands the cutout hole to infinity -> casts zero shadow (never invert!).
+    if spread_radius < 0.0 && (!hole_w.is_finite() || !hole_h.is_finite()) {
+        return;
+    }
     let hole_x = inner_x + offset_x + spread_radius;
     let hole_y = inner_y + offset_y + spread_radius;
+    if spread_radius < 0.0 && (!hole_x.is_finite() || !hole_y.is_finite()) {
+        return;
+    }
     let base_hole_r = if inner_r > 0.01 {
         (inner_r - spread_radius).max(0.0)
     } else {
         0.0
     };
 
-    // Crisp zero-blur early exit when the cutout hole completely covers the padding box.
-    if blur_radius <= 0.5 && hole_w > 0.0 && hole_h > 0.0 {
+    let (ctm_scale, min_axis_scale) = canvas_ctm_blur_scales(canvas);
+    let phys_sigma = physical_blur_sigma(blur_radius, ctm_scale);
+    let eff_min_axis = min_axis_scale.max(1e-3);
+    let capped_phys_sigma = phys_sigma.unwrap_or(0.0).min(MAX_BLUR_SIGMA);
+    let blur_margin = if phys_sigma.is_some() {
+        (capped_phys_sigma * 4.0 + 2.0) / eff_min_axis
+    } else {
+        0.0
+    };
+
+    // Early exit when the cutout hole completely covers the padding box past the blur tail.
+    if hole_w.is_finite()
+        && hole_h.is_finite()
+        && hole_w > 0.0
+        && hole_h > 0.0
+        && hole_x.is_finite()
+        && hole_y.is_finite()
+    {
         let margin = (inner_x - hole_x)
             .min(inner_y - hole_y)
             .min((hole_x + hole_w) - (inner_x + inner_w))
             .min((hole_y + hole_h) - (inner_y + inner_h));
-        if margin >= 0.0 && base_hole_r <= inner_r + margin + 1e-4 {
+        if margin >= blur_margin && base_hole_r <= inner_r + margin + 1e-4 {
             return;
         }
     }
@@ -273,25 +311,44 @@ pub(crate) fn draw_inset_shadow_cached(
     canvas.clip_rrect(padding_rrect, ClipOp::Intersect, true);
     shadow_paint.set_color(to_skia_color(color));
 
-    if !hole_w.is_finite() || !hole_h.is_finite() || hole_w <= 0.0 || hole_h <= 0.0 {
+    let hole_collapsed_or_disjoint = !hole_w.is_finite()
+        || !hole_h.is_finite()
+        || !hole_x.is_finite()
+        || !hole_y.is_finite()
+        || hole_w <= 0.0
+        || hole_h <= 0.0
+        || hole_x >= inner_x + inner_w + blur_margin
+        || hole_x + hole_w <= inner_x - blur_margin
+        || hole_y >= inner_y + inner_h + blur_margin
+        || hole_y + hole_h <= inner_y - blur_margin;
+    if hole_collapsed_or_disjoint {
         shadow_paint.set_mask_filter(None);
         canvas.draw_rrect(padding_rrect, shadow_paint);
         canvas.restore();
         return;
     }
 
-    if blur_radius > 0.5 {
-        let sigma = (blur_radius * 0.5).max(0.5);
-        shadow_paint.set_mask_filter(caches.get_or_create_blur_filter_ctm(sigma, true));
+    if let Some(sigma) = phys_sigma {
+        let logical_sigma = sigma / ctm_scale;
+        shadow_paint.set_mask_filter(caches.get_or_create_blur_filter(logical_sigma));
     } else {
         shadow_paint.set_mask_filter(None);
     }
 
-    let outset = (blur_radius * 2.0).max(0.0) + 4.0;
+    // Outset bounded by `MAX_BLUR_SIGMA` converted into logical units via `min_axis_scale`.
+    let outset = (capped_phys_sigma * 4.0 + 4.0) / eff_min_axis;
     let outer_l = inner_x.min(hole_x) - outset;
     let outer_t = inner_y.min(hole_y) - outset;
     let outer_r = (inner_x + inner_w).max(hole_x + hole_w) + outset;
     let outer_b = (inner_y + inner_h).max(hole_y + hole_h) + outset;
+    if !outer_l.is_finite()
+        || !outer_t.is_finite()
+        || !outer_r.is_finite()
+        || !outer_b.is_finite()
+    {
+        canvas.restore();
+        return;
+    }
     let outer_rrect = RRect::new_rect(Rect::from_ltrb(outer_l, outer_t, outer_r, outer_b));
     let clamped_hole_r = base_hole_r.min(hole_w * 0.5).min(hole_h * 0.5);
     let hole_rrect = RRect::new_rect_xy(
@@ -428,7 +485,7 @@ pub(crate) fn draw_image_cached(
         ) else {
             return handle_opt;
         };
-        (sk_img, decoded.width, decoded.height, handle_opt)
+        (sk_img, decoded.width(), decoded.height(), handle_opt)
     };
     let Some(placement) = compute_image_placement(rect, img_w, img_h, fit) else {
         return effective_handle;
