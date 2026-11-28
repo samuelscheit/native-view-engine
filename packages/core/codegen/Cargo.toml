@@ -10,6 +10,7 @@ license.workspace = true
 # every `#[template]` sets `escape = "none"`, so no extension can HTML-escape generated code.
 askama = { version = "0.16.1", default-features = false, features = ["derive", "std"] }
 nve-abi = { workspace = true }
+nve-codec = { workspace = true }
 nve-hash = { workspace = true }
 serde = { workspace = true }
 # Hybrid `.rs` spec frontend (`frontend/hybrid_spec`).

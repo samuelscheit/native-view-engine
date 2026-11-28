@@ -1,18 +1,17 @@
 //! Zero-serialization immutable vector draw list (`DrawList`, backed by `Arc<[CanvasOp]>`)
-//! and fluent direct recorder (`DrawListRecorder`) for in-process Rust rendering.
+//! and fluent direct recorder (`DrawListRecorder`).
 //!
-//! Eliminates both base64 attribute encoding/decoding AND binary `NVE_DRAW1` encode/decode
-//! round-trips on the Rust-to-Rust render hot path (`nve-dioxus` / `nve-docs` /
-//! `studio-workspace` -> `HeadlessBackend`, `SkiaBackend`, `WebBackend`), while still offering
-//! on-demand [`DrawList::to_nve_draw1_bytes`] for cross-language FFI hosts.
+//! Cross-language FFI hosts receive the canonical 4-byte-aligned `FlatResource` word stream
+//! (`nve.res.draw_list`, [`crate::DRAW_LIST_CODEC_DESC`]) directly through `NveSceneView`.
 
 use std::ops::Deref;
 use std::sync::Arc;
 
 use nve_abi::ColorRgba;
 
-use super::codec::{DrawListBuilder, DrawListDecoder};
-use super::types::{sanitize_finite, CanvasOp, DrawListError, MAX_DRAW_OPS, MAX_POLYLINE_POINTS};
+use super::types::{
+    sanitize_finite, sanitize_non_negative, CanvasOp, MAX_DRAW_OPS, MAX_POLYLINE_POINTS,
+};
 
 /// Immutable, `O(1)`-clonable typed vector draw list (`Arc<[CanvasOp]>`).
 #[derive(Debug, Clone, PartialEq)]
@@ -145,19 +144,6 @@ impl DrawList {
             background_color,
         ))
     }
-
-    /// Encodes this [`DrawList`] into cross-language `NVE_DRAW1` binary bytes (only needed when
-    /// crossing an FFI boundary to C++/Swift/Kotlin/Dart/JS hosts).
-    pub fn to_nve_draw1_bytes(&self) -> Vec<u8> {
-        let mut builder = DrawListBuilder::with_capacity(self.ops.len() * 24 + 16);
-        builder.extend_ops(&self.ops);
-        builder.finish()
-    }
-
-    /// Decodes a cross-language `NVE_DRAW1` binary byte buffer into a [`DrawList`].
-    pub fn from_nve_draw1_bytes(bytes: &[u8]) -> Result<Self, DrawListError> {
-        Ok(Self::from_ops(DrawListDecoder::decode(bytes)?))
-    }
 }
 
 /// Fluent zero-serialization recorder constructing a [`DrawList`] (`Arc<[CanvasOp]>`) directly
@@ -229,7 +215,7 @@ impl DrawListRecorder {
             y: sanitize_finite(y),
             w: sanitize_finite(w),
             h: sanitize_finite(h),
-            radius: sanitize_finite(radius),
+            radius: sanitize_non_negative(radius),
             color,
         })
     }
@@ -239,7 +225,7 @@ impl DrawListRecorder {
         self.push_checked(CanvasOp::FillCircle {
             cx: sanitize_finite(cx),
             cy: sanitize_finite(cy),
-            radius: sanitize_finite(radius),
+            radius: sanitize_non_negative(radius),
             color,
         })
     }
@@ -259,7 +245,7 @@ impl DrawListRecorder {
             y0: sanitize_finite(y0),
             x1: sanitize_finite(x1),
             y1: sanitize_finite(y1),
-            width: sanitize_finite(width),
+            width: sanitize_non_negative(width),
             color,
         })
     }
@@ -277,7 +263,7 @@ impl DrawListRecorder {
             .collect();
         self.push_checked(CanvasOp::StrokePolyline {
             points: sanitized,
-            width: sanitize_finite(width),
+            width: sanitize_non_negative(width),
             color,
         })
     }

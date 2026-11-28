@@ -1,23 +1,21 @@
 //! Standalone vector Canvas capability (`packages/modules/canvas`).
 //!
-//! Pure-spec root crate with zero backend dependencies: defines [`Canvas`] (`#[derive(NveTable)]`)
-//! and the `NVE_DRAW1` vector [`DrawList`] (`nve_store::FlatResource`, supporting ephemeral in-place
-//! updates for 120 Hz canvas repaints without hashing).
+//! Pure-spec root crate with zero backend dependencies: defines [`Canvas`] (`#[derive(NveTable)]`),
+//! the flat 4-byte-aligned [`DrawList`] (`nve_store::FlatResource`, `nve.res.draw_list`,
+//! supporting ephemeral in-place updates for 120 Hz canvas repaints without hashing), and
+//! [`DRAW_LIST_CODEC_DESC`] for cross-language host decoder codegen.
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
-mod codec;
+mod desc;
 mod draw_list;
 mod flat;
 mod types;
 
-pub use codec::{DrawListBuilder, DrawListDecoder};
+pub use desc::{ClipDepthTracker, DRAW_LIST_CODEC_DESC};
 pub use draw_list::{DrawList, DrawListRecorder};
 pub use flat::{CanvasOpRef, DrawListOpsIter, DrawListView, PolylinePoints, PolylinePointsIter};
-pub use types::{
-    CanvasOp, DrawListError, DrawListHeader, ImageResizeMode, DRAW_LIST_ATTR_PREFIX, MAX_DRAW_OPS,
-    MAX_POLYLINE_POINTS, NVE_DRAW_HEADER_SIZE, NVE_DRAW_MAGIC, NVE_DRAW_VERSION,
-};
+pub use types::{CanvasOp, ImageResizeMode, MAX_CLIP_DEPTH, MAX_DRAW_OPS, MAX_POLYLINE_POINTS};
 
 use nve_store::{NveTable, Res};
 
@@ -95,5 +93,129 @@ mod tests {
         assert_eq!(rebuilt.finish(), dl);
         assert!(!DrawList::validate(&[]));
         assert!(!DrawList::validate(&[0x7FFF_FFFF]));
+    }
+
+    #[test]
+    fn flat_draw_list_validation_golden_vectors() {
+        // Empty valid stream (`op_count == 0`).
+        assert!(DrawList::validate(&[0]));
+
+        // Zero-point polyline and negative-zero non-negative floats are accepted.
+        let mut rec = DrawListRecorder::new();
+        rec.stroke_polyline(&[], -0.0, ColorRgba::WHITE)
+            .fill_circle(1.0, 2.0, 0.0, ColorRgba::BLACK)
+            .fill_rounded_rect(0.0, 0.0, 10.0, 10.0, -0.0, ColorRgba::WHITE)
+            .stroke_line(0.0, 0.0, 5.0, 5.0, 0.0, ColorRgba::WHITE);
+        let mut words = Vec::new();
+        assert!(rec.finish().write_words(&mut words));
+        assert!(DrawList::validate(&words));
+
+        // Trailing word rejected.
+        let mut trailing = words.clone();
+        trailing.push(0);
+        assert!(!DrawList::validate(&trailing));
+
+        // Truncated streams rejected.
+        for cut in 0..words.len() {
+            assert!(!DrawList::validate(&words[..cut]), "cut={cut}");
+        }
+
+        // Unknown opcode rejected.
+        assert!(!DrawList::validate(&[1, 0]));
+        assert!(!DrawList::validate(&[1, 9]));
+        assert!(!DrawList::validate(&[1, u32::MAX]));
+
+        // Op count limit and polyline point count limit enforced.
+        assert!(!DrawList::validate(&[(MAX_DRAW_OPS as u32) + 1]));
+        assert!(!DrawList::validate(&[
+            1,
+            6,
+            1.0_f32.to_bits(),
+            0xFFFF_FFFF,
+            (MAX_POLYLINE_POINTS as u32) + 1,
+        ]));
+
+        // Non-finite floats rejected across ops and polyline coordinates.
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let b = bad.to_bits();
+            assert!(!DrawList::validate(&[1, 2, b, 0, 0, 0, 0]));
+            assert!(!DrawList::validate(&[1, 3, 0, 0, 0, 0, b, 0]));
+            assert!(!DrawList::validate(&[1, 4, 0, 0, b, 0]));
+            assert!(!DrawList::validate(&[1, 5, 0, 0, 0, 0, b, 0]));
+            assert!(!DrawList::validate(&[1, 6, b, 0, 0]));
+            assert!(!DrawList::validate(&[1, 6, 1.0_f32.to_bits(), 0, 1, b, 0]));
+            assert!(!DrawList::validate(&[1, 6, 1.0_f32.to_bits(), 0, 1, 0, b]));
+            assert!(!DrawList::validate(&[1, 7, 0, 0, 0, b]));
+        }
+
+        // Strictly negative radius/width rejected; negative x/y/w/h coords still allowed.
+        let neg = (-0.5_f32).to_bits();
+        assert!(DrawList::validate(&[1, 2, neg, neg, neg, neg, 0]));
+        assert!(DrawList::validate(&[1, 7, neg, neg, neg, neg]));
+        assert!(!DrawList::validate(&[1, 3, 0, 0, 10.0_f32.to_bits(), 10.0_f32.to_bits(), neg, 0]));
+        assert!(!DrawList::validate(&[1, 4, 0, 0, neg, 0]));
+        assert!(!DrawList::validate(&[1, 5, 0, 0, 1.0_f32.to_bits(), 1.0_f32.to_bits(), neg, 0]));
+        assert!(!DrawList::validate(&[1, 6, neg, 0, 0]));
+
+        // `write_words` refuses invalid raw `DrawList::from_ops` and rolls back output buffer.
+        let bad_dl = DrawList::from_ops(vec![CanvasOp::FillCircle {
+            cx: 0.0,
+            cy: 0.0,
+            radius: -1.0,
+            color: ColorRgba::WHITE,
+        }]);
+        let mut scratch = vec![0xDEAD_BEEF];
+        assert!(!bad_dl.write_words(&mut scratch));
+        assert_eq!(scratch, vec![0xDEAD_BEEF]);
+
+        // `DrawListRecorder` sanitizes negative radius/width to 0.0.
+        let mut sanitized = DrawListRecorder::new();
+        sanitized
+            .fill_rounded_rect(0.0, 0.0, 10.0, 10.0, -4.0, ColorRgba::WHITE)
+            .fill_circle(5.0, 5.0, -2.0, ColorRgba::WHITE)
+            .stroke_line(0.0, 0.0, 1.0, 1.0, -3.0, ColorRgba::WHITE)
+            .stroke_polyline(&[(0.0, 0.0)], -1.0, ColorRgba::WHITE);
+        let mut out = Vec::new();
+        assert!(sanitized.finish().write_words(&mut out));
+        assert!(DrawList::validate(&out));
+
+        // Descriptor constants match crate constants and `FlatResource::KIND`.
+        assert_eq!(DRAW_LIST_CODEC_DESC.max_ops as usize, MAX_DRAW_OPS);
+        assert_eq!(DRAW_LIST_CODEC_DESC.ops.len(), 8);
+        assert_eq!(
+            DRAW_LIST_CODEC_DESC.scope.expect("clip scope").max_depth as usize,
+            MAX_CLIP_DEPTH
+        );
+        assert_eq!(
+            nve_abi::Key64::of(DRAW_LIST_CODEC_DESC.kind_name),
+            <DrawList as FlatResource>::KIND
+        );
+    }
+
+    #[test]
+    fn clip_depth_tracker_balances_66_nested_clips_and_2_restores() {
+        let mut tracker = ClipDepthTracker::new();
+        let mut pushed = 0usize;
+        for _ in 0..66 {
+            if tracker.push() {
+                pushed += 1;
+            }
+        }
+        assert_eq!(pushed, MAX_CLIP_DEPTH);
+        assert_eq!(tracker.depth(), MAX_CLIP_DEPTH);
+        assert_eq!(tracker.overflow(), 2);
+
+        // Two restores only cancel the two overflowed clips; zero live restores emitted.
+        assert!(!tracker.pop());
+        assert!(!tracker.pop());
+        assert_eq!(tracker.depth(), MAX_CLIP_DEPTH);
+        assert_eq!(tracker.overflow(), 0);
+
+        // Third restore pops one live clip; remaining 63 unwind at end of stream.
+        assert!(tracker.pop());
+        assert_eq!(tracker.depth(), MAX_CLIP_DEPTH - 1);
+        assert_eq!(tracker.drain_open(), MAX_CLIP_DEPTH - 1);
+        assert_eq!(tracker.depth(), 0);
+        assert!(!tracker.pop());
     }
 }

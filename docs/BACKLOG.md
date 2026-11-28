@@ -6,8 +6,6 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 
 ## P1 — Direct Typed Render ABI, Interaction Primitives & Host Parity (from [quality-audit.md](./quality-audit.md))
 
-- [ ] **`DrawList` codegen follow-up**: generate `DrawList` decoders from `nve-codec` descriptors via one generic codec template per language (Askama 0.16, next to the static `packages/core/host-*` runtimes), replacing the deleted hand-written wire emitters.
-
 - [ ] **Track 1B-2 — Host-Owned `packages/core/runtime` Follow-Ups (ADR-003/ADR-004/ADR-008)**
   - Expose `DioxusDesktopApp` as a shared library crate (move it out of the binary-only `hosts/skia-shell`), plus the generic frame-tick hook for `nve-motion-skia` and Model A `measure_surface` (baselines / dry-run / invalidation callback) on `NveRuntimeApi`.
   - **Delete `hosts/skia-shell/src/window/pair_client.rs`**: `libnve_runtime` already bundles `nve-wire` behind default-on `feature = "wire"`; remove the remaining skia-shell pairing wrapper once `skia-shell` delegates pairing through the shared runtime/client path.

@@ -2,30 +2,31 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/rendering.dart';
+import 'package:nve_host/nve_draw_list.generated.dart';
 
 /// Fixed byte length of the flat `nve.res.draw_list` header (word 0: little-endian `u32 opCount`).
-const int nveDrawHeaderSize = 4;
+const int nveDrawHeaderSize = NveDrawList.headerSize;
 
 /// Strict upper bound on operations per draw list (`MAX_DRAW_OPS`).
-const int nveDrawMaxOps = 65536;
+const int nveDrawMaxOps = NveDrawList.maxDrawOps;
 
 /// Strict upper bound on vertices inside a single `StrokePolyline` (`MAX_POLYLINE_POINTS`).
-const int nveDrawMaxPolylinePoints = 16384;
+const int nveDrawMaxPolylinePoints = NveDrawList.maxPolylinePoints;
 
 /// Maximum nested `ClipRect` stack depth guarded during painting.
-const int nveDrawMaxClipDepth = 64;
+const int nveDrawMaxClipDepth = NveDrawList.maxClipDepth;
 
 /// Little-endian `u32` opcodes encoded inside a flat `nve.res.draw_list` word stream
 /// matching `packages/modules/canvas/src/flat.rs`.
 abstract final class NveDrawOpcode {
-  static const int clear = 1;
-  static const int fillRect = 2;
-  static const int fillRoundedRect = 3;
-  static const int fillCircle = 4;
-  static const int strokeLine = 5;
-  static const int strokePolyline = 6;
-  static const int clipRect = 7;
-  static const int restoreClip = 8;
+  static const int clear = NveDrawList.opClear;
+  static const int fillRect = NveDrawList.opFillRect;
+  static const int fillRoundedRect = NveDrawList.opFillRoundedRect;
+  static const int fillCircle = NveDrawList.opFillCircle;
+  static const int strokeLine = NveDrawList.opStrokeLine;
+  static const int strokePolyline = NveDrawList.opStrokePolyline;
+  static const int clipRect = NveDrawList.opClipRect;
+  static const int restoreClip = NveDrawList.opRestoreClip;
 }
 
 /// Error categories returned when validating or painting a flat `nve.res.draw_list` buffer.
@@ -35,6 +36,7 @@ enum NveDrawListErrorCode {
   polylinePointCountExceedsLimit,
   unknownOpcode,
   nonFiniteFloat,
+  negativeFloat,
   trailingBytes,
 }
 
@@ -59,11 +61,102 @@ class NveDrawListResult {
       : 'NveDrawListResult.err($errorCode: $errorMessage)';
 }
 
-/// Zero-copy flat `nve.res.draw_list` (`u32`-word) decoder and Flutter [Canvas] painter with
-/// reusable [Paint] and [Path] objects and strict bounds/NaN/vertex guards.
+/// Zero-copy flat `nve.res.draw_list` (`u32`-word) Flutter [Canvas] painter driven by the
+/// generated [NveDrawList] validator and balanced streaming decoder.
 class NveDrawListPainter {
   NveDrawListPainter();
 
+  final _FlutterDrawListSink _sink = _FlutterDrawListSink();
+
+  /// Strictly validates a flat `nve.res.draw_list` (`u32`-word) buffer zero-copy via the
+  /// generated [NveDrawList.validate] decoder without allocating per-op objects.
+  static NveDrawListResult validate(Uint8List bytes) {
+    final NveDrawListError? err = NveDrawList.validate(bytes);
+    if (err != null) {
+      return _mapError(err);
+    }
+    return NveDrawListResult.ok(opCount: NveDrawList.opCount(bytes));
+  }
+
+  /// Validates and paints raw flat `nve.res.draw_list` word bytes onto [canvas] within [bounds]
+  /// (with local origin translated to `bounds.topLeft` and clipped).
+  NveDrawListResult paint(
+    Canvas canvas,
+    Rect bounds,
+    Uint8List rawBytes, {
+    double borderRadius = 0.0,
+  }) {
+    final NveDrawListResult check = validate(rawBytes);
+    if (!check.isOk) {
+      return check;
+    }
+    if (bounds.width <= 0.0 || bounds.height <= 0.0) {
+      return check;
+    }
+
+    canvas.save();
+    try {
+      if (borderRadius > 0.0) {
+        canvas.clipRRect(RRect.fromRectAndRadius(bounds, Radius.circular(borderRadius)));
+      } else {
+        canvas.clipRect(bounds);
+      }
+      canvas.translate(bounds.left, bounds.top);
+      _sink.bind(canvas, Rect.fromLTWH(0.0, 0.0, bounds.width, bounds.height));
+      try {
+        NveDrawList.streamValidated(rawBytes, _sink);
+      } finally {
+        _sink.unbind();
+      }
+    } finally {
+      canvas.restore();
+    }
+
+    return check;
+  }
+
+  static NveDrawListResult _mapError(NveDrawListError err) {
+    switch (err) {
+      case NveDrawListError.truncated:
+        return const NveDrawListResult.err(
+          NveDrawListErrorCode.truncated,
+          'Truncated flat draw-list payload',
+        );
+      case NveDrawListError.opCountExceedsLimit:
+        return const NveDrawListResult.err(
+          NveDrawListErrorCode.opCountExceedsLimit,
+          'Draw-list op count exceeds limit $nveDrawMaxOps',
+        );
+      case NveDrawListError.sliceLenExceedsLimit:
+        return const NveDrawListResult.err(
+          NveDrawListErrorCode.polylinePointCountExceedsLimit,
+          'StrokePolyline point count exceeds limit $nveDrawMaxPolylinePoints',
+        );
+      case NveDrawListError.unknownOpcode:
+        return const NveDrawListResult.err(
+          NveDrawListErrorCode.unknownOpcode,
+          'Unknown draw-list opcode',
+        );
+      case NveDrawListError.nonFiniteFloat:
+        return const NveDrawListResult.err(
+          NveDrawListErrorCode.nonFiniteFloat,
+          'Non-finite float in draw-list stream',
+        );
+      case NveDrawListError.negativeFloat:
+        return const NveDrawListResult.err(
+          NveDrawListErrorCode.negativeFloat,
+          'Negative radius or stroke width in draw-list stream',
+        );
+      case NveDrawListError.trailingBytes:
+        return const NveDrawListResult.err(
+          NveDrawListErrorCode.trailingBytes,
+          'Unexpected trailing bytes after draw-list op stream',
+        );
+    }
+  }
+}
+
+final class _FlutterDrawListSink implements NveDrawListSink {
   final Paint _fillPaint = Paint()
     ..style = PaintingStyle.fill
     ..isAntiAlias = true;
@@ -76,364 +169,109 @@ class NveDrawListPainter {
 
   final Path _polylinePath = Path();
 
-  /// Strictly validates a flat `nve.res.draw_list` (`u32`-word) buffer zero-copy via
-  /// [ByteData.sublistView] without allocating per-op objects.
-  static NveDrawListResult validate(Uint8List bytes) {
-    final len = bytes.length;
-    if (len < nveDrawHeaderSize) {
-      return const NveDrawListResult.err(
-        NveDrawListErrorCode.truncated,
-        'Draw-list buffer shorter than 4-byte header',
-      );
-    }
+  Canvas? _canvas;
+  Rect _localBounds = Rect.zero;
+  bool _polyDrawn = false;
 
-    final view = ByteData.sublistView(bytes);
-    final opCount = view.getUint32(0, Endian.little);
-    if (opCount > nveDrawMaxOps) {
-      return NveDrawListResult.err(
-        NveDrawListErrorCode.opCountExceedsLimit,
-        'Draw-list op count $opCount exceeds limit $nveDrawMaxOps',
-      );
-    }
-
-    var pos = nveDrawHeaderSize;
-    for (var i = 0; i < opCount; i++) {
-      if (len - pos < 4) {
-        return const NveDrawListResult.err(
-          NveDrawListErrorCode.truncated,
-          'Unexpected EOF reading opcode',
-        );
-      }
-      final opcode = view.getUint32(pos, Endian.little);
-      pos += 4;
-      switch (opcode) {
-        case NveDrawOpcode.clear:
-          if (len - pos < 4) {
-            return const NveDrawListResult.err(
-              NveDrawListErrorCode.truncated,
-              'Truncated Clear payload',
-            );
-          }
-          pos += 4;
-          break;
-
-        case NveDrawOpcode.fillRect:
-          if (len - pos < 20) {
-            return const NveDrawListResult.err(
-              NveDrawListErrorCode.truncated,
-              'Truncated FillRect payload',
-            );
-          }
-          if (!_areFinite4(view, pos)) {
-            return const NveDrawListResult.err(
-              NveDrawListErrorCode.nonFiniteFloat,
-              'Non-finite float in FillRect',
-            );
-          }
-          pos += 20;
-          break;
-
-        case NveDrawOpcode.fillRoundedRect:
-          if (len - pos < 24) {
-            return const NveDrawListResult.err(
-              NveDrawListErrorCode.truncated,
-              'Truncated FillRoundedRect payload',
-            );
-          }
-          if (!_areFinite4(view, pos) || !view.getFloat32(pos + 16, Endian.little).isFinite) {
-            return const NveDrawListResult.err(
-              NveDrawListErrorCode.nonFiniteFloat,
-              'Non-finite float in FillRoundedRect',
-            );
-          }
-          pos += 24;
-          break;
-
-        case NveDrawOpcode.fillCircle:
-          if (len - pos < 16) {
-            return const NveDrawListResult.err(
-              NveDrawListErrorCode.truncated,
-              'Truncated FillCircle payload',
-            );
-          }
-          if (!view.getFloat32(pos, Endian.little).isFinite ||
-              !view.getFloat32(pos + 4, Endian.little).isFinite ||
-              !view.getFloat32(pos + 8, Endian.little).isFinite) {
-            return const NveDrawListResult.err(
-              NveDrawListErrorCode.nonFiniteFloat,
-              'Non-finite float in FillCircle',
-            );
-          }
-          pos += 16;
-          break;
-
-        case NveDrawOpcode.strokeLine:
-          if (len - pos < 24) {
-            return const NveDrawListResult.err(
-              NveDrawListErrorCode.truncated,
-              'Truncated StrokeLine payload',
-            );
-          }
-          if (!_areFinite4(view, pos) || !view.getFloat32(pos + 16, Endian.little).isFinite) {
-            return const NveDrawListResult.err(
-              NveDrawListErrorCode.nonFiniteFloat,
-              'Non-finite float in StrokeLine',
-            );
-          }
-          pos += 24;
-          break;
-
-        case NveDrawOpcode.strokePolyline:
-          if (len - pos < 12) {
-            return const NveDrawListResult.err(
-              NveDrawListErrorCode.truncated,
-              'Truncated StrokePolyline header',
-            );
-          }
-          if (!view.getFloat32(pos, Endian.little).isFinite) {
-            return const NveDrawListResult.err(
-              NveDrawListErrorCode.nonFiniteFloat,
-              'Non-finite width in StrokePolyline',
-            );
-          }
-          final ptCount = view.getUint32(pos + 8, Endian.little);
-          pos += 12;
-          if (ptCount > nveDrawMaxPolylinePoints) {
-            return NveDrawListResult.err(
-              NveDrawListErrorCode.polylinePointCountExceedsLimit,
-              'StrokePolyline point count $ptCount exceeds limit $nveDrawMaxPolylinePoints',
-            );
-          }
-          final needed = ptCount * 8;
-          if (len - pos < needed) {
-            return const NveDrawListResult.err(
-              NveDrawListErrorCode.truncated,
-              'Truncated StrokePolyline vertices',
-            );
-          }
-          for (var p = 0; p < ptCount; p++) {
-            final px = view.getFloat32(pos, Endian.little);
-            final py = view.getFloat32(pos + 4, Endian.little);
-            if (!px.isFinite || !py.isFinite) {
-              return const NveDrawListResult.err(
-                NveDrawListErrorCode.nonFiniteFloat,
-                'Non-finite vertex in StrokePolyline',
-              );
-            }
-            pos += 8;
-          }
-          break;
-
-        case NveDrawOpcode.clipRect:
-          if (len - pos < 16) {
-            return const NveDrawListResult.err(
-              NveDrawListErrorCode.truncated,
-              'Truncated ClipRect payload',
-            );
-          }
-          if (!_areFinite4(view, pos)) {
-            return const NveDrawListResult.err(
-              NveDrawListErrorCode.nonFiniteFloat,
-              'Non-finite float in ClipRect',
-            );
-          }
-          pos += 16;
-          break;
-
-        case NveDrawOpcode.restoreClip:
-          break;
-
-        default:
-          return NveDrawListResult.err(
-            NveDrawListErrorCode.unknownOpcode,
-            'Unknown draw-list opcode $opcode',
-          );
-      }
-    }
-
-    if (pos != len) {
-      return NveDrawListResult.err(
-        NveDrawListErrorCode.trailingBytes,
-        '${len - pos} trailing bytes after draw-list op stream',
-      );
-    }
-
-    return NveDrawListResult.ok(opCount: opCount);
+  void bind(Canvas canvas, Rect localBounds) {
+    _canvas = canvas;
+    _localBounds = localBounds;
   }
 
-  /// Validates and paints raw flat `nve.res.draw_list` word bytes onto [canvas] within [bounds]
-  /// (with local origin translated to `bounds.topLeft` and clipped).
-  NveDrawListResult paint(
-    Canvas canvas,
-    Rect bounds,
-    Uint8List rawBytes, {
-    double borderRadius = 0.0,
-  }) {
-    final check = validate(rawBytes);
-    if (!check.isOk) {
-      return check;
-    }
-    if (bounds.width <= 0.0 || bounds.height <= 0.0) {
-      return check;
-    }
+  void unbind() {
+    _canvas = null;
+    _polyDrawn = false;
+  }
 
-    final view = ByteData.sublistView(rawBytes);
-    final opCount = check.opCount;
-    var pos = nveDrawHeaderSize;
-    var clipDepth = 0;
-    var overflowClipDepth = 0;
+  @override
+  void onClear(int color) {
+    if (((color >> 24) & 0xFF) > 0) {
+      _fillPaint.color = _colorFromWireRgba(color);
+      _canvas!.drawRect(_localBounds, _fillPaint);
+    }
+  }
 
-    canvas.save();
-    try {
-      if (borderRadius > 0.0) {
-        canvas.clipRRect(RRect.fromRectAndRadius(bounds, Radius.circular(borderRadius)));
+  @override
+  void onFillRect(double x, double y, double w, double h, int color) {
+    if (w > 0.0 && h > 0.0 && ((color >> 24) & 0xFF) > 0) {
+      _fillPaint.color = _colorFromWireRgba(color);
+      _canvas!.drawRect(Rect.fromLTWH(x, y, w, h), _fillPaint);
+    }
+  }
+
+  @override
+  void onFillRoundedRect(double x, double y, double w, double h, double radius, int color) {
+    if (w > 0.0 && h > 0.0 && ((color >> 24) & 0xFF) > 0) {
+      _fillPaint.color = _colorFromWireRgba(color);
+      final Rect rect = Rect.fromLTWH(x, y, w, h);
+      final double r = math.max(0.0, radius);
+      if (r > 0.0) {
+        _canvas!.drawRRect(RRect.fromRectAndRadius(rect, Radius.circular(r)), _fillPaint);
       } else {
-        canvas.clipRect(bounds);
+        _canvas!.drawRect(rect, _fillPaint);
       }
-      canvas.translate(bounds.left, bounds.top);
-      final localBounds = Rect.fromLTWH(0.0, 0.0, bounds.width, bounds.height);
-
-      for (var i = 0; i < opCount; i++) {
-        final opcode = view.getUint32(pos, Endian.little);
-        pos += 4;
-        switch (opcode) {
-          case NveDrawOpcode.clear:
-            final rgba = view.getUint32(pos, Endian.little);
-            pos += 4;
-            final alpha = (rgba >> 24) & 0xFF;
-            if (alpha > 0) {
-              _fillPaint.color = _colorFromWireRgba(rgba);
-              canvas.drawRect(localBounds, _fillPaint);
-            }
-            break;
-
-          case NveDrawOpcode.fillRect:
-            final x = view.getFloat32(pos, Endian.little);
-            final y = view.getFloat32(pos + 4, Endian.little);
-            final w = view.getFloat32(pos + 8, Endian.little);
-            final h = view.getFloat32(pos + 12, Endian.little);
-            final rgba = view.getUint32(pos + 16, Endian.little);
-            pos += 20;
-            if (w > 0.0 && h > 0.0 && ((rgba >> 24) & 0xFF) > 0) {
-              _fillPaint.color = _colorFromWireRgba(rgba);
-              canvas.drawRect(Rect.fromLTWH(x, y, w, h), _fillPaint);
-            }
-            break;
-
-          case NveDrawOpcode.fillRoundedRect:
-            final x = view.getFloat32(pos, Endian.little);
-            final y = view.getFloat32(pos + 4, Endian.little);
-            final w = view.getFloat32(pos + 8, Endian.little);
-            final h = view.getFloat32(pos + 12, Endian.little);
-            final radius = math.max(0.0, view.getFloat32(pos + 16, Endian.little));
-            final rgba = view.getUint32(pos + 20, Endian.little);
-            pos += 24;
-            if (w > 0.0 && h > 0.0 && ((rgba >> 24) & 0xFF) > 0) {
-              _fillPaint.color = _colorFromWireRgba(rgba);
-              final rect = Rect.fromLTWH(x, y, w, h);
-              if (radius > 0.0) {
-                canvas.drawRRect(
-                  RRect.fromRectAndRadius(rect, Radius.circular(radius)),
-                  _fillPaint,
-                );
-              } else {
-                canvas.drawRect(rect, _fillPaint);
-              }
-            }
-            break;
-
-          case NveDrawOpcode.fillCircle:
-            final cx = view.getFloat32(pos, Endian.little);
-            final cy = view.getFloat32(pos + 4, Endian.little);
-            final radius = view.getFloat32(pos + 8, Endian.little);
-            final rgba = view.getUint32(pos + 12, Endian.little);
-            pos += 16;
-            if (radius > 0.0 && ((rgba >> 24) & 0xFF) > 0) {
-              _fillPaint.color = _colorFromWireRgba(rgba);
-              canvas.drawCircle(Offset(cx, cy), radius, _fillPaint);
-            }
-            break;
-
-          case NveDrawOpcode.strokeLine:
-            final x0 = view.getFloat32(pos, Endian.little);
-            final y0 = view.getFloat32(pos + 4, Endian.little);
-            final x1 = view.getFloat32(pos + 8, Endian.little);
-            final y1 = view.getFloat32(pos + 12, Endian.little);
-            final width = view.getFloat32(pos + 16, Endian.little);
-            final rgba = view.getUint32(pos + 20, Endian.little);
-            pos += 24;
-            if (width > 0.0 && ((rgba >> 24) & 0xFF) > 0) {
-              _strokePaint
-                ..color = _colorFromWireRgba(rgba)
-                ..strokeWidth = width;
-              canvas.drawLine(Offset(x0, y0), Offset(x1, y1), _strokePaint);
-            }
-            break;
-
-          case NveDrawOpcode.strokePolyline:
-            final width = view.getFloat32(pos, Endian.little);
-            final rgba = view.getUint32(pos + 4, Endian.little);
-            final ptCount = view.getUint32(pos + 8, Endian.little);
-            pos += 12;
-            if (ptCount >= 2 && width > 0.0 && ((rgba >> 24) & 0xFF) > 0) {
-              _polylinePath.reset();
-              final firstX = view.getFloat32(pos, Endian.little);
-              final firstY = view.getFloat32(pos + 4, Endian.little);
-              _polylinePath.moveTo(firstX, firstY);
-              for (var p = 1; p < ptCount; p++) {
-                final px = view.getFloat32(pos + p * 8, Endian.little);
-                final py = view.getFloat32(pos + p * 8 + 4, Endian.little);
-                _polylinePath.lineTo(px, py);
-              }
-              _strokePaint
-                ..color = _colorFromWireRgba(rgba)
-                ..strokeWidth = width;
-              canvas.drawPath(_polylinePath, _strokePaint);
-            }
-            pos += ptCount * 8;
-            break;
-
-          case NveDrawOpcode.clipRect:
-            final x = view.getFloat32(pos, Endian.little);
-            final y = view.getFloat32(pos + 4, Endian.little);
-            final w = math.max(0.0, view.getFloat32(pos + 8, Endian.little));
-            final h = math.max(0.0, view.getFloat32(pos + 12, Endian.little));
-            pos += 16;
-            if (clipDepth < nveDrawMaxClipDepth) {
-              canvas.save();
-              canvas.clipRect(Rect.fromLTWH(x, y, w, h));
-              clipDepth += 1;
-            } else {
-              overflowClipDepth += 1;
-            }
-            break;
-
-          case NveDrawOpcode.restoreClip:
-            if (overflowClipDepth > 0) {
-              overflowClipDepth -= 1;
-            } else if (clipDepth > 0) {
-              canvas.restore();
-              clipDepth -= 1;
-            }
-            break;
-        }
-      }
-    } finally {
-      while (clipDepth > 0) {
-        canvas.restore();
-        clipDepth -= 1;
-      }
-      canvas.restore();
     }
-
-    return check;
   }
 
-  static bool _areFinite4(ByteData view, int pos) {
-    return view.getFloat32(pos, Endian.little).isFinite &&
-        view.getFloat32(pos + 4, Endian.little).isFinite &&
-        view.getFloat32(pos + 8, Endian.little).isFinite &&
-        view.getFloat32(pos + 12, Endian.little).isFinite;
+  @override
+  void onFillCircle(double cx, double cy, double radius, int color) {
+    if (radius > 0.0 && ((color >> 24) & 0xFF) > 0) {
+      _fillPaint.color = _colorFromWireRgba(color);
+      _canvas!.drawCircle(Offset(cx, cy), radius, _fillPaint);
+    }
+  }
+
+  @override
+  void onStrokeLine(double x0, double y0, double x1, double y1, double width, int color) {
+    if (width > 0.0 && ((color >> 24) & 0xFF) > 0) {
+      _strokePaint
+        ..color = _colorFromWireRgba(color)
+        ..strokeWidth = width;
+      _canvas!.drawLine(Offset(x0, y0), Offset(x1, y1), _strokePaint);
+    }
+  }
+
+  @override
+  void onStrokePolylineStart(int count, double width, int color) {
+    _polyDrawn = count >= 2 && width > 0.0 && ((color >> 24) & 0xFF) > 0;
+    if (!_polyDrawn) {
+      return;
+    }
+    _polylinePath.reset();
+    _strokePaint
+      ..color = _colorFromWireRgba(color)
+      ..strokeWidth = width;
+  }
+
+  @override
+  void onStrokePolylinePoint(int index, double x, double y) {
+    if (!_polyDrawn) {
+      return;
+    }
+    if (index == 0) {
+      _polylinePath.moveTo(x, y);
+    } else {
+      _polylinePath.lineTo(x, y);
+    }
+  }
+
+  @override
+  void onStrokePolylineEnd() {
+    if (_polyDrawn) {
+      _canvas!.drawPath(_polylinePath, _strokePaint);
+    }
+  }
+
+  @override
+  void onClipRect(double x, double y, double w, double h) {
+    final Canvas c = _canvas!;
+    c.save();
+    c.clipRect(Rect.fromLTWH(x, y, math.max(0.0, w), math.max(0.0, h)));
+  }
+
+  @override
+  void onRestoreClip() {
+    _canvas!.restore();
   }
 
   static Color _colorFromWireRgba(int rgba) {

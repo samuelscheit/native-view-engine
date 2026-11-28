@@ -31,6 +31,13 @@ inline void write_le_f32(std::vector<uint8_t>& buf, float v) {
   write_le_u32(buf, bits);
 }
 
+inline void write_le_non_negative_f32(std::vector<uint8_t>& buf, float v) {
+  const float safe = (std::isfinite(v) && v >= 0.0f) ? v : 0.0f;
+  uint32_t bits = 0u;
+  std::memcpy(&bits, &safe, sizeof(uint32_t));
+  write_le_u32(buf, bits);
+}
+
 }  // namespace detail
 
 class DrawListEncoder {
@@ -75,7 +82,7 @@ class DrawListEncoder {
     detail::write_le_f32(buf_, y);
     detail::write_le_f32(buf_, w);
     detail::write_le_f32(buf_, h);
-    detail::write_le_f32(buf_, radius);
+    detail::write_le_non_negative_f32(buf_, radius);
     detail::write_le_u32(buf_, color.to_u32());
     ++op_count_;
     return *this;
@@ -86,7 +93,7 @@ class DrawListEncoder {
     detail::write_le_u32(buf_, static_cast<uint32_t>(DrawOpcode::FillCircle));
     detail::write_le_f32(buf_, cx);
     detail::write_le_f32(buf_, cy);
-    detail::write_le_f32(buf_, radius);
+    detail::write_le_non_negative_f32(buf_, radius);
     detail::write_le_u32(buf_, color.to_u32());
     ++op_count_;
     return *this;
@@ -105,7 +112,7 @@ class DrawListEncoder {
     detail::write_le_f32(buf_, y0);
     detail::write_le_f32(buf_, x1);
     detail::write_le_f32(buf_, y1);
-    detail::write_le_f32(buf_, width);
+    detail::write_le_non_negative_f32(buf_, width);
     detail::write_le_u32(buf_, color.to_u32());
     ++op_count_;
     return *this;
@@ -118,7 +125,7 @@ class DrawListEncoder {
     if (!can_push()) return *this;
     const size_t clamped = std::min(points.size(), kMaxPolylinePoints);
     detail::write_le_u32(buf_, static_cast<uint32_t>(DrawOpcode::StrokePolyline));
-    detail::write_le_f32(buf_, width);
+    detail::write_le_non_negative_f32(buf_, width);
     detail::write_le_u32(buf_, color.to_u32());
     detail::write_le_u32(buf_, static_cast<uint32_t>(clamped));
     for (size_t i = 0u; i < clamped; ++i) {

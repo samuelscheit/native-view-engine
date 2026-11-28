@@ -6,6 +6,7 @@
 //! whichever table crate the caller links (`nve-cli` passes `nve_tables::CORE_TABLE_DESCS`), so
 //! this crate never depends on a table crate. Templates are checked by `rustc` at compile time.
 
+pub mod flat_op;
 pub mod java_host;
 pub mod jni_frame;
 pub mod layout;
@@ -13,6 +14,8 @@ pub mod model;
 pub mod spell;
 pub mod tables;
 mod validate;
+
+pub use flat_op::generate_flat_op_codec_files;
 
 use askama::Template;
 use nve_abi::NveHostStatus;

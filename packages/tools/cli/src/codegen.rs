@@ -146,6 +146,10 @@ pub(crate) fn run_codegen_abi(out_root: &Path, check: bool) -> Result<Vec<PathBu
         .map_err(|e| format!("ABI codegen failed: {e}"))?;
     files.extend(module_table_headers().map_err(|e| format!("module table codegen failed: {e}"))?);
     files.extend(nve_codegen::generate_java_host_files(CANVAS_TABLES).map_err(|e| format!("Java host codegen failed: {e}"))?);
+    files.extend(
+        nve_codegen::generate_flat_op_codec_files(&nve_canvas::DRAW_LIST_CODEC_DESC)
+            .map_err(|e| format!("DrawList flat-op codec codegen failed: {e}"))?,
+    );
     write_or_check_generated(&files, out_root, check, "cargo nve codegen abi")
 }
 
@@ -306,7 +310,7 @@ mod tests {
 
         assert!(run_codegen_abi(&tmp, true).is_err());
         let written = run_codegen_abi(&tmp, false).expect("write every host ABI file");
-        assert_eq!(written.len(), 24, "core + runtime + JNI frame ABI, canvas module mirrors, Java host files, XXH64 vectors");
+        assert_eq!(written.len(), 29, "core + runtime + JNI frame ABI, canvas module mirrors, Java host files, DrawList flat-op codecs, XXH64 vectors");
         assert!(run_codegen_abi(&tmp, true).is_ok());
 
         let target_file = tmp.join("packages/core/host-ts/src/generated/nve_abi.generated.ts");

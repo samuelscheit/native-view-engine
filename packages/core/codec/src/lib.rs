@@ -10,6 +10,7 @@
 #![deny(clippy::let_underscore_must_use)]
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
+mod flat_op;
 mod reader;
 mod writer;
 
@@ -118,6 +119,10 @@ use core::ops::{Deref, DerefMut};
 ///     A = 1,
 /// }
 /// ```
+pub use flat_op::{
+    FlatOpDesc, FlatOpFieldDesc, FlatOpFieldType, FlatOpScopeDesc, FlatOpStreamDesc,
+    FloatConstraint,
+};
 pub use nve_abi_macros::NveCodec;
 pub use reader::{ByteReader, DEFAULT_MAX_DEPTH};
 pub use writer::{write_fixed, write_fixed_into, ByteSink, ByteWriter, SliceWriter};

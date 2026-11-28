@@ -200,6 +200,18 @@ void main() {
       final nanClip = (DrawListEncoder()..clipRect(0, 0, double.nan, 10)).finish();
       expect(NveDrawListPainter.validate(nanClip).errorCode, NveDrawListErrorCode.nonFiniteFloat);
 
+      // Negative radii and stroke widths rejected with negativeFloat; -0.0 accepted
+      final negRRect = (DrawListEncoder()..fillRoundedRect(0, 0, 10, 10, -0.5, packRgba(255, 0, 0))).finish();
+      expect(NveDrawListPainter.validate(negRRect).errorCode, NveDrawListErrorCode.negativeFloat);
+      final negCircle = (DrawListEncoder()..fillCircle(0, 0, -1.0, packRgba(255, 0, 0))).finish();
+      expect(NveDrawListPainter.validate(negCircle).errorCode, NveDrawListErrorCode.negativeFloat);
+      final negLine = (DrawListEncoder()..strokeLine(0, 0, 10, 10, -0.25, packRgba(255, 0, 0))).finish();
+      expect(NveDrawListPainter.validate(negLine).errorCode, NveDrawListErrorCode.negativeFloat);
+      final negPoly = (DrawListEncoder()..strokePolyline(const [(0, 0)], -2.0, packRgba(255, 0, 0))).finish();
+      expect(NveDrawListPainter.validate(negPoly).errorCode, NveDrawListErrorCode.negativeFloat);
+      final negZero = (DrawListEncoder()..fillCircle(0, 0, -0.0, packRgba(255, 0, 0))).finish();
+      expect(NveDrawListPainter.validate(negZero).isOk, isTrue);
+
       // Polyline vertex count > MAX_POLYLINE_POINTS
       final badPoly = _wordsToBytes(<int>[
         1,

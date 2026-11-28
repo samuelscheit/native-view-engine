@@ -61,6 +61,24 @@ void test_cairo_renderer() {
   cairo_paint(cr);
   NVE_CHECK(pixel(s, 30, 15) == 0xFF00FF00u);
   NVE_CHECK(render_draw_list_to_cairo(cr, 0.0, 20.0, bytes).ok());  // zero-size: no-op
+
+  // 66 nested clips + 2 restores: overflow absorbs clips #65/#66 so clip #64 stays active.
+  DrawListEncoder deep;
+  deep.clear(DrawColorRgba::rgb(0, 0, 0));
+  for (uint32_t i = 0u; i < kMaxClipDepth - 1u; ++i) deep.clip_rect(0.0f, 0.0f, 40.0f, 20.0f);
+  deep.clip_rect(0.0f, 0.0f, 10.0f, 10.0f)
+      .clip_rect(0.0f, 0.0f, 2.0f, 2.0f)
+      .clip_rect(0.0f, 0.0f, 1.0f, 1.0f)
+      .restore_clip()
+      .restore_clip()
+      .fill_rect(0.0f, 0.0f, 40.0f, 20.0f, DrawColorRgba::rgb(255, 0, 0))
+      .restore_clip()
+      .fill_rect(20.0f, 5.0f, 10.0f, 10.0f, DrawColorRgba::rgb(0, 0, 255));
+  NVE_CHECK(render_draw_list_to_cairo(cr, 40.0, 20.0, deep.finish()).ok());
+  NVE_CHECK(pixel(s, 5, 5) == 0xFFFF0000u);
+  NVE_CHECK(pixel(s, 35, 5) == 0xFF000000u);
+  NVE_CHECK(pixel(s, 25, 10) == 0xFF0000FFu);
+
   cairo_destroy(cr);
   cairo_surface_destroy(s);
 }

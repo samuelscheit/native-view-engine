@@ -57,6 +57,6 @@ cargo test --locked -p nve-codegen
 # Enforce zero Clippy warnings across library and tests
 cargo clippy --locked -p nve-codegen --all-targets -- -D warnings
 
-# Generate the 24 host files (ABI, tables, XXH64 vectors) into packages/core/host-* and verify parity
+# Generate the 29 host files (ABI, tables, XXH64 vectors, flat-op codecs) into packages/core/host-* and verify parity
 cargo run --locked -p nve-cli -- codegen abi && cargo run --locked -p nve-cli -- codegen abi --check
 ```

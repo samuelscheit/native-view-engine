@@ -30,7 +30,7 @@ Defined in `packages/modules/canvas/src/flat.rs` (`u32`-word stream, 4-byte alig
 | `7` | `ClipRect` | `x, y, w, h: f32` |
 | `8` | `RestoreClip` | *(empty — pops previous clip state; nested clips capped at depth `64`)* |
 
-`DrawList::validate` and every host decoder validate finite coordinates, clip-stack balance (with depth cap `64`), polyline point caps, resource kind (`nve.res.draw_list`), and exact byte length before a single draw call hits the GPU or OS graphics context.
+`<DrawList as FlatResource>::validate` / `DrawListView` and every generated host decoder validate finite coordinates, non-negative stroke widths and radii, clip-stack balance (capped at `MAX_CLIP_DEPTH = 64`), polyline point caps, resource kind (`nve.res.draw_list`), and exact byte length before a single draw call hits the GPU or OS graphics context.
 
 ## Interactive Canvas DrawList Playground
 
@@ -61,15 +61,15 @@ pub fn record_sparkline(samples: &[f32]) -> DrawList {
 
 ## Native Host Renderer Mapping
 
-Every platform host decodes the exact same `nve.res.draw_list` word stream via Rust `DrawListView`, shared C++20 `packages/modules/canvas/cxx/include/nve/canvas/draw_list.hpp`, shared JVM `dev.nve.host.DrawList`, Swift `NveDrawListRenderer`, or Dart `NveDrawListPainter`:
+Every platform host decodes the exact same `nve.res.draw_list` word stream via Rust `DrawListView` or decoders generated from `DRAW_LIST_CODEC_DESC` (`nve-cli codegen abi`) for C++ (`packages/modules/canvas/cxx/include/nve/canvas/draw_list.hpp`), JVM (`dev.nve.host.DrawList`), Swift (`NveHost.NveDrawList`), Dart (`package:nve_host/nve_draw_list.generated.dart`), and TypeScript (`@nve/host`):
 
 | Host Target | Native Graphics API | Implementation |
 | :--- | :--- | :--- |
 | **Desktop Skia** | Skia `Canvas` (Metal / Vulkan / D3D12) or software `PixelBuffer` | `packages/modules/canvas/skia` |
 | **Web WASM** | HTML5 `<canvas>` 2D (`CanvasRenderingContext2D`) | `packages/modules/canvas/web` |
-| **Windows** | Direct2D (`ID2D1RenderTarget` / `ID2D1PathGeometry`) | `hosts/windows-shell/NveWinD2DMedia.cpp` |
+| **Windows** | Direct2D (`ID2D1RenderTarget` / `ID2D1PathGeometry`) | `hosts/windows-shell/NveWinD2DRenderer.cpp` |
 | **Linux GTK4** | Cairo (`cairo_t` via `GtkDrawingArea` / `GtkSnapshot`) | `hosts/gtk-shell/NveGtkMedia.cpp` |
-| **Qt 6** | `QPainter` (Widgets & Quick texture) | `hosts/qt-shell/NveQtCustomWidgets.cpp` |
+| **Qt 6** | `QPainter` (Widgets & Quick texture) | `hosts/qt-shell/NveQtDrawList.cpp` |
 | **Android JNI** | `android.graphics.Canvas` (`NveCanvasView.java`) | `hosts/android-shell/android-app/src/dev/nve/android/NveCanvasView.java` |
 | **Jetpack Compose** | Compose `Canvas` (`DrawScope`) | `hosts/compose-kit/src/main/kotlin/dev/nve/compose/NveDrawListPainter.kt` |
 | **SwiftUI** | SwiftUI `Canvas` / CoreGraphics | `hosts/swiftui-kit/Sources/NveSwiftUI/NveDrawListRenderer.swift` |

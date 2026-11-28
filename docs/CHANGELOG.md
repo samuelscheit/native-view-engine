@@ -4,6 +4,14 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
 
 ---
 
+## `DrawList` Askama Codegen & Retired `NVE_DRAW1` Deletion
+
+- **Schema-driven flat word-op stream codegen (`nve-codec`, `nve-canvas`, `nve-codegen`, `nve-cli`, all 5 static `host-*` runtimes & native hosts)**:
+  - Added generic `FlatOpStreamDesc` / `FlatOpDesc` / `FlatOpFieldDesc` / `FloatConstraint` / `FlatOpScopeDesc` in `packages/core/codec/src/flat_op.rs` and `DRAW_LIST_CODEC_DESC` + `ClipDepthTracker` (`MAX_CLIP_DEPTH = 64`) in `packages/modules/canvas/src/desc.rs`.
+  - Deleted the retired `NVE_DRAW1` wire codec (`packages/modules/canvas/src/codec.rs`) and `base64` dependency from `nve-canvas`, updating Studio/docs-site callers and `docs/content/guides/canvas-draw1.mdx`.
+  - Added one generic Askama 0.16 flat-op template per host language (`c/flat_op_codec.hpp`, `swift/FlatOpCodec.swift`, `java/FlatOpCodec.java`, `dart/flat_op_codec.dart`, `ts/flat_op_codec.ts`) keeping `nve-codegen` module-free and expanding `nve codegen abi --check` to **29/29** gitignored generated files.
+  - Wired generated zero-alloc decoders with unified `MAX_CLIP_DEPTH = 64` + overflow depth balancing + exception-safe clip unwinding across `nve-canvas-web`, `nve-canvas-skia`, `canvas/cxx`, `qt-shell`, `gtk-shell`, `windows-shell`, `host-java`/`android-shell`/`compose-kit`, `host-dart`/`flutter-plugin`, `host-swift`/`swiftui-kit`, and `host-ts`.
+
 ## Track 3A — Hardware Skia Retained Compositor, Bounded Caches & Inset `box-shadow`, `nve-accessibility` + `skia-shell` AccessKit & `web-shell` `NVE_IFACE_HOST = 5`
 
 - **Track 3A landed onto post-1B-1d `main`**:

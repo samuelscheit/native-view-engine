@@ -1,5 +1,6 @@
 import 'bin_codec_suite.dart';
 import 'check.dart';
+import 'draw_list_suite.dart';
 import 'dynamic_value_suite.dart';
 import 'event_batch_suite.dart';
 import 'generated_suite.dart';
@@ -17,5 +18,6 @@ Check runAll() {
   runTableScene(c);
   runGenerated(c);
   runRuntimeScene(c);
+  runDrawList(c);
   return c;
 }

@@ -1,6 +1,6 @@
 # `nve-canvas-skia`
 
-Thin Skia (`nve-backend-skia`) leaf adapter executing `nve-canvas` `NVE_DRAW1` draw lists directly onto `skia_safe::Canvas` and headless Skia surfaces.
+Thin Skia (`nve-backend-skia`) leaf adapter executing flat `nve.res.draw_list` (`FlatResource`) draw lists directly onto `skia_safe::Canvas` and headless Skia surfaces.
 
 ## Role & API
 

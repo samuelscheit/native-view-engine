@@ -434,11 +434,11 @@ final class NveDrawListImageAccessibilityTests: XCTestCase {
         let overPts = UInt32(NveDrawListConstants.maxPolylinePoints + 1)
         let badPoly = encodeWords([1, NveDrawListRenderer.opStrokePolyline, Float(2.0).bitPattern, white, overPts])
         XCTAssertThrowsError(try NveDrawListRenderer.validate(badPoly)) { err in
-            XCTAssertEqual(err as? NveDrawListError, .polylinePointCountExceedsLimit(overPts))
+            XCTAssertEqual(err as? NveDrawListError, .sliceLenExceedsLimit(overPts))
         }
         let maxPoly = encodeWords([1, NveDrawListRenderer.opStrokePolyline, Float(2.0).bitPattern, white, UInt32.max])
         XCTAssertThrowsError(try NveDrawListRenderer.validate(maxPoly)) { err in
-            XCTAssertEqual(err as? NveDrawListError, .polylinePointCountExceedsLimit(UInt32.max))
+            XCTAssertEqual(err as? NveDrawListError, .sliceLenExceedsLimit(UInt32.max))
         }
 
         // Trailing bytes (both unaligned and word-aligned)
@@ -460,6 +460,70 @@ final class NveDrawListImageAccessibilityTests: XCTestCase {
 
         // Retired `nve-draw1;b64,` strings are never accepted as flat `nve.res.draw_list` bytes.
         XCTAssertThrowsError(try NveDrawListRenderer.validate(Data("nve-draw1;b64,AAAAAA==".utf8)))
+
+        // Negative radii and stroke widths rejected with `.negativeFloat`; `-0.0` accepted.
+        var negRRect = DrawListBuilder()
+        negRRect.fillRoundedRect(0, 0, 10, 10, -0.5, white)
+        XCTAssertThrowsError(try NveDrawListRenderer.validate(negRRect.finish())) { err in
+            XCTAssertEqual(err as? NveDrawListError, .negativeFloat)
+        }
+        var negCircle = DrawListBuilder()
+        negCircle.fillCircle(0, 0, -1, white)
+        XCTAssertThrowsError(try NveDrawListRenderer.validate(negCircle.finish())) { err in
+            XCTAssertEqual(err as? NveDrawListError, .negativeFloat)
+        }
+        var negLine = DrawListBuilder()
+        negLine.strokeLine(0, 0, 5, 5, -0.25, white)
+        XCTAssertThrowsError(try NveDrawListRenderer.validate(negLine.finish())) { err in
+            XCTAssertEqual(err as? NveDrawListError, .negativeFloat)
+        }
+        var negPoly = DrawListBuilder()
+        negPoly.strokePolyline([(0, 0)], -2, white)
+        XCTAssertThrowsError(try NveDrawListRenderer.validate(negPoly.finish())) { err in
+            XCTAssertEqual(err as? NveDrawListError, .negativeFloat)
+        }
+        var negZero = DrawListBuilder()
+        negZero.fillCircle(0, 0, -0.0, white)
+        XCTAssertEqual(try NveDrawListRenderer.validate(negZero.finish()), NveDrawListHeader(opCount: 1))
+    }
+
+    @MainActor
+    func testDrawListRendererEnforcesMaxClipDepth66Clips2Restores() throws {
+        var b = DrawListBuilder()
+        b.clear(packRgba(0, 0, 0))
+        for _ in 0 ..< (NveDrawListConstants.maxClipDepth - 1) {
+            b.clipRect(0, 0, 96, 96)
+        }
+        // Clip #64 restricts to [0..20); clips #65 and #66 overflow the 64-deep cap.
+        b.clipRect(0, 0, 20, 20)
+        b.clipRect(0, 0, 8, 8)
+        b.clipRect(0, 0, 4, 4)
+        // Two restores unwind overflow only; clip #64 [0..20) stays active.
+        b.restoreClip()
+        b.restoreClip()
+        b.fillRect(0, 0, 96, 96, packRgba(255, 0, 0))
+        // Third restore pops clip #64 back to [0..96).
+        b.restoreClip()
+        b.fillRect(30, 30, 20, 20, packRgba(0, 0, 255))
+        let data = b.finish()
+
+        let canvas = Canvas { ctx, size in
+            _ = try? NveDrawListRenderer.draw(data, into: &ctx, in: CGRect(origin: .zero, size: size))
+        }.frame(width: 96, height: 96)
+        let renderer = ImageRenderer(content: canvas)
+        renderer.scale = 1.0
+        let cg = try XCTUnwrap(renderer.cgImage)
+
+        let inside64 = rgbaPixel(in: cg, x: 12, y: 12)
+        XCTAssertEqual(inside64.0, 255, accuracy: 3)
+        XCTAssertEqual(inside64.1, 0, accuracy: 3)
+
+        let outside64 = rgbaPixel(in: cg, x: 70, y: 70)
+        XCTAssertEqual(outside64.0, 0, accuracy: 3)
+        XCTAssertEqual(outside64.2, 0, accuracy: 3)
+
+        let after3rdRestore = rgbaPixel(in: cg, x: 40, y: 40)
+        XCTAssertEqual(after3rdRestore.2, 255, accuracy: 3)
     }
 
     func testImageCacheDecodesPngRgbaFileUrisEnforcesLruAndComputesAll4ResizeModes() throws {
