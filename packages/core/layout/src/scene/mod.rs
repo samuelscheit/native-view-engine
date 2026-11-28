@@ -2,9 +2,9 @@
 //! and `nve-runtime` — the layout engine, viewport, text measurer, interaction pseudo-state
 //! ([`InteractionTracker`]), scroll offsets, and reusable zero-alloc hit-walk scratch.
 //!
-//! Backends keep only what is theirs: `HeadlessBackend` adds mutation tracking and legacy
-//! `NveSceneView` publication, `SkiaBackend` adds painting, text focus, and motion, and
-//! `nve-runtime` adds the zero-copy `NveSceneView` publisher and C ABI.
+//! Backends keep only what is theirs: `HeadlessBackend` adds mutation tracking and Frame-0
+//! export, `SkiaBackend` adds painting, text focus, and motion, and `nve-runtime` adds the
+//! zero-copy `NveSceneView` publisher (the only one) and C ABI.
 
 mod hit_test;
 mod interaction;
