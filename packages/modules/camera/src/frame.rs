@@ -4,6 +4,8 @@
 use std::fmt;
 use std::mem::{offset_of, size_of};
 
+use nve_codec::{write_fixed, ByteReader, ByteSink, CodecError, NveCodec, SliceWriter};
+
 pub const CAMERA_FRAME_MAGIC: [u8; 4] = *b"NVCF";
 pub const CAMERA_FRAME_VERSION: u8 = 1;
 pub const CAMERA_FRAME_DESCRIPTOR_SIZE: usize = 40;
@@ -19,6 +21,25 @@ pub enum CameraCodecError {
     PayloadTooLarge,
 }
 
+impl From<CodecError> for CameraCodecError {
+    #[inline]
+    fn from(err: CodecError) -> Self {
+        match err {
+            CodecError::Truncated { .. } => Self::Truncated,
+            CodecError::TrailingBytes(n) => Self::TrailingBytes(n),
+            CodecError::BadEnum { ty, raw } => Self::InvalidEnum(ty, raw as u32),
+            CodecError::NonZeroReserved(v) => Self::InvalidEnum("CameraFrameReserved", v as u32),
+            CodecError::LenOverflow { .. } | CodecError::DepthExceeded { .. } => {
+                Self::PayloadTooLarge
+            }
+            CodecError::BadMagic
+            | CodecError::BadVersion(_)
+            | CodecError::BadBool(_)
+            | CodecError::InvalidUtf8 => Self::Truncated,
+        }
+    }
+}
+
 impl fmt::Display for CameraCodecError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{self:?}")
@@ -28,7 +49,7 @@ impl fmt::Display for CameraCodecError {
 impl std::error::Error for CameraCodecError {}
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, NveCodec)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CameraPixelFormat {
     #[default]
@@ -40,21 +61,10 @@ pub enum CameraPixelFormat {
 
 impl CameraPixelFormat {
     #[inline]
-    pub const fn from_u8(v: u8) -> Option<Self> {
-        match v {
-            0 => Some(Self::Rgba8888),
-            1 => Some(Self::Bgra8888),
-            2 => Some(Self::Nv12),
-            3 => Some(Self::Yuv420_888),
-            _ => None,
-        }
-    }
-
-    #[inline]
     pub fn from_u32(v: u32) -> Result<Self, CameraCodecError> {
         u8::try_from(v)
             .ok()
-            .and_then(Self::from_u8)
+            .and_then(Self::from_repr)
             .ok_or(CameraCodecError::InvalidEnum("CameraPixelFormat", v))
     }
 
@@ -156,11 +166,36 @@ impl CameraFrameWireLayout {
         Ok(desc)
     }
 
-    #[cfg(target_endian = "little")]
     #[inline]
-    pub fn as_bytes(&self) -> &[u8; CAMERA_FRAME_DESCRIPTOR_SIZE] {
-        // SAFETY: `CameraFrameWireLayout` is `#[repr(C)]` with size 40 and zero padding bytes.
-        unsafe { &*(self as *const Self as *const [u8; CAMERA_FRAME_DESCRIPTOR_SIZE]) }
+    fn write_to_sink<S: ByteSink>(&self, w: &mut S) -> Result<(), CodecError> {
+        w.put_raw(&self.magic)?;
+        w.put_u8(self.version)?;
+        w.put_u8(self.pixel_format)?;
+        w.put_u16(self.rotation_deg)?;
+        w.put_u32(self.width)?;
+        w.put_u32(self.height)?;
+        w.put_u32(self.stride_bytes)?;
+        w.put_u32(self.reserved)?;
+        w.put_u64(self.timestamp_ns)?;
+        w.put_u64(self.native_handle_id)
+    }
+
+    /// Encodes this 40-byte wire layout directly into `dst` with zero heap allocations.
+    #[inline]
+    pub fn write_into(
+        &self,
+        dst: &mut [u8; CAMERA_FRAME_DESCRIPTOR_SIZE],
+    ) -> Result<(), CodecError> {
+        let mut w = SliceWriter::new(dst);
+        self.write_to_sink(&mut w)?;
+        w.finish()
+    }
+
+    /// Encodes this 40-byte wire layout into canonical little-endian bytes using `write_fixed`
+    /// (zero heap allocations and zero `unsafe` pointer casts).
+    #[inline]
+    pub fn to_bytes(&self) -> [u8; CAMERA_FRAME_DESCRIPTOR_SIZE] {
+        write_fixed::<CAMERA_FRAME_DESCRIPTOR_SIZE>(|w| self.write_to_sink(w))
     }
 }
 
@@ -235,26 +270,14 @@ impl CameraFrameDescriptor {
     }
 
     pub fn encode(&self) -> Result<[u8; CAMERA_FRAME_DESCRIPTOR_SIZE], CameraCodecError> {
-        let mut out = [0u8; CAMERA_FRAME_DESCRIPTOR_SIZE];
-        self.encode_into(&mut out)?;
-        Ok(out)
+        Ok(self.to_wire_layout()?.to_bytes())
     }
 
     pub fn encode_into(
         &self,
         dst: &mut [u8; CAMERA_FRAME_DESCRIPTOR_SIZE],
     ) -> Result<(), CameraCodecError> {
-        self.validate()?;
-        dst[0..4].copy_from_slice(&CAMERA_FRAME_MAGIC);
-        dst[4] = CAMERA_FRAME_VERSION;
-        dst[5] = self.pixel_format as u8;
-        dst[6..8].copy_from_slice(&self.rotation_deg.to_le_bytes());
-        dst[8..12].copy_from_slice(&self.width.to_le_bytes());
-        dst[12..16].copy_from_slice(&self.height.to_le_bytes());
-        dst[16..20].copy_from_slice(&self.stride_bytes.to_le_bytes());
-        dst[20..24].copy_from_slice(&0u32.to_le_bytes());
-        dst[24..32].copy_from_slice(&self.timestamp_ns.to_le_bytes());
-        dst[32..40].copy_from_slice(&self.native_handle_id.to_le_bytes());
+        self.to_wire_layout()?.write_into(dst)?;
         Ok(())
     }
 
@@ -271,46 +294,38 @@ impl CameraFrameDescriptor {
                 bytes.len() - CAMERA_FRAME_DESCRIPTOR_SIZE,
             ));
         }
-        let le32 = |o: usize| u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
-        let le64 = |o: usize| {
-            u64::from_le_bytes([
-                bytes[o],
-                bytes[o + 1],
-                bytes[o + 2],
-                bytes[o + 3],
-                bytes[o + 4],
-                bytes[o + 5],
-                bytes[o + 6],
-                bytes[o + 7],
-            ])
-        };
-        let magic: [u8; 4] = [bytes[0], bytes[1], bytes[2], bytes[3]];
+        let mut r = ByteReader::new(bytes);
+        let magic = r.read_array::<4>()?;
         if magic != CAMERA_FRAME_MAGIC {
             return Err(CameraCodecError::InvalidMagic(magic));
         }
-        if bytes[4] != CAMERA_FRAME_VERSION {
-            return Err(CameraCodecError::UnsupportedVersion(bytes[4]));
+        let version = r.read_u8()?;
+        if version != CAMERA_FRAME_VERSION {
+            return Err(CameraCodecError::UnsupportedVersion(version));
         }
-        let pixel_format = CameraPixelFormat::from_u32(u32::from(bytes[5]))?;
-        let rotation_deg = u16::from_le_bytes([bytes[6], bytes[7]]);
-        let width = le32(8);
-        let height = le32(12);
-        let stride_bytes = le32(16);
-        let reserved = le32(20);
+        let pixel_format = CameraPixelFormat::from_u32(u32::from(r.read_u8()?))?;
+        let rotation_deg = r.read_u16()?;
+        let width = r.read_u32()?;
+        let height = r.read_u32()?;
+        let stride_bytes = r.read_u32()?;
+        let reserved = r.read_u32()?;
         if reserved != 0 {
             return Err(CameraCodecError::InvalidEnum(
                 "CameraFrameReserved",
                 reserved,
             ));
         }
+        let timestamp_ns = r.read_u64()?;
+        let native_handle_id = r.read_u64()?;
+        r.finish()?;
         let desc = Self {
             width,
             height,
             stride_bytes,
             pixel_format,
             rotation_deg,
-            timestamp_ns: le64(24),
-            native_handle_id: le64(32),
+            timestamp_ns,
+            native_handle_id,
         };
         desc.validate()?;
         Ok(desc)

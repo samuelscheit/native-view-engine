@@ -6,16 +6,16 @@ use std::ffi::c_void;
 use std::sync::Arc;
 
 use nve_abi::{
-    NveBufferSlice, NveDirectEvent, NveEventBatch, NveEventBatchRef, NveMapEntry, NvePropsRef,
-    NveValue,
+    EventBatchBuf, FrameId, InterfaceId, NveBufferSlice, NveEventBatch, NveMapEntry, NvePropsRef,
+    NveValue, SurfaceId, TimestampUs, ValidatedEvents,
 };
-use nve_components::tables::{Image, ImageSrc, Layout};
+use nve_tables::tables::{Image, ImageSrc, ImageSrcView, Layout};
 use nve_engine::{HotPatchMsg, NveApp};
 use nve_runtime::{
     AppFrame, NveAppAdapter, RuntimeApp, RuntimeBuilder, RuntimeError, SurfaceRuntime,
 };
 use nve_store::wire::WireEncoder;
-use nve_store::{ChangeSet, NodeId, NodeStore, NveTable, Resource, ResourceId};
+use nve_store::{ChangeSet, FlatResource, NodeId, NodeStore, NveTable, ResourceId, ValidatedWords};
 
 mod common;
 use common::*;
@@ -33,7 +33,7 @@ fn resource_payload_borrows_published_bytes_only_under_scene_reader() {
     tx.commit_into(&mut changes);
     s.submit(&encode(&store, &changes, &mut enc));
     let id = store.row::<Image>(img).src();
-    let expected = store.resources().encoded(id).unwrap().to_vec();
+    let expected = store.resources().payload_bytes(id).unwrap().to_vec();
 
     // No scene reader: the borrow would have no lifetime anchor.
     assert_eq!(s.resource(id.0).0, INVALID);
@@ -41,9 +41,13 @@ fn resource_payload_borrows_published_bytes_only_under_scene_reader() {
     let _ = s.acquire();
     let (st, kind, bytes) = s.resource(id.0);
     assert_eq!(st, OK);
-    assert_eq!(kind, ImageSrc::KIND.0);
+    assert_eq!(kind, <ImageSrc as FlatResource>::KIND.0);
     assert_eq!(bytes, expected);
-    assert_eq!(ImageSrc::decode(&bytes), Some(ImageSrc::Url("https://cdn.example/cat.png".into())));
+    let (chunks, rem) = bytes.as_chunks::<4>();
+    assert!(rem.is_empty());
+    let words: Vec<u32> = chunks.iter().map(|&c| u32::from_le_bytes(c)).collect();
+    let validated = ValidatedWords::<ImageSrc>::try_new(&words).expect("valid ImageSrc words");
+    assert_eq!(ImageSrc::view(validated), ImageSrcView::Url("https://cdn.example/cat.png"));
     assert_eq!(s.resource(0).0, NOT_FOUND, "ResourceId::NONE");
     assert_eq!(s.resource(id.0 + 1000).0, NOT_FOUND, "out of range");
     // SAFETY: Live handle; a null payload slot is rejected, a null kind slot is optional.
@@ -81,8 +85,8 @@ fn rust_scene_guard_resource_payload_matches_store() {
     let id = store.row::<Image>(img).src();
     let g = rt.acquire_scene().unwrap();
     let (kind, bytes) = g.resource_payload(id).unwrap();
-    assert_eq!(kind, ImageSrc::KIND);
-    assert_eq!(bytes, store.resources().encoded(id).unwrap());
+    assert_eq!(kind, <ImageSrc as FlatResource>::KIND);
+    assert_eq!(bytes, store.resources().payload_bytes(id).unwrap());
     assert!(g.resource_payload(ResourceId::NONE).is_none());
 }
 
@@ -98,7 +102,7 @@ fn resource_payload_survives_moving_the_runtime_after_publish() {
     tx.set_children(NodeId::ROOT, &[img]);
     tx.commit_into(&mut changes);
     let id = store.row::<Image>(img).src();
-    let want = store.resources().encoded(id).unwrap().to_vec();
+    let want = store.resources().payload_bytes(id).unwrap().to_vec();
 
     let mut boxed = Box::new(RuntimeBuilder::new().build());
     boxed.submit_nve2(&encode(&store, &changes, &mut WireEncoder::default())).unwrap();
@@ -109,7 +113,7 @@ fn resource_payload_survives_moving_the_runtime_after_publish() {
     let junk = vec![0xA5u8; size_of::<SurfaceRuntime>()];
     let g = moved.acquire_scene().unwrap();
     let (kind, bytes) = g.resource_payload(id).expect("published resource after move");
-    assert_eq!(kind, ImageSrc::KIND);
+    assert_eq!(kind, <ImageSrc as FlatResource>::KIND);
     assert_eq!(bytes, want.as_slice());
     drop(g);
     drop(junk);
@@ -145,42 +149,42 @@ fn dense_tables_publish_null_owners_and_rows_within_node_capacity() {
 #[derive(Default)]
 struct CapableApp {
     props: Vec<(String, i64)>,
-    emitted: Vec<NveDirectEvent>,
-    drained: Vec<NveDirectEvent>,
+    emitted: EventBatchBuf,
+    drained: EventBatchBuf,
     snapshot: Vec<u8>,
     restored: Vec<u8>,
     patches: u32,
 }
 
 impl NveApp for CapableApp {
-    fn create(_surface_id: u32) -> Self {
+    fn create(_surface_id: SurfaceId) -> Self {
         Self {
             snapshot: b"state-v1".to_vec(),
             ..Self::default()
         }
     }
 
-    fn render(&mut self, _frame_id: u64) -> &[u8] {
+    fn render(&mut self, _frame_id: FrameId) -> &[u8] {
         &[]
     }
 
-    fn dispatch_events(&mut self, _events: NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, _events: ValidatedEvents<'_>) -> bool {
         false
     }
 
     fn set_props(&mut self, props: NvePropsRef<'_>) -> bool {
         self.props = props.iter().map(|(k, v)| (k.to_owned(), v.as_i64().unwrap_or(-1))).collect();
-        self.emitted = vec![
-            NveDirectEvent::press(1, 7, 10, 1.0, 2.0),
-            NveDirectEvent::press(1, 8, 11, 3.0, 4.0),
-        ];
+        self.emitted.clear();
+        self.emitted.push_press(SurfaceId::ROOT, NodeId::new(7, 0), TimestampUs(10), 1.0, 2.0);
+        self.emitted.push_press(SurfaceId::ROOT, NodeId::new(8, 0), TimestampUs(11), 3.0, 4.0);
         true
     }
 
-    fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
+    fn drain_emitted_events(&mut self) -> ValidatedEvents<'_> {
         // The drained batch stays alive until the next call (borrow contract).
-        self.drained = std::mem::take(&mut self.emitted);
-        &self.drained
+        std::mem::swap(&mut self.drained, &mut self.emitted);
+        self.emitted.clear();
+        self.drained.as_validated()
     }
 
     fn apply_hot_patch(&mut self, _patch: &HotPatchMsg) -> bool {
@@ -200,7 +204,7 @@ impl NveApp for CapableApp {
 nve_engine::export_nve_app!(CapableApp, symbol = nve_runtime_test_capable_app_get_interface);
 
 unsafe extern "C" {
-    fn nve_runtime_test_capable_app_get_interface(interface_id: u32) -> *const c_void;
+    fn nve_runtime_test_capable_app_get_interface(interface_id: InterfaceId) -> *const c_void;
 }
 
 fn hot_patch_bytes() -> Vec<u8> {
@@ -214,6 +218,7 @@ fn hot_patch_bytes() -> Vec<u8> {
         text_replacements: vec![],
     }
     .to_bytes()
+    .expect("encode hot patch")
 }
 
 #[test]
@@ -257,10 +262,13 @@ fn c_abi_app_hooks_forward_to_attached_app() {
     // SAFETY: Live handle; the batch is read before the next runtime call.
     unsafe {
         assert_eq!((s.api.drain_emitted_events)(s.h, &mut events), OK);
-        let drained = events.try_as_slice().unwrap();
-        assert_eq!(drained.iter().map(|e| e.node_id).collect::<Vec<_>>(), [7, 8]);
+        let drained = ValidatedEvents::try_from_raw(events).unwrap();
+        assert_eq!(
+            drained.iter().map(|e| e.node()).collect::<Vec<_>>(),
+            [NodeId::new(7, 0), NodeId::new(8, 0)]
+        );
         assert_eq!((s.api.drain_emitted_events)(s.h, &mut events), OK);
-        assert_eq!(events.len, 0, "draining is destructive");
+        assert_eq!(events.event_count, 0, "draining is destructive");
     }
 
     let mut state = NveBufferSlice::EMPTY;
@@ -284,7 +292,7 @@ fn c_abi_app_hooks_forward_to_attached_app() {
 #[test]
 fn rust_app_hooks_forward_through_nve_app_adapter() {
     let mut rt = RuntimeBuilder::new()
-        .app(Box::new(NveAppAdapter::<CapableApp>::create(1)))
+        .app(Box::new(NveAppAdapter::<CapableApp>::create(SurfaceId::ROOT)))
         .build();
     rt.tick(0.0).unwrap();
     assert!(!rt.wake_bridge().is_pending(), "settled");
@@ -308,11 +316,11 @@ fn rust_app_hooks_forward_through_nve_app_adapter() {
 struct BareApp;
 
 impl RuntimeApp for BareApp {
-    fn render_frame(&mut self, _frame_id: u64) -> AppFrame<'_> {
+    fn render_frame(&mut self, _frame_id: FrameId) -> AppFrame<'_> {
         AppFrame::Clean
     }
 
-    fn dispatch_events(&mut self, _events: NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, _events: ValidatedEvents<'_>) -> bool {
         false
     }
 }

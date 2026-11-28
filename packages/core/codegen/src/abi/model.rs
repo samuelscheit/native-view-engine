@@ -2,17 +2,12 @@
 //! and the golden XXH64 vectors. No owned intermediate spec: every name, type, and doc string
 //! is a `&'a str` into the `nve-abi` descriptors.
 
-use std::collections::BTreeSet;
-
 use nve_abi::RuntimeFnSignature;
 use nve_abi::schema::{
     AbiAliasDescriptor, AbiConstDescriptor, AbiEnumDescriptor, AbiEnumVariantDescriptor,
     AbiFileDescriptor,
 };
-use nve_abi::table::{
-    FieldDesc, FieldKind, MAX_TABLE_WORDS, Storage, TableDesc, ValueSetDesc,
-};
-use nve_hash::{Key64, PRIME1, xxh64};
+use nve_hash::{PRIME1, xxh64};
 
 use super::layout::{RecordLayout, layout_records, layout_records_on};
 use crate::error::CodegenError;
@@ -137,6 +132,7 @@ impl<'a> AbiModel<'a> {
 #[derive(Debug)]
 pub struct RuntimeAbiModel<'a> {
     pub file: &'a AbiFileDescriptor,
+    pub base_aliases: &'a [AbiAliasDescriptor],
     pub hash: U64Split,
     pub records: Vec<RecordLayout<'a>>,
     /// Host callback typedefs (`NveRuntimeWakeFn`, `NveRuntimeMeasureTextFn`).
@@ -196,6 +192,7 @@ impl<'a> RuntimeAbiModel<'a> {
                 .chain(CALLBACK_ALIASES)
                 .chain(["NveGetInterfaceFn"])
                 .collect(),
+            aliases: base.core.aliases.iter().map(|a| (a.name, a.target)).collect(),
         };
         let spell = |sigs: &'static [RuntimeFnSignature]| -> Result<Vec<RuntimeFn>, CodegenError> {
             sigs.iter()
@@ -212,6 +209,7 @@ impl<'a> RuntimeAbiModel<'a> {
         let scene_view = find_record(&records, "NveSceneView")?;
         Ok(Self {
             file,
+            base_aliases: base.core.aliases,
             hash: U64Split::new(nve_abi::NVE_RUNTIME_SCHEMA_HASH),
             records,
             callbacks: spell(callbacks)?,
@@ -242,232 +240,6 @@ pub fn is_dart_fallback(e: &AbiEnumDescriptor, v: &AbiEnumVariantDescriptor) -> 
 pub fn bare_enum_prefix(e: &AbiEnumDescriptor) -> String {
     let prefix = c_enum_prefix(e);
     prefix.strip_prefix("NVE_").unwrap_or(&prefix).to_owned()
-}
-
-/// One word table, validated once so every host constructor accepts its field specs.
-#[derive(Debug)]
-pub struct TableModel<'a> {
-    pub desc: &'a TableDesc,
-    /// `nve.text_input` -> `TextInput` (hosts nest it under `NveTables`).
-    pub ident: String,
-    /// `nve.text_input` -> `TEXT_INPUT` (C macro / Java constant prefix).
-    pub screaming: String,
-    pub key: U64Split,
-    pub schema: U64Split,
-}
-
-impl TableModel<'_> {
-    pub fn dense(&self) -> bool {
-        self.desc.storage == Storage::Dense
-    }
-}
-
-/// Validates `tables` (unique names, keys that match their names, fields every host reader
-/// accepts) and wraps them for rendering, in the given order.
-pub fn tables_model<'a>(tables: &[&'a TableDesc]) -> Result<Vec<TableModel<'a>>, CodegenError> {
-    let mut names = BTreeSet::new();
-    let mut out = Vec::with_capacity(tables.len());
-    for desc in tables {
-        super::validate::table(desc)?;
-        let short = desc.name.strip_prefix("nve.").unwrap_or(desc.name);
-        let ident = super::spell::pascal(short);
-        if !names.insert(ident.clone()) {
-            return Err(table_error(desc, "duplicate table name"));
-        }
-        if desc.key != Key64::of(desc.name) {
-            return Err(table_error(desc, "key is not `xxh64(name)`"));
-        }
-        let words = desc.words();
-        if words == 0 || words > MAX_TABLE_WORDS || desc.word_effects.len() != words {
-            return Err(table_error(desc, "word count out of range"));
-        }
-        for f in desc.fields {
-            check_field(desc, f, words)?;
-        }
-        out.push(TableModel {
-            desc,
-            screaming: short.replace('.', "_").to_ascii_uppercase(),
-            ident,
-            key: U64Split::new(desc.key.0),
-            schema: U64Split::new(desc.schema_hash),
-        });
-    }
-    Ok(out)
-}
-
-/// Distinct named value sets (`word_enum!` variants, `#[values]` flag bits) the fields of
-/// `tables` carry, in first-use order. Sets sharing a name must be identical; names must spell
-/// identifiers, every emitted `NVE_<SET>_<VALUE>` constant must be unique across all sets and
-/// clear of the `NVE_TABLE_*` namespace, and every value must fit its field.
-pub fn value_sets(tables: &[TableModel<'_>]) -> Result<Vec<&'static ValueSetDesc>, CodegenError> {
-    let ident = |s: &str| {
-        s.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-            && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-    };
-    let mut out: Vec<&'static ValueSetDesc> = Vec::new();
-    let mut constants = BTreeSet::new();
-    for t in tables {
-        for f in t.desc.fields {
-            let Some(set) = f.values else { continue };
-            let err = |why: String| Err(table_error(t.desc, &format!("value set `{}`: {why}", set.name)));
-            // Every field that carries the set must hold every value, also when the set was
-            // already emitted for a wider field.
-            if let Some(&(name, _)) = set.values.iter().find(|&&(_, v)| f.bits < 32 && v >> f.bits != 0) {
-                return err(format!("value `{name}` exceeds field `{}`", f.name));
-            }
-            if let Some(seen) = out.iter().find(|s| s.name == set.name) {
-                if *seen != set {
-                    return err("defined twice differently".into());
-                }
-                continue;
-            }
-            let prefix = super::spell::screaming(set.name);
-            if !ident(set.name) || set.values.is_empty() || prefix == "TABLE" || prefix.starts_with("TABLE_") {
-                return err("needs an identifier name outside `TABLE*` and at least one value".into());
-            }
-            // Per-set member spellings each host renders (keyword-escaped), and the values: a
-            // collision after escaping or a repeated value would not compile (Swift raw values)
-            // or would alias two members.
-            let (mut swift, mut dart, mut values) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
-            for &(name, value) in set.values {
-                let constant = format!("{prefix}_{}", super::spell::screaming(name));
-                if !ident(name) || !constants.insert(constant.clone()) {
-                    return err(format!("bad or duplicate name `{name}` (NVE_{constant})"));
-                }
-                if !swift.insert(super::spell::swift::variant(name)) || !dart.insert(super::spell::dart::variant(name)) {
-                    return err(format!("name `{name}` collides with another member once escaped"));
-                }
-                if !values.insert(value) {
-                    return err(format!("duplicate value {value} (`{name}`)"));
-                }
-                if set.flags && !value.is_power_of_two() {
-                    return err(format!("flag `{name}` is not a single bit"));
-                }
-            }
-            out.push(set);
-        }
-    }
-    Ok(out)
-}
-
-/// Bit width as the host `FieldSpec`s spell it: a two-word `Str` is `bits = 64` in Rust but
-/// `(shift 0, bits 32)` on every host (the second word is implied by the kind).
-pub fn host_bits(f: &FieldDesc) -> u8 {
-    if f.kind == FieldKind::Str { 32 } else { f.bits }
-}
-
-fn check_field(desc: &TableDesc, f: &FieldDesc, words: usize) -> Result<(), CodegenError> {
-    let (span, shape_ok) = match f.kind {
-        FieldKind::Str => (2, f.shift == 0 && f.bits == 64),
-        _ => (
-            1,
-            (1..=32).contains(&f.bits) && u32::from(f.shift) + u32::from(f.bits) <= 32,
-        ),
-    };
-    if !shape_ok || usize::from(f.word) + span > words {
-        return Err(table_error(
-            desc,
-            &format!("field `{}` does not fit its row", f.name),
-        ));
-    }
-    Ok(())
-}
-
-pub(super) fn table_error(desc: &TableDesc, why: &str) -> CodegenError {
-    CodegenError::validation(format!("table `{}`: {why}", desc.name))
-}
-
-/// `FieldKind` as spelled by each host runtime's enum.
-pub mod kind {
-    use nve_abi::table::FieldKind;
-
-    /// `(kind, C, Swift, TypeScript, Java)`.
-    type Row = (
-        FieldKind,
-        &'static str,
-        &'static str,
-        &'static str,
-        &'static str,
-    );
-
-    const NAMES: [Row; 10] = [
-        (FieldKind::U32, "NVE_FIELD_U32", "u32", "U32", "U32"),
-        (FieldKind::I32, "NVE_FIELD_I32", "i32", "I32", "I32"),
-        (FieldKind::F32, "NVE_FIELD_F32", "f32", "F32", "F32"),
-        (FieldKind::Bool, "NVE_FIELD_BOOL", "bool", "Bool", "BOOL"),
-        (
-            FieldKind::Enum,
-            "NVE_FIELD_ENUM",
-            "enumeration",
-            "Enum",
-            "ENUM",
-        ),
-        (
-            FieldKind::Color,
-            "NVE_FIELD_COLOR",
-            "color",
-            "Color",
-            "COLOR",
-        ),
-        (
-            FieldKind::Length,
-            "NVE_FIELD_LENGTH",
-            "length",
-            "Length",
-            "LENGTH",
-        ),
-        (FieldKind::Str, "NVE_FIELD_STR", "str", "Str", "STR"),
-        (
-            FieldKind::Resource,
-            "NVE_FIELD_RESOURCE",
-            "resource",
-            "Resource",
-            "RESOURCE",
-        ),
-        (FieldKind::Node, "NVE_FIELD_NODE", "node", "Node", "NODE"),
-    ];
-
-    fn row(k: FieldKind) -> Row {
-        NAMES[k as usize]
-    }
-
-    /// C `NveFieldKind` constant.
-    pub fn c(k: &FieldKind) -> &'static str {
-        row(*k).1
-    }
-
-    /// Swift `FieldKind` case.
-    pub fn swift(k: &FieldKind) -> &'static str {
-        row(*k).2
-    }
-
-    /// Java `FieldKind` constant.
-    pub fn java(k: &FieldKind) -> &'static str {
-        row(*k).4
-    }
-
-    /// Dart `FieldKind` value (`bool` is a keyword there).
-    pub fn dart(k: &FieldKind) -> &'static str {
-        match k {
-            FieldKind::Bool => "boolean",
-            _ => row(*k).2,
-        }
-    }
-
-    /// TypeScript `FieldKind` key.
-    pub fn ts(k: &FieldKind) -> &'static str {
-        row(*k).3
-    }
-
-    #[cfg(test)]
-    mod tests {
-        #[test]
-        fn names_are_indexed_by_discriminant() {
-            for (i, row) in super::NAMES.iter().enumerate() {
-                assert_eq!(row.0 as usize, i);
-            }
-        }
-    }
 }
 
 /// One golden XXH64 vector: every host suite hashes `bytes` with `seed` and expects `expected`.

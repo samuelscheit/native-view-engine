@@ -132,7 +132,8 @@ class NveWinHost {
 
  private:
   NveWinHost(WinHostConfig config, std::unique_ptr<host::HostSession> session);
-  bool dispatch(const NveDirectEvent& ev);
+  bool dispatch(const NveEvent& ev);
+  bool dispatch_text(uint32_t node_id, NveTextInputEvent kind, std::string_view text);
   /// The app source changed (a new `scene_epoch`): the next sync is a full
   /// pass keeping views whose node still matches.
   void source_changed();
@@ -141,7 +142,7 @@ class NveWinHost {
   /// Shows `node` scrolled to `(x, y)` and reports it (`Scroll` to subscribers).
   bool scrolled(const WinNodeVisual& node, float x, float y);
   /// `kind` at surface `(x, y)` to `node`, in its local coordinates.
-  bool dispatch_pointer(uint32_t node, NveEventKind kind, float x, float y);
+  bool dispatch_pointer(uint32_t node, NveInteractionEvent kind, float x, float y);
 
   WinHostConfig config_;
 #if defined(_WIN32)

@@ -21,7 +21,7 @@ nve-canvas-web = { workspace = true, optional = true }
 nve-web-html-web = { workspace = true, optional = true }
 nve-abi = { workspace = true }
 nve-canvas = { workspace = true }
-nve-components = { workspace = true }
+nve-tables = { workspace = true }
 nve-engine = { workspace = true }
 nve-dioxus = { workspace = true }
 nve-store = { workspace = true }

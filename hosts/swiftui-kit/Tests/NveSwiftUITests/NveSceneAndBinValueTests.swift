@@ -50,7 +50,7 @@ final class NveSceneAndBinValueTests: XCTestCase {
     func testBinValueRejectsDepthOverflowTruncationBadTagsAndInvalidUtf8() throws {
         // Depth 64 succeeds (root array at depth 0 .. 64th array at depth 63 containing null).
         var depth64 = NveBinValue.null
-        for _ in 0 ..< nveBinValueMaxDepth {
+        for _ in 0 ..< NveSwiftUI.nveBinValueMaxDepth {
             depth64 = .array([depth64])
         }
         let encoded64 = try depth64.encode()

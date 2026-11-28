@@ -3,14 +3,13 @@
 use std::sync::Arc;
 
 use nve_abi::{
-    ColorRgba, EventPayload, NativeEvent, NativeEventKind, NodeId as AbiNodeId, pack_key_modifiers,
+    ColorRgba, EventBatchBuf, EventFlags, FrameId, NodeId, SurfaceId, TimestampUs,
 };
 use nve_backend_headless::HeadlessBackend;
-use nve_components::tables::{Accessibility, DebugId, Link, TextContent, Visual};
+use nve_tables::tables::{Accessibility, DebugId, Link, TextContent, Visual};
 use nve_dioxus::DioxusSurface;
 use nve_dioxus::dioxus_elements::backend::{StoreBackend, Viewport};
 use nve_dioxus::prelude::*;
-use nve_store::NodeId;
 use nve_web_html::{DataAttrList, HtmlDataAttrs};
 use nve_docs::{
     DocsNavSection, DocsSiteConfig, DocsViewport, PlaygroundMeta, PlaygroundRegistry,
@@ -208,7 +207,7 @@ impl DocsHarness {
         services.register_arc(sys_env.clone());
         let host: Arc<dyn HostServiceProvider> = services.clone();
         let surface = create_docs_surface_with_viewport(
-            1,
+            SurfaceId::ROOT,
             route,
             viewport,
             build_config(),
@@ -218,7 +217,7 @@ impl DocsHarness {
         );
         let mut backend = HeadlessBackend::new();
         backend.set_viewport(
-            1,
+            SurfaceId::ROOT,
             Viewport {
                 width: viewport.width,
                 height: viewport.height,
@@ -260,12 +259,12 @@ impl DocsHarness {
     }
 
     /// `aria-checked` of a node (`None` when the node does not declare it).
-    pub fn aria_checked(&self, id: AbiNodeId) -> Option<bool> {
-        use nve_components::tables::AriaTriState;
-        match self.surface.store().try_row::<Accessibility>(NodeId(id))?.checked() {
+    pub fn aria_checked(&self, id: NodeId) -> Option<bool> {
+        use nve_tables::tables::AriaTriState;
+        match self.surface.store().try_row::<Accessibility>(id)?.checked()? {
             AriaTriState::True => Some(true),
             AriaTriState::False => Some(false),
-            _ => None,
+            AriaTriState::Mixed => None,
         }
     }
 
@@ -279,11 +278,11 @@ impl DocsHarness {
     pub fn render(&mut self) {
         self.frame_id += 1;
         self.surface
-            .commit_to(self.frame_id, &mut self.backend)
+            .commit_to(FrameId(self.frame_id), &mut self.backend)
             .expect("headless commit_to");
     }
 
-    pub fn maybe_find(&self, tid: &str) -> Option<AbiNodeId> {
+    pub fn maybe_find(&self, tid: &str) -> Option<NodeId> {
         let store = self.surface.store();
         let mut stack = vec![NodeId::ROOT];
         while let Some(id) = stack.pop() {
@@ -291,14 +290,14 @@ impl DocsHarness {
                 && let Some(dbg) = store.try_row::<DebugId>(id)
                 && dbg.test_id() == tid
             {
-                return Some(id.raw());
+                return Some(id);
             }
             stack.extend_from_slice(store.children(id));
         }
         None
     }
 
-    pub fn find(&self, tid: &str) -> AbiNodeId {
+    pub fn find(&self, tid: &str) -> NodeId {
         let found = self.maybe_find(tid);
         assert!(
             found.is_some(),
@@ -308,7 +307,7 @@ impl DocsHarness {
         found.expect("checked above")
     }
 
-    pub fn find_prefix(&self, prefix: &str) -> AbiNodeId {
+    pub fn find_prefix(&self, prefix: &str) -> NodeId {
         let store = self.surface.store();
         let mut stack = vec![NodeId::ROOT];
         while let Some(id) = stack.pop() {
@@ -316,7 +315,7 @@ impl DocsHarness {
                 && let Some(dbg) = store.try_row::<DebugId>(id)
                 && dbg.test_id().starts_with(prefix)
             {
-                return id.raw();
+                return id;
             }
             stack.extend_from_slice(store.children(id));
         }
@@ -326,7 +325,7 @@ impl DocsHarness {
         }
     }
 
-    pub fn find_matching(&self, pred: impl Fn(&str) -> bool) -> Option<AbiNodeId> {
+    pub fn find_matching(&self, pred: impl Fn(&str) -> bool) -> Option<NodeId> {
         let store = self.surface.store();
         let mut stack = vec![NodeId::ROOT];
         while let Some(id) = stack.pop() {
@@ -334,30 +333,33 @@ impl DocsHarness {
                 && let Some(dbg) = store.try_row::<DebugId>(id)
                 && pred(dbg.test_id())
             {
-                return Some(id.raw());
+                return Some(id);
             }
             stack.extend_from_slice(store.children(id));
         }
         None
     }
 
-    pub fn bg(&self, id: AbiNodeId) -> ColorRgba {
+    pub fn bg(&self, id: NodeId) -> ColorRgba {
         self.surface
             .store()
-            .try_row::<Visual>(NodeId(id))
+            .try_row::<Visual>(id)
             .map_or(ColorRgba::TRANSPARENT, |v| ColorRgba::from_u32(v.background().0))
     }
 
-    pub fn raw_str(&self, id: AbiNodeId, key: &str) -> Option<String> {
+    pub fn raw_str(&self, id: NodeId, key: &str) -> Option<String> {
         let store = self.surface.store();
-        let nid = NodeId(id);
+        let nid = id;
         if let Some(dk) = key.strip_prefix("data-") {
             let res = store.try_row::<HtmlDataAttrs>(nid)?.entries();
             if res.is_none() {
                 return None;
             }
             let list = store.resource::<DataAttrList>(res)?;
-            return list.0.iter().find(|(k, _)| k == dk).map(|(_, v)| v.clone());
+            return list
+                .iter()
+                .find(|(k, _)| *k == dk)
+                .map(|(_, v)| v.to_owned());
         }
         match key {
             "viewport-mode" => {
@@ -366,23 +368,22 @@ impl DocsHarness {
                     return None;
                 }
                 let list = store.resource::<DataAttrList>(res)?;
-                list.0
-                    .iter()
-                    .find(|(k, _)| k == "viewport-mode")
-                    .map(|(_, v)| v.clone())
+                list.iter()
+                    .find(|(k, _)| *k == "viewport-mode")
+                    .map(|(_, v)| v.to_owned())
             }
             "href" => store
                 .try_row::<Link>(nid)
                 .map(|l| l.href().to_owned())
                 .filter(|s| !s.is_empty()),
-            "aria-level" => {
-                let lvl = store.try_row::<Accessibility>(nid)?.level();
-                (lvl > 0).then(|| lvl.to_string())
-            }
-            "accessibilityRole" => {
-                let r = store.try_row::<Accessibility>(nid)?.role().as_aria_str();
-                (!r.is_empty()).then(|| r.to_owned())
-            }
+            "aria-level" => store
+                .try_row::<Accessibility>(nid)?
+                .level()
+                .map(|lvl| lvl.to_string()),
+            "accessibilityRole" => store
+                .try_row::<Accessibility>(nid)?
+                .role()
+                .map(|r| r.as_aria_str().to_owned()),
             "accessibilityLabel" => store
                 .try_row::<Accessibility>(nid)
                 .map(|a| a.label().to_owned())
@@ -391,8 +392,8 @@ impl DocsHarness {
         }
     }
 
-    pub fn collect_text(&self, id: AbiNodeId) -> String {
-        self.collect_text_store(NodeId(id))
+    pub fn collect_text(&self, id: NodeId) -> String {
+        self.collect_text_store(id)
     }
 
     fn collect_text_store(&self, id: NodeId) -> String {
@@ -422,49 +423,39 @@ impl DocsHarness {
         self.press_id(id);
     }
 
-    pub fn press_id(&mut self, id: AbiNodeId) {
-        let ts = self.next_ts();
-        let handled = self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 8.0, y: 8.0 },
-        }]);
+    pub fn press_id(&mut self, id: NodeId) {
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(SurfaceId::ROOT, id, ts, 8.0, 8.0);
+        let handled = self.surface.dispatch_events(batch.as_validated());
         assert!(handled, "press on node {id} should be handled");
         self.render();
     }
 
     pub fn type_text(&mut self, tid: &str, value: &str) {
         let id = self.find(tid);
-        let ts = self.next_ts();
-        let handled = self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::TextChange,
-            payload: EventPayload::Text(value.to_string()),
-        }]);
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_text_change(SurfaceId::ROOT, id, ts, value);
+        let handled = self.surface.dispatch_events(batch.as_validated());
         assert!(handled, "text change on '{tid}' should be handled");
         self.render();
     }
 
     pub fn keydown(&mut self, tid: &str, key: &str, meta: bool, ctrl: bool, shift: bool, alt: bool) {
         let id = self.find(tid);
-        let ts = self.next_ts();
-        let handled = self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::KeyDown,
-            payload: EventPayload::Key {
-                key: key.to_string(),
-                code: String::new(),
-                key_code: 0,
-                modifiers: pack_key_modifiers(meta, ctrl, shift, alt, false),
-                is_composing: false,
-            },
-        }]);
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_key_down(
+            SurfaceId::ROOT,
+            id,
+            ts,
+            key,
+            "",
+            EventFlags::from_modifiers(meta, ctrl, shift, alt, false),
+            0,
+        );
+        let handled = self.surface.dispatch_events(batch.as_validated());
         assert!(handled, "keydown '{key}' on '{tid}' should be handled");
         self.render();
     }

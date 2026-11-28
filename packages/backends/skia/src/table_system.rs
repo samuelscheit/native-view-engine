@@ -6,8 +6,9 @@
 
 use std::sync::Arc;
 
+use nve_abi::EventBatchBuf;
 use nve_engine::LayoutRect;
-use nve_store::{NodeId, NodeStore, Rgba, TableEventBus, TableSlot};
+use nve_store::{NodeId, NodeStore, Rgba, TableSlot};
 
 use crate::raster::PixelBuffer;
 
@@ -21,7 +22,7 @@ pub struct SkiaSystemPaintCtx<'a> {
     pub scale_factor: f32,
     pub opacity: f32,
     pub inherited_text_color: Rgba,
-    pub events: &'a mut TableEventBus,
+    pub events: &'a mut EventBatchBuf,
 }
 
 /// Uniform capability plugin trait for Skia / software rasterization.
@@ -39,7 +40,7 @@ pub trait SkiaTableSystem: Send + Sync + 'static {
         _node: NodeId,
         _op: u32,
         _payload: &[u8],
-        _events: &mut TableEventBus,
+        _events: &mut EventBatchBuf,
     ) {
     }
 }
@@ -93,7 +94,7 @@ impl SkiaTableRegistry {
         slot: TableSlot,
         op: u32,
         payload: &[u8],
-        events: &mut TableEventBus,
+        events: &mut EventBatchBuf,
     ) -> bool {
         if let Some(sys) = self.get(slot) {
             sys.handle_command(store, node, op, payload, events);

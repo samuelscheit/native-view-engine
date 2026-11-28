@@ -7,7 +7,7 @@ use std::ptr::{NonNull, addr_of, addr_of_mut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use nve_components::tables::{
+use nve_tables::tables::{
     FlexDirection, Layout, Overflow, Scroll, ScrollAxes, TextContent, Typography, Visual,
 };
 use nve_layout::{MAX_TREE_DEPTH, TextMeasurer, TextStyle};
@@ -288,8 +288,7 @@ pub(crate) fn preserve_scroll_child_intrinsic_size(store: &NodeStore, id: NodeId
     let Some(l) = store.try_row::<Layout>(id) else {
         return true;
     };
-    let ar = l.aspect_ratio();
-    if ar.is_finite() && ar > 0.0 {
+    if l.aspect_ratio().is_some_and(|ar| ar.is_finite() && ar > 0.0) {
         return false;
     }
     let (main_size, min_main) = if is_col {

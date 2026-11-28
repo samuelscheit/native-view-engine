@@ -18,7 +18,7 @@ syn = { workspace = true }
 
 [dev-dependencies]
 # The real core `TableDesc`s for ABI tests and benches (the library takes any `&[&TableDesc]`).
-nve-components = { workspace = true }
+nve-tables = { workspace = true }
 # Round-trip tests of the `NveExportSpec` serde derives (JSON loading itself lives in `nve-cli`).
 serde_json = { workspace = true }
 

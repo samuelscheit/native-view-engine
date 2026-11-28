@@ -4,6 +4,7 @@
 // files, and the live kitchen-sink `cdylib` (`NVE_TEST_KITCHEN_SINK_DYLIB`).
 #include "windows_test_helpers.hpp"
 
+#include <nve/host/bin_codec.hpp>
 #include <nve/host/demo_counter_app.hpp>
 
 #include <cstdlib>
@@ -25,9 +26,13 @@ void test_counter_model_and_events() {
   NVE_CHECK(!host.is_loaded() && host.view_count() == 0u && host.surface_id() == 7u);
 
   std::vector<int64_t> counts;
-  host.set_event_callback([&counts](std::span<const NveDirectEvent> evs) {
-    for (const NveDirectEvent& ev : evs) {
-      if (ev.kind == NVE_EVENT_CUSTOM && ev.value.tag == NVE_VAL_I64) counts.push_back(ev.value.data.i64_val);
+  host.set_event_callback([&counts](NveEventBatch batch) {
+    for (const NveEvent& ev : h::batch_events(batch)) {
+      if (h::is_custom_event(ev) && h::event_custom_name(ev, batch) == CounterApp::kCountEventName) {
+        h::BinReader r(h::event_custom_data(ev, batch));
+        const int64_t val = r.read_i64();
+        if (r.ok()) counts.push_back(val);
+      }
     }
   });
   int changes = 0;
@@ -58,7 +63,8 @@ void test_counter_model_and_events() {
   NVE_CHECK(inc.text_style.color == h::rgba(255, 255, 255) && approx(inc.text_style.font_size, 16.0, 0.01));
   NVE_CHECK(approx(node(host, CounterApp::kTitle).text_style.font_size, 22.0, 0.01));
   NVE_CHECK(node(host, CounterApp::kColumn).visual.background == h::rgba(248, 250, 252));
-  NVE_CHECK(inc.wants(NVE_EVENT_PRESS) && inc.interaction.focusable && !node(host, CounterApp::kTitle).wants(NVE_EVENT_PRESS));
+  NVE_CHECK(inc.wants(NVE_INTERACTION_EVENT_PRESS) && inc.interaction.focusable &&
+            !node(host, CounterApp::kTitle).wants(NVE_INTERACTION_EVENT_PRESS));
 
   // Surface-point press -> app -> new frame: only the changed label is reconciled, views retained.
   const WinNodeVisual* count_view = tree.find(CounterApp::kCount);
@@ -205,7 +211,7 @@ void test_live_kitchen_sink_if_configured() {
   const auto button = [&](std::string_view label) {
     const WinNodeVisual* t = find_text(label);
     const WinNodeVisual* b = t != nullptr ? host.visual_tree().nearest(t, [](const WinNodeVisual& v) {
-      return v.wants(NVE_EVENT_PRESS);
+      return v.wants(NVE_INTERACTION_EVENT_PRESS);
     }) : nullptr;
     return b != nullptr ? b->id : 0u;
   };

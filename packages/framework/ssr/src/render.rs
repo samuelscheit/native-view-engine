@@ -8,6 +8,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use bytes::Bytes;
 use http::{Response, StatusCode};
+use nve_abi::FrameId;
 use nve_backend_web::{
     push_async_boot_script, push_modulepreload_link, push_query_payload_tag,
     push_stylesheet_links, streaming_http_headers, PendingStreamSlot, SsrDocumentOptions,
@@ -37,7 +38,7 @@ fn flush_ssr_until_quiescent(
     frame_id: &mut u64,
 ) -> Result<(), SsrError> {
     surface
-        .commit_to(*frame_id, backend)
+        .commit_to(FrameId(*frame_id), backend)
         .map_err(|err| SsrError::Render(err.to_string()))?;
     let noop = core::task::Waker::noop();
     for _ in 0..MAX_SSR_SYNC_FOLLOWUP_PASSES {
@@ -46,7 +47,7 @@ fn flush_ssr_until_quiescent(
         }
         *frame_id = frame_id.saturating_add(1);
         surface
-            .commit_to(*frame_id, backend)
+            .commit_to(FrameId(*frame_id), backend)
             .map_err(|err| SsrError::Render(err.to_string()))?;
     }
     Ok(())

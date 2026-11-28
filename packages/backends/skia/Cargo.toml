@@ -36,7 +36,7 @@ skia-d3d = [
 
 [dependencies]
 nve-abi = { workspace = true }
-nve-components = { workspace = true }
+nve-tables = { workspace = true }
 nve-engine = { workspace = true }
 nve-store = { workspace = true }
 nve-backend-headless = { workspace = true }

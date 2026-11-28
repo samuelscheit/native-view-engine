@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use nve_store::{NodeId, NodeStore};
 
 use crate::stylesheet::resolve_store_node_style;
+use crate::table_system::WebTableRegistry;
 
 /// One override rule: a selector matching SSR-rendered nodes (`.n1a2b3c4d` content class, or
 /// `[data-nve-id="N"]` when nodes sharing a base class diverge) and the declarations they take
@@ -64,8 +65,8 @@ fn override_declarations(base: &str, variant: &str) -> String {
     out
 }
 
-fn structural_rule(store: &NodeStore, id: NodeId) -> (Option<String>, String) {
-    resolve_store_node_style(store, id, true, |_| true)
+fn structural_rule(store: &NodeStore, id: NodeId, systems: &WebTableRegistry) -> (Option<String>, String) {
+    resolve_store_node_style(store, id, systems, true, |_| true)
         .structural_rule
         .map_or((None, String::new()), |(cls, decls)| (Some(cls), decls))
 }
@@ -74,6 +75,7 @@ fn structural_rule(store: &NodeStore, id: NodeId) -> (Option<String>, String) {
 /// hold the same tree (same node ids and children); only declarations may differ.
 pub fn ssr_style_overrides(base: &NodeStore, variant: &NodeStore) -> Result<Vec<SsrStyleOverride>, SsrVariantMismatch> {
     // Per base class: every node's (id, variant declarations, changed?).
+    let systems = WebTableRegistry::new();
     let mut by_class: BTreeMap<String, Vec<(NodeId, String, bool)>> = BTreeMap::new();
     let mut by_node: Vec<(NodeId, String)> = Vec::new();
     let mut stack = vec![NodeId::ROOT];
@@ -82,8 +84,8 @@ pub fn ssr_style_overrides(base: &NodeStore, variant: &NodeStore) -> Result<Vec<
             return Err(SsrVariantMismatch { node: id });
         }
         stack.extend_from_slice(base.children(id));
-        let (class, base_decls) = structural_rule(base, id);
-        let (_, variant_decls) = structural_rule(variant, id);
+        let (class, base_decls) = structural_rule(base, id, &systems);
+        let (_, variant_decls) = structural_rule(variant, id, &systems);
         let changed = base_decls != variant_decls;
         let variant_decls = override_declarations(&base_decls, &variant_decls);
         match class {

@@ -132,7 +132,7 @@ public final class Utf8 {
      * runtime's UTF-8 boundary would do). Returns {@code s.toString()} itself when it is already
      * well-formed, so text fields can compare the result to their content to see whether a
      * replacement happened. Platform text widgets can hold lone surrogates (IME / paste); call this
-     * before {@link EventRingWriter#text} and keep the widget in sync with the result.
+     * before {@link EventRingWriter#textChange} and keep the widget in sync with the result.
      */
     public static String wellFormed(CharSequence s) {
         final int n = s.length();

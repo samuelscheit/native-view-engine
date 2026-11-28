@@ -114,24 +114,25 @@ public final class NveMainActivity extends Activity {
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (surface != null && event != null
                 && (event.getAction() == KeyEvent.ACTION_DOWN || event.getAction() == KeyEvent.ACTION_UP)) {
-            final int kind = event.getAction() == KeyEvent.ACTION_DOWN ? NveAbi.EVENT_KEY_DOWN : NveAbi.EVENT_KEY_UP;
+            final int kind = event.getAction() == KeyEvent.ACTION_DOWN
+                    ? NveAbi.INTERACTION_EVENT_KEY_DOWN : NveAbi.INTERACTION_EVENT_KEY_UP;
             final int code = event.getKeyCode();
             final String key = AndroidKeys.key(code, event.getUnicodeChar());
             final String physical = AndroidKeys.code(code);
             final int node = renderer.nodeIdOf(getCurrentFocus());  // the focused node, never a hit test
-            final int mods = modifiers(event);
-            surface.send(r -> r.key(kind, node, NveSceneRenderer.now(), key, physical, mods, code, false));
+            final int flags = modifiers(event);
+            surface.send(r -> r.key(kind, node, NveSceneRenderer.now(), key, physical, flags, code));
         }
         return super.dispatchKeyEvent(event);
     }
 
-    /** `NVE_KEY_MOD_*`: meta, ctrl, alt, shift, repeat. */
+    /** `NVE_EVENT_FLAG_MOD_*`: meta, ctrl, alt, shift, repeat. */
     private static int modifiers(KeyEvent e) {
-        return (e.isMetaPressed() ? NveAbi.KEY_MOD_META : 0)
-                | (e.isCtrlPressed() ? NveAbi.KEY_MOD_CTRL : 0)
-                | (e.isAltPressed() ? NveAbi.KEY_MOD_ALT : 0)
-                | (e.isShiftPressed() ? NveAbi.KEY_MOD_SHIFT : 0)
-                | (e.getRepeatCount() > 0 ? NveAbi.KEY_MOD_REPEAT : 0);
+        return (e.isMetaPressed() ? NveAbi.EVENT_FLAG_MOD_META : 0)
+                | (e.isCtrlPressed() ? NveAbi.EVENT_FLAG_MOD_CTRL : 0)
+                | (e.isAltPressed() ? NveAbi.EVENT_FLAG_MOD_ALT : 0)
+                | (e.isShiftPressed() ? NveAbi.EVENT_FLAG_MOD_SHIFT : 0)
+                | (e.getRepeatCount() > 0 ? NveAbi.EVENT_FLAG_MOD_REPEAT : 0);
     }
 
     private void showError(String message) {

@@ -30,7 +30,7 @@ namespace nve::qt {
 /// Resource ids a view last decoded (kept per `QtHost::resource_unchanged`), plus the image tint.
 struct AppliedResources {
   uint32_t image_src = 0u;
-  uint32_t image_tint = 0u;  // 0 = untinted
+  std::optional<uint32_t> image_tint;
   uint32_t draw_list = 0u;
   uint32_t box_shadows = 0u;
 };
@@ -81,15 +81,16 @@ class QtHost {
   size_t pump();
 
   // --- Input --------------------------------------------------------------------------------
-  bool dispatch(const NveDirectEvent& ev);
+  bool dispatch(const NveEvent& ev);
+  bool dispatch(NveEventBatch batch);
   bool simulate_press(uint32_t node_id, float x = 0.0f, float y = 0.0f);
   bool dispatch_text_change(uint32_t node_id, std::string_view text);
   bool dispatch_submit(uint32_t node_id, std::string_view text);
   bool dispatch_focus(uint32_t node_id, bool focused);
   /// Moves the runtime's scroll offset of `node_id` to the native one, then dispatches Scroll.
   bool dispatch_scroll(uint32_t node_id, float offset_x, float offset_y, float content_width, float content_height);
-  /// `NVE_EVENT_POINTER_*` at a node-local point.
-  bool dispatch_pointer(uint32_t node_id, NveEventKind kind, float x, float y);
+  /// `NVE_INTERACTION_EVENT_POINTER_*` at a node-local point.
+  bool dispatch_pointer(uint32_t node_id, NveInteractionEvent kind, float x, float y);
   /// Activation of a pressable or link node: Press when subscribed, else opens `href` natively.
   bool activate(uint32_t node_id, bool wants_press, std::string_view href, float x, float y);
   /// Scrolls the runtime offset of `node_id` by a delta (clamped to its content); the new offset,

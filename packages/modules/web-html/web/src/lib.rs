@@ -171,11 +171,11 @@ impl WebTableSystem for HtmlFormWebSystem {
         if !name.is_empty() {
             push_attr("name", name, out);
         }
-        if let Some(m) = row.method().as_html_attr() {
-            push_attr("method", m, out);
+        if let Some(m) = row.method() {
+            push_attr("method", m.as_html_attr(), out);
         }
-        if let Some(e) = row.enctype().as_html_attr() {
-            push_attr("enctype", e, out);
+        if let Some(e) = row.enctype() {
+            push_attr("enctype", e.as_html_attr(), out);
         }
         if row.novalidate() {
             out.push_str(" novalidate");
@@ -205,13 +205,13 @@ impl WebTableSystem for HtmlFormWebSystem {
                 ctx.remove_attr(node, attr);
             }
         }
-        if let Some(m) = row.method().as_html_attr() {
-            ctx.set_attr(node, "method", m);
+        if let Some(m) = row.method() {
+            ctx.set_attr(node, "method", m.as_html_attr());
         } else {
             ctx.remove_attr(node, "method");
         }
-        if let Some(e) = row.enctype().as_html_attr() {
-            ctx.set_attr(node, "enctype", e);
+        if let Some(e) = row.enctype() {
+            ctx.set_attr(node, "enctype", e.as_html_attr());
         } else {
             ctx.remove_attr(node, "enctype");
         }
@@ -256,11 +256,11 @@ impl WebTableSystem for HtmlFormControlWebSystem {
         if !fa.is_empty() && is_safe_web_url(fa) {
             push_attr("formaction", fa, out);
         }
-        if let Some(bt) = row.button_type().as_html_attr() {
-            push_attr("type", bt, out);
+        if let Some(bt) = row.button_type() {
+            push_attr("type", bt.as_html_attr(), out);
         }
-        if let Some(fm) = row.form_method().as_html_attr() {
-            push_attr("formmethod", fm, out);
+        if let Some(fm) = row.form_method() {
+            push_attr("formmethod", fm.as_html_attr(), out);
         }
     }
 
@@ -291,13 +291,13 @@ impl WebTableSystem for HtmlFormControlWebSystem {
         } else {
             ctx.remove_attr(node, "formaction");
         }
-        if let Some(bt) = row.button_type().as_html_attr() {
-            ctx.set_attr(node, "type", bt);
+        if let Some(bt) = row.button_type() {
+            ctx.set_attr(node, "type", bt.as_html_attr());
         } else {
             ctx.remove_attr(node, "type");
         }
-        if let Some(fm) = row.form_method().as_html_attr() {
-            ctx.set_attr(node, "formmethod", fm);
+        if let Some(fm) = row.form_method() {
+            ctx.set_attr(node, "formmethod", fm.as_html_attr());
         } else {
             ctx.remove_attr(node, "formmethod");
         }
@@ -324,9 +324,9 @@ impl WebTableSystem for HtmlDataAttrsWebSystem {
         let Some(list) = store.resource::<DataAttrList>(row.entries()) else {
             return;
         };
-        for (k, v) in list.0.iter() {
+        for (k, v) in list.iter() {
             let full: std::borrow::Cow<'_, str> = if k.starts_with("data-") {
-                std::borrow::Cow::Borrowed(k.as_str())
+                std::borrow::Cow::Borrowed(k)
             } else {
                 std::borrow::Cow::Owned(format!("data-{k}"))
             };
@@ -348,9 +348,9 @@ impl WebTableSystem for HtmlDataAttrsWebSystem {
         };
         let list = store.resource::<DataAttrList>(row.entries());
         if let Some(list) = list {
-            for (k, v) in list.0.iter() {
+            for (k, v) in list.iter() {
                 let full: std::borrow::Cow<'_, str> = if k.starts_with("data-") {
-                    std::borrow::Cow::Borrowed(k.as_str())
+                    std::borrow::Cow::Borrowed(k)
                 } else {
                     std::borrow::Cow::Owned(format!("data-{k}"))
                 };
@@ -361,7 +361,7 @@ impl WebTableSystem for HtmlDataAttrsWebSystem {
         }
         ctx.retain_slot_attrs(node, |existing| {
             list.is_some_and(|l| {
-                l.0.iter().any(|(k, v)| {
+                l.iter().any(|(k, v)| {
                     let matches_name = if k.starts_with("data-") {
                         k == existing
                     } else {
@@ -384,7 +384,7 @@ mod tests {
     use nve_store::ChangeSet;
     use nve_backend_web::html::FOSTER_PARENT_TRAP_TAGS;
     use nve_backend_web::{StreamingError, WebBackend};
-    use nve_components::tables::StreamBoundary;
+    use nve_tables::tables::StreamBoundary;
     use nve_web_html::{FormMethod, HtmlSemantics, SemanticElement};
 
     /// `<select>` without `<option>` children is unusable, so `SemanticElement` deliberately does
@@ -411,18 +411,18 @@ mod tests {
         for &tag in FOSTER_PARENT_TRAP_TAGS {
             let el = SemanticElement::parse(tag);
             if PLUGIN_ONLY_TRAP_TAGS.contains(&tag) {
-                assert_eq!(el, SemanticElement::Auto, "{tag} must stay plugin-only");
+                assert_eq!(el, None, "{tag} must stay plugin-only");
                 continue;
             }
-            assert_ne!(el, SemanticElement::Auto, "{tag} has no SemanticElement");
-            assert_eq!(el.as_html_tag(), Some(tag));
-            assert_eq!(SemanticElement::parse(&format!(" {} ", tag.to_uppercase())), el);
+            let el = el.unwrap_or_else(|| panic!("{tag} has no SemanticElement"));
+            assert_eq!(el.as_html_tag(), tag);
+            assert_eq!(SemanticElement::parse(&format!(" {} ", tag.to_uppercase())), Some(el));
         }
         for &el in SemanticElement::ALL {
-            let parsed = el.as_html_tag().map_or(SemanticElement::Auto, SemanticElement::parse);
-            assert_eq!(parsed, el, "{el:?} must round-trip");
+            let parsed = SemanticElement::parse(el.as_html_tag());
+            assert_eq!(parsed, Some(el), "{el:?} must round-trip");
         }
-        assert_eq!(SemanticElement::parse("marquee"), SemanticElement::Auto);
+        assert_eq!(SemanticElement::parse("marquee"), None);
     }
 
     #[test]
@@ -437,7 +437,7 @@ mod tests {
                 if tag == "select" {
                     tx.edit::<HtmlDataAttrs>(parent).entries(None);
                 } else {
-                    tx.edit::<HtmlSemantics>(parent).element(SemanticElement::Tfoot);
+                    tx.edit::<HtmlSemantics>(parent).element(Some(SemanticElement::Tfoot));
                 }
                 tx.edit::<StreamBoundary>(slot).stream_slot("rows");
                 tx.set_children(parent, &[slot]);
@@ -474,7 +474,7 @@ mod tests {
                 .tag("article")
                 .html("<h1>Hello</h1><p>World</p>");
             tx.edit::<HtmlSemantics>(dialog_n)
-                .element(SemanticElement::Dialog)
+                .element(Some(SemanticElement::Dialog))
                 .open(true);
             tx.edit::<HtmlDataAttrs>(dialog_n)
                 .entries(Some(DataAttrList::from_pairs(vec![(
@@ -483,7 +483,7 @@ mod tests {
                 )])));
             tx.edit::<HtmlForm>(form_n)
                 .action("/api/save")
-                .method(FormMethod::Post)
+                .method(Some(FormMethod::Post))
                 .novalidate(true);
             tx.commit_into(&mut changes);
         }

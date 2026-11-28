@@ -1,11 +1,12 @@
 //! ABI and table validation unit tests.
 
+use nve_abi::InterfaceId;
 use nve_abi::schema::{
     AbiAliasDescriptor, AbiConstDescriptor, AbiEnumDescriptor, AbiFieldDescriptor,
     AbiFileDescriptor, AbiMethodDescriptor, AbiModuleDescriptor, AbiParamDescriptor,
     AbiRecordDescriptor, AbiStructDescriptor,
 };
-use nve_abi::table::{FieldDesc, FieldKind, Storage, TableDesc};
+use nve_abi::table::{FieldDesc, FieldKind, NO_VAL_WORD, OptEncoding, Storage, TableDesc};
 
 use super::super::layout::layout_records;
 
@@ -30,7 +31,7 @@ const fn module(methods: &'static [AbiMethodDescriptor]) -> AbiModuleDescriptor 
     AbiModuleDescriptor {
         name: "M",
         trait_name: "MSpec",
-        interface_id: 1,
+        interface_id: InterfaceId(1),
         c_name: "MApi",
         doc: None,
         methods,
@@ -334,7 +335,11 @@ const fn table(name: &'static str, fields: &'static [FieldDesc]) -> TableDesc {
         word_effects: &[0],
         str_words: 0,
         resource_words: 0,
+        events_word: NO_VAL_WORD,
+        events: None,
+        inherited: false,
         fields,
+        resource_kinds: &[],
     }
 }
 
@@ -342,10 +347,13 @@ const fn u32_field(name: &'static str) -> FieldDesc {
     FieldDesc {
         name,
         kind: FieldKind::U32,
+        opt_encoding: OptEncoding::Required,
         word: 0,
         shift: 0,
         bits: 32,
         effects: 0,
+        val_word: NO_VAL_WORD,
+        no_inherit: false,
         values: None,
     }
 }

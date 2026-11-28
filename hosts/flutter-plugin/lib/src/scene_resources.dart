@@ -39,19 +39,36 @@ final class NveImageBytes extends NveImageSource {
   final Uint8List bytes;
 }
 
-/// Decodes `tag u8, len u32, bytes`; `null` for an unknown tag, invalid UTF-8 URL, truncation,
-/// or trailing bytes.
+/// Decodes `FlatResource` `nve.res.image_src` (`u32 tag, u32 byte_len, payload zero-padded to 4 B`);
+/// `null` for an unknown tag, invalid UTF-8 URL, non-zero padding, unaligned buffer, truncation, or
+/// trailing bytes.
 NveImageSource? decodeImageSource(Uint8List payload) {
-  if (payload.length < 5) {
+  if (payload.length < 8 || (payload.length & 3) != 0) {
     return null;
   }
   final r = BinReader(payload);
   try {
-    final tag = r.u8();
-    final bytes = r.take(r.u32());
+    final tag = r.u32();
+    final len = r.u32();
+    final maxLen = switch (tag) {
+      0 => 256 * 1024,
+      1 => 32 * 1024 * 1024,
+      _ => -1,
+    };
+    if (maxLen < 0 || len > maxLen) {
+      return null;
+    }
+    final padded = (len + 3) & ~3;
+    final raw = r.take(padded);
     if (!r.isAtEnd) {
       return null;
     }
+    for (var i = len; i < padded; i++) {
+      if (raw[i] != 0) {
+        return null;
+      }
+    }
+    final bytes = Uint8List.sublistView(raw, 0, len);
     return switch (tag) {
       0 => isValidUtf8(bytes) ? NveImageUrl(utf8.decode(bytes)) : null,
       1 => bytes.isEmpty ? null : NveImageBytes(bytes),

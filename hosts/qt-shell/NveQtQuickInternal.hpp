@@ -71,7 +71,7 @@ struct QuickNodeView {
   float requested_y = NAN;
   bool request_pending = false;
 
-  uint32_t event_mask = 0u;
+  uint32_t interaction_events = 0u;
   bool wants_press = false;
   bool focusable = false;
   bool disabled = false;
@@ -90,8 +90,8 @@ struct QuickNodeView {
   int32_t sg_dirty_slot = -1;      // index in `Impl::sg_dirty_`, -1 when not queued
   NodeSG* sg = nullptr;            // owned by the SG tree's index
 
-  [[nodiscard]] bool wants(NveEventKind kind) const noexcept {
-    return !disabled && (event_mask & host::event_bit(kind)) != 0u;
+  [[nodiscard]] bool wants(NveInteractionEvent kind) const noexcept {
+    return !disabled && (interaction_events & host::event_set_bit(kind)) != 0u;
   }
   [[nodiscard]] bool activatable() const noexcept { return !disabled && (wants_press || !href.empty()); }
 };

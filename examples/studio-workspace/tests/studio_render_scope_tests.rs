@@ -7,10 +7,12 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::{MultiBackendHarness, find_in_store, register_studio_tables};
-use nve_abi::{NveDirectEvent, NveEventBatchRef, NveMapEntry, NvePropsRef, NveValue, ROOT_NODE_ID};
+use nve_abi::{
+    EventBatchBuf, FrameId, NveMapEntry, NvePropsRef, NveValue, SurfaceId, TimestampUs,
+    ROOT_NODE_ID,
+};
 use nve_dioxus::render_probe::RenderProbe;
 use nve_engine::NveApp;
-use nve_studio_workspace::StudioWorkspaceModule;
 use nve_system_env::{ColorScheme, ThemeSnapshot};
 
 /// Asserts the components rendered by one interaction are exactly `expected` (name, count).
@@ -91,31 +93,32 @@ fn typing_creating_and_panel_toggles_rerender_only_their_leaves() {
     );
 }
 
-fn dispatch(module: &mut StudioWorkspaceModule, event: NveDirectEvent) -> bool {
-    let events = [event];
-    // SAFETY: `events` outlives the synchronous `dispatch_events` call.
-    module.dispatch_events(unsafe { NveEventBatchRef::from_slice(&events) })
-}
-
 #[test]
 fn host_scroll_and_theme_events_update_the_mounted_surface_in_place() {
     register_studio_tables();
-    let mut module = common::headless_module(1);
+    let mut module = common::headless_module(SurfaceId::ROOT);
     let entries = [NveMapEntry::new("view", NveValue::from_str("stream"))];
     // SAFETY: `entries` outlives `props`.
     let props = unsafe { NvePropsRef::from_slice(&entries) };
     assert!(module.set_props(props));
-    let _ = module.render(1);
+    let _ = module.render(FrameId(1));
     let root = find_in_store(module.surface().store(), "workspace-root").expect("workspace-root");
     let sidebar =
         find_in_store(module.surface().store(), "desktop-sidebar").expect("desktop-sidebar");
     let probe = RenderProbe::start();
 
-    assert!(dispatch(
-        &mut module,
-        NveDirectEvent::scroll(1, ROOT_NODE_ID, 1_000, 0.0, 4_000.0, 960.0, 2_000_000.0)
-    ));
-    let _ = module.render(2);
+    let mut scroll = EventBatchBuf::new();
+    scroll.push_scroll(
+        SurfaceId::ROOT,
+        ROOT_NODE_ID,
+        TimestampUs(1_000),
+        0.0,
+        4_000.0,
+        960.0,
+        2_000_000.0,
+    );
+    assert!(module.dispatch_events(scroll.as_validated()));
+    let _ = module.render(FrameId(2));
     assert_eq!(
         module.state_snapshot().current.stream.scroll_offset_y,
         4_000
@@ -141,7 +144,7 @@ fn host_scroll_and_theme_events_update_the_mounted_surface_in_place() {
         ..os
     };
     assert!(module.dispatch_host_events(&theme.to_repr_c_bytes()));
-    let _ = module.render(3);
+    let _ = module.render(FrameId(3));
     let renders = probe.take();
     assert!(
         renders.contains_key("StudioShell"),

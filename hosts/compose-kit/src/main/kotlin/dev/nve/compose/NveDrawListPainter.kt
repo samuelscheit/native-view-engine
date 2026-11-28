@@ -13,8 +13,9 @@ import dev.nve.host.DrawList
 import java.nio.ByteBuffer
 
 /**
- * Paints `NVE_DRAW1` draw lists ([DrawList], the one JVM codec) onto a Compose [DrawScope].
- * One painter per canvas node reuses its [Path] and wrapper buffer across frames.
+ * Paints `nve.res.draw_list` (`FlatResource`) draw lists ([DrawList], the one JVM codec) onto a
+ * Compose [DrawScope]. One painter per canvas node reuses its [Path] and wrapper buffer across
+ * frames.
  */
 class NveDrawListPainter : DrawList.Sink {
     private val path = Path()

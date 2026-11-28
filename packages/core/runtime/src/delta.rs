@@ -16,7 +16,7 @@
 
 use nve_abi::NveLayoutRect;
 use nve_abi::table::effect;
-use nve_components::tables::{TextContent, TextInput, Typography};
+use nve_tables::tables::{TextContent, TextInput, Typography};
 use nve_store::{ChangeSet, NodeId, NodeStore, NveTable};
 
 #[derive(Default)]

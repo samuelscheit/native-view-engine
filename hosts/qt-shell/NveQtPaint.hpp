@@ -1,5 +1,5 @@
 // Shared Qt painting for the Widgets and Quick hosts: colors, box visuals (background, border,
-// radius, outer / inset box shadows), image fit and tint, and the `NVE_DRAW1` canvas painter.
+// radius, outer / inset box shadows), image fit and tint, and the flat draw-list canvas painter.
 #pragma once
 
 #include "NveQtText.hpp"
@@ -93,8 +93,9 @@ void paint_outer_shadows(QPainter& p, const QRectF& box, qreal radius, std::span
 /// Paints `image` into `box` with `fit`, clipped to the rounded box.
 void paint_image(QPainter& p, const QRectF& box, qreal radius, const QImage& image, uint8_t fit);
 
-/// Paints all 8 `NVE_DRAW1` opcodes into `bounds` (validated first; balanced save/restore even
-/// on unbalanced clip stacks). `Clear` replaces pixels on image devices and blends elsewhere.
+/// Paints all 8 flat `nve.res.draw_list` opcodes into `bounds` (validated first; balanced
+/// save/restore even on unbalanced clip stacks). `Clear` replaces pixels on image devices and
+/// blends elsewhere.
 canvas::DrawListDecodeResult paint_draw_list(QPainter& p, const QRectF& bounds, std::span<const uint8_t> bytes);
 
 /// Rasterizes a draw list into a HiDPI premultiplied image (null when empty, invalid, or zero-sized).

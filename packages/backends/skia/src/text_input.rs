@@ -3,9 +3,9 @@
 //! grapheme-safe hit-testing, and exact live caret/preedit screen-rect computation over `&NodeStore`.
 
 use nve_abi::ColorRgba;
-use nve_components::tables::{Layout, TextContent, TextInput};
+use nve_tables::tables::{Layout, TextContent, TextInput};
 use nve_engine::LayoutRect;
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::{NodeId, NodeStore};
 
 use crate::text::{CosmicTextEngine, TextAlign};
 use crate::text_grapheme::{clamp_grapheme_boundary, grapheme_boundaries, grapheme_count};
@@ -16,7 +16,7 @@ use crate::{
 const CARET_WIDTH: f32 = 2.0;
 
 #[inline]
-pub(crate) fn raw_text_input_value(store: &NodeStore, id: StoreNodeId) -> &str {
+pub(crate) fn raw_text_input_value(store: &NodeStore, id: NodeId) -> &str {
     if let Some(ti) = store.try_row::<TextInput>(id) {
         let v = ti.value();
         if !v.is_empty() {
@@ -30,12 +30,12 @@ pub(crate) fn raw_text_input_value(store: &NodeStore, id: StoreNodeId) -> &str {
 }
 
 #[inline]
-pub(crate) fn is_secure_node(store: &NodeStore, id: StoreNodeId) -> bool {
+pub(crate) fn is_secure_node(store: &NodeStore, id: NodeId) -> bool {
     store.try_row::<TextInput>(id).is_some_and(|t| t.secure())
 }
 
 #[inline]
-pub(crate) fn is_multiline_node(store: &NodeStore, id: StoreNodeId) -> bool {
+pub(crate) fn is_multiline_node(store: &NodeStore, id: NodeId) -> bool {
     store
         .try_row::<TextInput>(id)
         .is_some_and(|t| t.multiline())
@@ -58,7 +58,7 @@ pub(crate) fn measure_caret_advance(
 
 pub(crate) fn compute_text_input_inner_rect(
     store: &NodeStore,
-    id: StoreNodeId,
+    id: NodeId,
     rect: LayoutRect,
     font_size: f32,
 ) -> LayoutRect {
@@ -245,7 +245,7 @@ pub(crate) fn compute_ime_cursor_rect(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_text_input_ops(
     store: &NodeStore,
-    id: StoreNodeId,
+    id: NodeId,
     rect: LayoutRect,
     radius: f32,
     text_color: ColorRgba,
@@ -255,7 +255,7 @@ pub(crate) fn emit_text_input_ops(
     text_engine: &CosmicTextEngine,
     ops: &mut Vec<PaintOp>,
 ) {
-    let is_focused = focus.focused_node == Some(id.raw());
+    let is_focused = focus.focused_node == Some(id);
     let fs = if font_size > 0.0 { font_size } else { 14.0 };
     let text_rect = compute_text_input_inner_rect(store, id, rect, fs);
     let is_secure = is_secure_node(store, id);

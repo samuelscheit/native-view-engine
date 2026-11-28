@@ -99,13 +99,13 @@ fn every_component_state_is_readable_and_visible_in_every_polarity() {
         let store = h.surface.store();
         let theme = Theme::preset(p, AppBrand::Default);
         let text_min = if theme.is_high_contrast() { 7.0 } else { 4.5 };
-        runs += store.live_nodes().filter(|&id| store.try_row::<nve_components::tables::TextContent>(id).is_some()).count();
+        runs += store.live_nodes().filter(|&id| store.try_row::<nve_tables::tables::TextContent>(id).is_some()).count();
         indicators += store
             .live_nodes()
             .filter(|&id| {
-                store.try_row::<nve_components::tables::Accessibility>(id).is_some_and(|a| {
-                    use nve_components::tables::AriaTriState::{Mixed, True};
-                    matches!(a.checked(), True | Mixed) || a.selected() == True
+                store.try_row::<nve_tables::tables::Accessibility>(id).is_some_and(|a| {
+                    use nve_tables::tables::AriaTriState::{Mixed, True};
+                    matches!(a.checked(), Some(True | Mixed)) || a.selected() == Some(True)
                 })
             })
             .count();

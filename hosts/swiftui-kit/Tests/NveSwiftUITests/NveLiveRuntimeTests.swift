@@ -36,7 +36,7 @@ final class NveLiveRuntimeTests: XCTestCase {
         XCTAssertTrue(controller.isMounted)
         XCTAssertGreaterThan(controller.store.frameId, 0, "the loaded app published a scene")
 
-        var received: [NveEvent] = []
+        var received: [NveSwiftUI.NveEvent] = []
         controller.onEvent = { received.append($0) }
         XCTAssertTrue(controller.setProps(["count": 3, "label": "hi"]))
         XCTAssertEqual(received.map(\.kind), [.custom], "the app echoes new props as one custom event")

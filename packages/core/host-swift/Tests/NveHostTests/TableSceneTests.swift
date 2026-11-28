@@ -213,4 +213,221 @@ final class TableSceneTests: XCTestCase {
         nullRows.row_count = 2
         XCTAssertNil(TableReader(view: nullRows))
     }
+
+    func testWide64GridLineAndAllOptEncodings() throws {
+        let u64Spec = try FieldSpec(word: 0, kind: .u64)
+        let i64Spec = try FieldSpec(word: 2, kind: .i64)
+        let f64Spec = try FieldSpec(word: 4, kind: .f64)
+        let gridStart = try FieldSpec(word: 6, shift: 0, bits: 16, kind: .gridLine)
+        let gridEnd = try FieldSpec(word: 6, shift: 16, bits: 16, kind: .gridLine)
+        let optGrid = try FieldSpec(word: 7, shift: 0, bits: 16, kind: .gridLine, opt: .tagXor)
+        let optLen = try FieldSpec(word: 8, shift: 0, bits: 32, kind: .length, opt: .tagXor)
+        let optZero = try FieldSpec(word: 9, shift: 0, bits: 16, kind: .u32, opt: .zeroNiche)
+        let optBit0Signed = try FieldSpec(word: 10, shift: 1, bits: 17, kind: .i32, opt: .bit0Present)
+        let optBoolPlus = try FieldSpec(word: 10, shift: 18, bits: 2, kind: .enumeration, opt: .plusOne)
+        let optWideF32 = try FieldSpec(word: 10, shift: 20, bits: 1, kind: .f32, opt: .wideBit, valWord: 11)
+        let optWideColor = try FieldSpec(word: 10, shift: 21, bits: 1, kind: .color, opt: .wideBit, valWord: 12)
+
+        // Row 0: all populated; Row 1: all optionals absent + edge GridLine values.
+        let piBits = Double.pi.bitPattern
+        let negI64 = UInt64(bitPattern: -0x0123_4567_89AB_CDEF)
+        let gridLineNeg1: UInt32 = (1 << 14) | 0x3FFF          // Line(-1)
+        let gridSpan3: UInt32 = (2 << 14) | 3                  // Span(3)
+        let gridLineMin: UInt32 = (1 << 14) | 0x2000           // Line(-8192)
+        let gridLineMax: UInt32 = (1 << 14) | 0x1FFF           // Line(8191)
+        let optGridSome: UInt32 = gridLineNeg1 ^ 0xC000
+        let optLenPoints: UInt32 = 0x4180_0000 ^ 0b11          // Some(points(16.0))
+        let optTabNeg5: UInt32 = (UInt32(UInt16(bitPattern: -5)) << 1) | 1
+
+        let words0: [UInt32] = [
+            0xDEAD_BEEF, 0xCAFE_BABE,
+            UInt32(truncatingIfNeeded: negI64), UInt32(truncatingIfNeeded: negI64 >> 32),
+            UInt32(truncatingIfNeeded: piBits), UInt32(truncatingIfNeeded: piBits >> 32),
+            gridLineNeg1 | (gridSpan3 << 16),
+            optGridSome,
+            optLenPoints,
+            7,
+            (optTabNeg5 << 1) | (2 << 18) | (1 << 20) | (1 << 21),
+            Float(1.75).bitPattern,
+            0xFF11_2233,
+        ]
+        let words1: [UInt32] = [
+            0, 0, 0, 0, 0, 0,
+            gridLineMin | (gridLineMax << 16),
+            0x0042,          // tag bits 14..15 == 00 -> None
+            0x1234_5600,     // tag bits 0..1 == 00 -> None
+            0,               // zeroNiche -> None
+            (3 << 18),       // bit0Present=0 -> None; plusOne bool=3 -> None; wideBit=0 -> None
+            Float(99.0).bitPattern,
+            0xFFFF_FFFF,
+        ]
+        let allRows = words0 + words1
+        try allRows.withUnsafeBufferPointer { buf in
+            let t = try XCTUnwrap(TableReader(key: Key64(42), slot: 0, words: 13, rowCount: 2, rows: buf))
+            XCTAssertEqual(t.u64(0, u64Spec), 0xCAFE_BABE_DEAD_BEEF)
+            XCTAssertEqual(t.i64(0, i64Spec), -0x0123_4567_89AB_CDEF)
+            XCTAssertEqual(t.f64(0, f64Spec), Double.pi)
+            XCTAssertEqual(t.gridLine(0, gridStart), .line(-1))
+            XCTAssertEqual(t.gridLine(0, gridEnd), .span(3))
+            XCTAssertEqual(t.gridLine(1, gridStart), .line(GridLineValue.minLine))
+            XCTAssertEqual(t.gridLine(1, gridEnd), .line(GridLineValue.maxLine))
+            XCTAssertEqual(t.gridLine(0, optGrid), .line(-1))
+            XCTAssertNil(t.gridLine(1, optGrid))
+            XCTAssertEqual(t.length(0, optLen), LengthValue(unit: .points, value: 16.0))
+            XCTAssertNil(t.length(1, optLen))
+            XCTAssertEqual(t.u32(0, optZero), 7)
+            XCTAssertNil(t.u32(1, optZero))
+            XCTAssertEqual(t.i32(0, optBit0Signed), -5)
+            XCTAssertNil(t.i32(1, optBit0Signed))
+            XCTAssertEqual(t.bool(0, optBoolPlus), true)
+            XCTAssertNil(t.bool(1, optBoolPlus))
+            XCTAssertEqual(t.f32(0, optWideF32), 1.75)
+            XCTAssertNil(t.f32(1, optWideF32))
+            XCTAssertEqual(t.color(0, optWideColor), Rgba(packed: 0xFF11_2233))
+            XCTAssertNil(t.color(1, optWideColor))
+            XCTAssertTrue(t.isPresent(0, optWideF32))
+            XCTAssertFalse(t.isPresent(1, optWideF32))
+            // Non-64-bit / non-gridLine specs return nil on mismatched accessors.
+            XCTAssertNil(t.u64(0, optLen))
+            XCTAssertNil(t.gridLine(0, optLen))
+        }
+
+        // Invalid FieldSpec combinations must throw at init.
+        XCTAssertThrowsError(try FieldSpec(word: 31, kind: .u64))
+        XCTAssertThrowsError(try FieldSpec(word: 0, shift: 1, bits: 32, kind: .f64))
+        XCTAssertThrowsError(try FieldSpec(word: 0, shift: 0, bits: 2, kind: .f32, opt: .wideBit, valWord: 1))
+        XCTAssertThrowsError(try FieldSpec(word: 0, shift: 0, bits: 1, kind: .f32, opt: .wideBit, valWord: 0))
+        XCTAssertThrowsError(try FieldSpec(word: 0, shift: 0, bits: 1, kind: .f32, opt: .wideBit, valWord: noValWord))
+        XCTAssertThrowsError(try FieldSpec(word: 0, shift: 0, bits: 1, kind: .u32, opt: .bit0Present))
+        XCTAssertThrowsError(try FieldSpec(word: 0, shift: 0, bits: 16, kind: .length, opt: .tagXor))
+        XCTAssertThrowsError(try FieldSpec(word: 0, shift: 0, bits: 32, kind: .u32, opt: .required, explicitBit: 0, inherits: true))
+        XCTAssertThrowsError(try FieldSpec(word: 1, shift: 0, bits: 32, kind: .u32, opt: .required, explicitBit: noValWord, inherits: true))
+    }
+
+    func testEventSetAndInheritedTypographyResolution() throws {
+        // Build a 3-node chain: root (1) -> parent (2) -> child (3), with Typography (slot 4)
+        // and Interaction (slot 5) attached.
+        let typoSlot: UInt32 = 4
+        let interSlot: UInt32 = 5
+        var typoRowRoot = NveTables.Typography.defaults
+        typoRowRoot[0] = NveTables.Typography.color.explicitMask | NveTables.Typography.fontSize.explicitMask
+        typoRowRoot[Int(NveTables.Typography.color.word)] = 0xFF11_2233
+        typoRowRoot[Int(NveTables.Typography.fontSize.word)] = Float(20).bitPattern
+
+        var typoRowChild = NveTables.Typography.defaults
+        typoRowChild[0] = NveTables.Typography.fontSize.explicitMask | NveTables.Typography.maxLines.explicitMask
+        typoRowChild[Int(NveTables.Typography.fontSize.word)] = Float(14).bitPattern
+        typoRowChild[Int(NveTables.Typography.maxLines.word)] = 3 | (400 << 16)
+
+        let typoRows = typoRowRoot + typoRowChild
+        let typoOwners: [UInt32] = [NodeId.root.raw, NodeId(index: 3, generation: 0).raw]
+        var typoPages = [UInt32](repeating: 0, count: Int(nveRowIndexPageLen))
+        typoPages[1] = 1
+        typoPages[3] = 2
+        let typoDir: [UInt32] = [0]
+
+        var interRow = NveTables.Interaction.defaults
+        interRow[Int(NveTables.Interaction.eventsWord)] = NveInteractionEventSet.press | NveInteractionEventSet.keyDown
+        let interOwners: [UInt32] = [NodeId(index: 3, generation: 0).raw]
+        var interPages = [UInt32](repeating: 0, count: Int(nveRowIndexPageLen))
+        interPages[3] = 1
+        let interDir: [UInt32] = [0]
+
+        let rows: [NveTestNodeRow] = [
+            NveTestNodeRow(),
+            NveTestNodeRow(table_set: (1 << typoSlot, 0, 0, 0), parent: 0, child_off: 0, child_len: 0, generation: 0, primary_slot: 0xFF, effects: 0, flags: 1),
+            NveTestNodeRow(table_set: (0, 0, 0, 0), parent: NodeId.root.raw, child_off: 0, child_len: 0, generation: 0, primary_slot: 0xFF, effects: 0, flags: 1),
+            NveTestNodeRow(table_set: ((1 << typoSlot) | (1 << interSlot), 0, 0, 0), parent: NodeId(index: 2, generation: 0).raw, child_off: 0, child_len: 0, generation: 0, primary_slot: 0xFF, effects: 0, flags: 1),
+        ]
+        let rects = [NveTestLayoutRect](repeating: NveTestLayoutRect(), count: 4)
+
+        try typoRows.withUnsafeBufferPointer { trp in
+            try typoOwners.withUnsafeBufferPointer { top in
+                try typoDir.withUnsafeBufferPointer { tdp in
+                    try typoPages.withUnsafeBufferPointer { tpp in
+                        try interRow.withUnsafeBufferPointer { irp in
+                            try interOwners.withUnsafeBufferPointer { iop in
+                                try interDir.withUnsafeBufferPointer { idp in
+                                    try interPages.withUnsafeBufferPointer { ipp in
+                                        let tables: [NveTestTableView] = [
+                                            NveTestTableView(
+                                                key_lo: NveTables.Typography.key.lo, key_hi: NveTables.Typography.key.hi,
+                                                slot: typoSlot, words: UInt32(NveTables.Typography.words),
+                                                row_count: 2, dirty_count: 0, row_index_dir_len: 1, row_index_page_count: 1,
+                                                rows: trp.baseAddress, owners: top.baseAddress, dirty_rows: nil,
+                                                row_index_dir: tdp.baseAddress, row_index_pages: tpp.baseAddress),
+                                            NveTestTableView(
+                                                key_lo: NveTables.Interaction.key.lo, key_hi: NveTables.Interaction.key.hi,
+                                                slot: interSlot, words: UInt32(NveTables.Interaction.words),
+                                                row_count: 1, dirty_count: 0, row_index_dir_len: 1, row_index_page_count: 1,
+                                                rows: irp.baseAddress, owners: iop.baseAddress, dirty_rows: nil,
+                                                row_index_dir: idp.baseAddress, row_index_pages: ipp.baseAddress),
+                                        ]
+                                        try rows.withUnsafeBufferPointer { nrp in
+                                            try rects.withUnsafeBufferPointer { lrp in
+                                                try tables.withUnsafeBufferPointer { tvp in
+                                                    var view = NveTestSceneView()
+                                                    view.schema_hash = schema.value
+                                                    view.frame_id = 1
+                                                    view.node_capacity = 4
+                                                    view.table_count = 2
+                                                    view.rows = nrp.baseAddress
+                                                    view.rects = lrp.baseAddress
+                                                    view.tables = tvp.baseAddress
+                                                    let s = try SceneReader.open(view, expectedSchema: schema)
+                                                    let typo = try XCTUnwrap(s.table(key: NveTables.Typography.key))
+                                                    let inter = try XCTUnwrap(s.table(key: NveTables.Interaction.key))
+
+                                                    // Child overrides fontSize (14) and maxLines (3), inherits color from root (0xFF112233) across unattached parent (2).
+                                                    let colorRow = try XCTUnwrap(s.inheritedRow(typo, forNode: 3, field: NveTables.Typography.color))
+                                                    XCTAssertEqual(typo.color(colorRow, NveTables.Typography.color), Rgba(packed: 0xFF11_2233))
+                                                    let sizeRow = try XCTUnwrap(s.inheritedRow(typo, forNode: 3, field: NveTables.Typography.fontSize))
+                                                    XCTAssertEqual(typo.f32(sizeRow, NveTables.Typography.fontSize), 14)
+                                                    let maxLinesRow = try XCTUnwrap(s.inheritedRow(typo, forNode: 3, field: NveTables.Typography.maxLines))
+                                                    XCTAssertEqual(typo.u32(maxLinesRow, NveTables.Typography.maxLines), 3)
+                                                    XCTAssertNil(s.inheritedRow(typo, forNode: 3, field: NveTables.Typography.letterSpacing))
+
+                                                    // Single-pass forEachInheritedRow sees child's bits first, then root's remaining color bit.
+                                                    var visited: [(Int, UInt32)] = []
+                                                    s.forEachInheritedRow(typo, fromNode: 3) { r, fresh in visited.append((r, fresh)) }
+                                                    XCTAssertEqual(visited.count, 2)
+                                                    XCTAssertEqual(visited[0].0, 1)
+                                                    XCTAssertEqual(visited[0].1, NveTables.Typography.fontSize.explicitMask | NveTables.Typography.maxLines.explicitMask)
+                                                    XCTAssertEqual(visited[1].0, 0)
+                                                    XCTAssertEqual(visited[1].1, NveTables.Typography.color.explicitMask)
+
+                                                    // Per-table EventSet checks.
+                                                    XCTAssertTrue(s.hasEvent(inter, forNode: 3, eventsWord: NveTables.Interaction.eventsWord, bit: NveInteractionEventSet.press))
+                                                    XCTAssertTrue(s.hasEvent(inter, forNode: 3, eventsWord: NveTables.Interaction.eventsWord, bit: NveInteractionEventSet.keyDown))
+                                                    XCTAssertFalse(s.hasEvent(inter, forNode: 3, eventsWord: NveTables.Interaction.eventsWord, bit: NveInteractionEventSet.wheel))
+                                                    XCTAssertEqual(s.eventSet(inter, forNode: 1, eventsWord: NveTables.Interaction.eventsWord), 0)
+
+                                                    #if !DEBUG
+                                                    var acc: UInt64 = 0
+                                                    func pass() {
+                                                        s.forEachInheritedRow(typo, fromNode: 3) { r, fresh in
+                                                            acc &+= UInt64(fresh) &+ UInt64(typo.u32(r, NveTables.Typography.maxLines) ?? 0)
+                                                        }
+                                                        acc &+= UInt64(s.eventSet(inter, forNode: 3, eventsWord: NveTables.Interaction.eventsWord))
+                                                    }
+                                                    pass()
+                                                    if nve_test_alloc_count_begin() != 0 {
+                                                        for _ in 0..<100 { pass() }
+                                                        let allocs = nve_test_alloc_count_end()
+                                                        XCTAssertGreaterThan(acc, 0)
+                                                        XCTAssertEqual(allocs, 0, "inherited + EventSet reads allocated \(allocs) times")
+                                                    }
+                                                    #endif
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

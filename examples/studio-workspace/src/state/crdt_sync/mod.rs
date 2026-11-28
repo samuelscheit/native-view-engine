@@ -425,7 +425,7 @@ fn peer_bucket_u16(peer: PeerId) -> u16 {
     if peer.0 >= 1 && peer.0 <= u64::from(u16::MAX) {
         peer.0 as u16
     } else {
-        let h = crdt_xxh64(&peer.to_le_bytes());
+        let h = crdt_xxh64(&peer.as_u64().to_le_bytes());
         ((h % u64::from(u16::MAX - 1)) as u16) + 1
     }
 }

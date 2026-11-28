@@ -6,6 +6,7 @@ use dioxus_core::EventHandler;
 use dioxus_core_macro::Props;
 use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
+use nve_motion::{MotionPreference, SpringSpec, SpringState};
 
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
 use crate::theme::use_theme;
@@ -121,7 +122,7 @@ pub fn Disclosure(
             border_color: theme.border.default,
             border_radius: theme.radius.md,
             opacity: if disabled { 0.55 } else { 1.0 },
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 
@@ -140,7 +141,7 @@ pub fn Disclosure(
             },
             border_radius: theme.radius.md,
             opacity: 1.0,
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 

@@ -311,7 +311,7 @@ pub fn ToastViewport(#[props(default)] test_id: Option<String>) -> Element {
             border_color: theme.border.default,
             border_radius: theme.radius.sm,
             opacity: 1.0,
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
     let dismiss_text_style = TypedStyleBuilder::new()

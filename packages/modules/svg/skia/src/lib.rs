@@ -12,10 +12,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use nve_abi::ColorRgba;
 use nve_backend_skia::{PixelBuffer, SkiaSystemPaintCtx, SkiaTableSystem};
-use nve_store::{NodeId, NodeStore, NveTable, Rgba, TableSlot};
-use nve_svg::{Svg, SvgPicture};
+use nve_store::{NodeId, NodeStore, NveTable, TableSlot};
+use nve_svg::{Svg, SvgPicture, SvgPictureView};
 
-pub use rasterize::rasterize_svg_picture;
+pub use rasterize::rasterize_svg_picture_view;
 
 /// Default maximum cached SVG bitmaps in [`SvgCache`].
 pub const DEFAULT_SVG_CACHE_MAX_ENTRIES: usize = 512;
@@ -61,6 +61,9 @@ impl CachedSvgBitmap {
 
 struct CacheEntry {
     bitmap: Arc<CachedSvgBitmap>,
+    /// Canonical flat words the bitmap was rendered from: a hit must match them exactly, so a
+    /// 64-bit `content_hash` collision can never serve another picture's pixels.
+    words: Arc<[u32]>,
     last_used: u64,
 }
 
@@ -101,38 +104,48 @@ impl SvgCache {
         GLOBAL.get_or_init(|| Self::new(DEFAULT_SVG_CACHE_MAX_ENTRIES, DEFAULT_SVG_CACHE_MAX_BYTES))
     }
 
-    pub fn get_or_rasterize(
+    /// Returns the cached bitmap of `picture` at `(px_w, px_h, tint)`, rasterizing on a miss.
+    pub fn get_or_rasterize_view(
         &self,
-        picture: &SvgPicture,
+        picture: SvgPictureView<'_>,
         px_w: u32,
         px_h: u32,
         tint: Option<ColorRgba>,
     ) -> Arc<CachedSvgBitmap> {
         let w = px_w.clamp(1, MAX_SVG_RASTER_DIM);
         let h = px_h.clamp(1, MAX_SVG_RASTER_DIM);
-        let key = SvgCacheKey::new(picture.content_hash, w, h, tint);
+        let key = SvgCacheKey::new(picture.content_hash(), w, h, tint);
+        let words = picture.words();
 
         {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(prev_tick) = inner.entries.get(&key).map(|e| e.last_used) {
+            let clock = inner.clock.wrapping_add(1);
+            let hit = inner
+                .entries
+                .get_mut(&key)
+                .filter(|e| *e.words == *words)
+                .map(|e| (std::mem::replace(&mut e.last_used, clock), Arc::clone(&e.bitmap)));
+            if let Some((prev_tick, bitmap)) = hit {
                 inner.lru.remove(&prev_tick);
-                inner.clock = inner.clock.wrapping_add(1);
-                let tick = inner.clock;
-                inner.lru.insert(tick, key);
+                inner.clock = clock;
+                inner.lru.insert(clock, key);
                 inner.hits += 1;
-                let entry = inner.entries.get_mut(&key).expect("key checked above");
-                entry.last_used = tick;
-                return Arc::clone(&entry.bitmap);
+                return bitmap;
             }
         }
 
-        let bitmap = Arc::new(rasterize_svg_picture(picture, w, h, tint));
+        let bitmap = Arc::new(rasterize_svg_picture_view(picture, w, h, tint));
         let bytes = bitmap.byte_len();
 
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.misses += 1;
         if let Some(existing) = inner.entries.get(&key) {
-            return Arc::clone(&existing.bitmap);
+            // Same picture raced in, or a hash collision: never overwrite, serve our own render.
+            return if *existing.words == *words {
+                Arc::clone(&existing.bitmap)
+            } else {
+                bitmap
+            };
         }
         while !inner.entries.is_empty()
             && (inner.entries.len() >= self.max_entries
@@ -154,6 +167,7 @@ impl SvgCache {
             key,
             CacheEntry {
                 bitmap: Arc::clone(&bitmap),
+                words: Arc::from(words),
                 last_used: tick,
             },
         );
@@ -257,9 +271,9 @@ impl SkiaTableSystem for SvgSkiaSystem {
         }
         let px_w = ctx.rect.width.round().max(1.0) as u32;
         let px_h = ctx.rect.height.round().max(1.0) as u32;
-        // Preserve multi-color SVG fills/strokes when `row.tint()` is transparent (matching Web).
-        let tint = (row.tint() != Rgba::TRANSPARENT).then(|| ColorRgba::from_u32(row.tint().0));
-        let bmp = SvgCache::global().get_or_rasterize(pic, px_w, px_h, tint);
+        // Preserve multi-color SVG fills/strokes when `row.tint()` is `None` (matching Web).
+        let tint = row.tint().map(|c| ColorRgba::from_u32(c.0));
+        let bmp = SvgCache::global().get_or_rasterize_view(pic, px_w, px_h, tint);
         let clip = ctx.clip_rect.map(|r| {
             [
                 r.x.floor() as i32,
@@ -284,7 +298,8 @@ impl SkiaTableSystem for SvgSkiaSystem {
 mod tests {
     use super::*;
     use nve_engine::LayoutRect;
-    use nve_store::{ChangeSet, TableEventBus};
+    use nve_abi::EventBatchBuf;
+    use nve_store::{ChangeSet, Rgba};
 
     #[test]
     fn svg_skia_system_rasterizes_and_caches_vector_shape() {
@@ -295,13 +310,13 @@ mod tests {
         tx.set_children(NodeId::ROOT, &[n]);
         tx.edit::<Svg>(n)
             .picture(Some(pic))
-            .tint(Rgba::rgb(255, 0, 0));
+            .tint(Some(Rgba::rgb(255, 0, 0)));
         let mut changes = ChangeSet::default();
         tx.commit_into(&mut changes);
 
         let mut buf = PixelBuffer::new(32, 32);
         buf.clear(ColorRgba::BLACK);
-        let mut events = TableEventBus::new();
+        let mut events = EventBatchBuf::new();
         let mut ctx = SkiaSystemPaintCtx {
             buffer: &mut buf,
             rect: LayoutRect {

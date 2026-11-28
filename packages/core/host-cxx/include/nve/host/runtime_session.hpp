@@ -256,13 +256,13 @@ class RuntimeSession {
     return st;
   }
 
-  /// Drains app-emitted events into `out` (`ptr` NULL when empty; borrowed until the next session
-  /// call).
+  /// Drains app-emitted events into `out` (`events` NULL when empty; borrowed until the next
+  /// session call).
   [[nodiscard]] NveRuntimeStatus drain_emitted_events(NveEventBatch* out) noexcept {
     if (!valid() || out == nullptr) return NVE_RUNTIME_INVALID_ARG;
-    NveEventBatch batch{nullptr, 0u, 0u};
+    NveEventBatch batch{nullptr, nullptr, 0u, 0u};
     const auto st = static_cast<NveRuntimeStatus>(api_->drain_emitted_events(handle_, &batch));
-    *out = st == NVE_RUNTIME_OK && batch.len > 0u ? batch : NveEventBatch{nullptr, 0u, 0u};
+    *out = st == NVE_RUNTIME_OK && batch.event_count > 0u ? batch : NveEventBatch{nullptr, nullptr, 0u, 0u};
     return st;
   }
 

@@ -7,7 +7,7 @@ use nve_backend_web::media_css::{
     write_negated_media_css_conditions,
 };
 use nve_backend_web::NVE_BASE_RESET_CSS;
-use nve_components::media::{MediaEnv, MediaPointer, MediaQuery};
+use nve_tables::media::{MediaEnv, MediaPointer, MediaQuery};
 
 #[test]
 fn base_reset_css_hides_closed_dialog_and_popover_without_hiding_open_states() {

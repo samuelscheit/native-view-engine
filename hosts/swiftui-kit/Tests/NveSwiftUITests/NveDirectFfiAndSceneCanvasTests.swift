@@ -1,6 +1,7 @@
 import CNveAbi
-import NveHost
 import Foundation
+import NveHost
+import NveHostAbi
 import NveSwiftUI
 import SwiftUI
 import XCTest
@@ -201,7 +202,7 @@ final class NveDirectFfiAndSceneCanvasTests: XCTestCase {
 
         // Depth > 64 is rejected cleanly.
         var deep = NveBinValue.null
-        for _ in 0 ... nveBinValueMaxDepth {
+        for _ in 0 ... NveSwiftUI.nveBinValueMaxDepth {
             deep = .array([deep])
         }
         XCTAssertThrowsError(try NveDirectPropsWriter.withEntries([("deep", deep)]) { _, _ in }) { err in
@@ -209,104 +210,74 @@ final class NveDirectFfiAndSceneCanvasTests: XCTestCase {
         }
     }
 
-    func testDirectEventWriterRoundtripsAllEventKindsAndPayloads() throws {
+    func testEventBatchRoundtripsAllEventKindsAndPayloads() throws {
         let customBin = try NveBinValue.map([
             ("action", .string("submit")),
             ("items", .array([.int64(1), .int64(2)])),
         ]).encode()
 
-        let batch: [NveEvent] = [
-            NveEvent(surfaceId: 1, nodeId: 10, timestampUs: 100, kind: .focus, payload: .empty),
-            NveEvent(
-                surfaceId: 1,
-                nodeId: 11,
-                timestampUs: 200,
-                kind: .press,
-                payload: .point(x: 12.5, y: 34.25)
-            ),
-            NveEvent(
-                surfaceId: 1,
-                nodeId: 12,
-                timestampUs: 300,
-                kind: .scroll,
-                payload: .scroll(x: 0, y: 145.5, contentWidth: 320, contentHeight: 900)
-            ),
-            NveEvent(
-                surfaceId: 1,
-                nodeId: 13,
-                timestampUs: 400,
-                kind: .textChange,
-                payload: .text("Typing ✍️")
-            ),
-            NveEvent(
-                surfaceId: 1,
-                nodeId: 14,
-                timestampUs: 500,
-                kind: .layout,
-                payload: .layout(x: 4, y: 8, width: 200, height: 100)
-            ),
-            NveEvent(
-                surfaceId: 1,
-                nodeId: 15,
-                timestampUs: 600,
-                kind: .custom,
-                name: "onFormSubmit",
-                payload: .binValue(customBin)
-            ),
-            NveEvent(
-                surfaceId: 1,
-                nodeId: 16,
-                timestampUs: 700,
-                kind: .custom,
-                name: "onRawBytes",
-                payload: .binValue(Data([0xFF, 0x01]))
-            ),
+        let batch: [NveSwiftUI.NveEvent] = [
+            NveSwiftUI.NveEvent(surfaceId: 1, nodeId: 10, timestampUs: 100, kind: .focus, payload: .empty),
+            NveSwiftUI.NveEvent(surfaceId: 1, nodeId: 11, timestampUs: 200, kind: .press, payload: .point(x: 12.5, y: 34.25)),
+            NveSwiftUI.NveEvent(surfaceId: 1, nodeId: 12, timestampUs: 300, kind: .scroll,
+                                payload: .scroll(x: 0, y: 145.5, contentWidth: 320, contentHeight: 900)),
+            NveSwiftUI.NveEvent(surfaceId: 1, nodeId: 13, timestampUs: 400, kind: .textChange, payload: .text("Typing ✍️")),
+            NveSwiftUI.NveEvent(surfaceId: 1, nodeId: 14, timestampUs: 500, kind: .layout,
+                                payload: .layout(x: 4, y: 8, width: 200, height: 100)),
+            NveSwiftUI.NveEvent(surfaceId: 1, nodeId: 15, timestampUs: 600, kind: .custom,
+                                name: "onFormSubmit", payload: .binValue(customBin)),
+            NveSwiftUI.NveEvent(surfaceId: 1, nodeId: 16, timestampUs: 700, kind: .custom,
+                                name: "onRawBytes", payload: .binValue(Data([0xFF, 0x01]))),
+            NveSwiftUI.NveEvent(surfaceId: 1, nodeId: 17, timestampUs: 800, kind: .keyDown,
+                                payload: .key(key: "Enter", code: "Enter", modifiers: 0x05, keyCode: 13, isComposing: false)),
+            NveSwiftUI.NveEvent(surfaceId: 1, nodeId: 18, timestampUs: 850, kind: .keyUp,
+                                payload: .key(key: "VeryLongCustomKeyIdentifierName", code: "KeyCustom", modifiers: 0x02, keyCode: 99, isComposing: true)),
+            NveSwiftUI.NveEvent(surfaceId: 1, nodeId: 19, timestampUs: 900, kind: .pointerDown,
+                                payload: .pointer(x: 10, y: 20, modifiers: 0x04, flags: 0x0A)),
+            NveSwiftUI.NveEvent(surfaceId: 1, nodeId: 20, timestampUs: 950, kind: .wheel,
+                                payload: .wheel(deltaX: -3.5, deltaY: 12.0, modifiers: 0x01)),
+            NveSwiftUI.NveEvent(surfaceId: 1, nodeId: 21, timestampUs: 1000, kind: .compositionUpdate,
+                                payload: .text("日本語")),
         ]
 
-        try NveDirectEventWriter.withBatch(batch) { cBatch in
-            XCTAssertEqual(cBatch.len, 7)
-            let ptr = try XCTUnwrap(cBatch.ptr)
+        let builder = EventBatchBuilder(events: batch)
+        try builder.withRawBatch { cBatch in
+            XCTAssertEqual(cBatch.event_count, UInt32(batch.count))
+            let ptr = try XCTUnwrap(cBatch.events)
 
-            XCTAssertEqual(ptr[0].kind, NveEventKind.focus.rawValue)
-            XCTAssertEqual(ptr[0].payload_tag, UInt8(NVE_EVENT_PAYLOAD_EMPTY.rawValue))
+            XCTAssertEqual(ptr[0].table, nveTableInteraction)
+            XCTAssertEqual(ptr[0].event, InteractionEventId.focus.rawValue)
 
-            XCTAssertEqual(ptr[1].kind, NveEventKind.press.rawValue)
-            XCTAssertEqual(ptr[1].payload_tag, UInt8(NVE_EVENT_PAYLOAD_POINT.rawValue))
-            XCTAssertEqual(ptr[1].x, 12.5)
-            XCTAssertEqual(ptr[1].y, 34.25)
+            XCTAssertEqual(ptr[1].table, nveTableInteraction)
+            XCTAssertEqual(ptr[1].event, InteractionEventId.press.rawValue)
+            XCTAssertEqual(Float(bitPattern: ptr[1].payload.0), 12.5)
+            XCTAssertEqual(Float(bitPattern: ptr[1].payload.1), 34.25)
 
-            XCTAssertEqual(ptr[2].kind, NveEventKind.scroll.rawValue)
-            XCTAssertEqual(ptr[2].payload_tag, UInt8(NVE_EVENT_PAYLOAD_SCROLL.rawValue))
-            XCTAssertEqual(ptr[2].y, 145.5)
-            XCTAssertEqual(ptr[2].width, 320)
-            XCTAssertEqual(ptr[2].height, 900)
+            XCTAssertEqual(ptr[2].table, nveTableScroll)
+            XCTAssertEqual(Float(bitPattern: ptr[2].payload.1), 145.5)
+            XCTAssertEqual(Float(bitPattern: ptr[2].payload.2), 320)
+            XCTAssertEqual(Float(bitPattern: ptr[2].payload.3), 900)
 
-            XCTAssertEqual(ptr[3].kind, NveEventKind.textChange.rawValue)
-            XCTAssertEqual(ptr[3].payload_tag, UInt8(NVE_EVENT_PAYLOAD_TEXT.rawValue))
-            XCTAssertEqual(readSliceString(ptr[3].text), "Typing ✍️")
+            XCTAssertEqual(ptr[3].table, nveTableTextInput)
+            XCTAssertEqual(ptr[3].event, TextInputEventId.change.rawValue)
 
-            XCTAssertEqual(ptr[4].kind, NveEventKind.layout.rawValue)
-            XCTAssertEqual(ptr[4].payload_tag, UInt8(NVE_EVENT_PAYLOAD_LAYOUT.rawValue))
-            XCTAssertEqual(ptr[4].x, 4)
-            XCTAssertEqual(ptr[4].y, 8)
-            XCTAssertEqual(ptr[4].width, 200)
-            XCTAssertEqual(ptr[4].height, 100)
+            XCTAssertEqual(ptr[4].table, nveTableLayout)
+            XCTAssertEqual(Float(bitPattern: ptr[4].payload.0), 4)
+            XCTAssertEqual(Float(bitPattern: ptr[4].payload.1), 8)
+            XCTAssertEqual(Float(bitPattern: ptr[4].payload.2), 200)
+            XCTAssertEqual(Float(bitPattern: ptr[4].payload.3), 100)
 
-            XCTAssertEqual(ptr[5].kind, NveEventKind.custom.rawValue)
-            XCTAssertEqual(ptr[5].payload_tag, UInt8(NVE_EVENT_PAYLOAD_CUSTOM.rawValue))
-            XCTAssertEqual(readSliceString(ptr[5].name), "onFormSubmit")
-            XCTAssertEqual(
-                readDirectValue(ptr[5].value),
-                .map([
-                    ("action", .string("submit")),
-                    ("items", .array([.int64(1), .int64(2)])),
-                ])
-            )
+            XCTAssertEqual(ptr[5].table, nveTableCustom)
+            XCTAssertEqual(ptr[6].table, nveTableCustom)
 
-            // Non-NveBinValue raw bytes fall back to NVE_VAL_BYTES cleanly.
-            XCTAssertEqual(readSliceString(ptr[6].name), "onRawBytes")
-            XCTAssertEqual(readDirectValue(ptr[6].value), .bytes(Data([0xFF, 0x01])))
+            let reader = try EventBatchReader.validate(batch: cBatch)
+            XCTAssertEqual(reader.decodeEvents(), batch)
         }
+
+        // NVEV v2 wire format round-trip via `EventBatchBuilder.toWireBytes()` + `EventBatchReader.withValidatedWire`.
+        let wire = builder.toWireBytes()
+        let decodedWire = try EventBatchReader.withValidatedWire(wire) { $0.decodeEvents() }
+        XCTAssertEqual(decodedWire, batch)
     }
 
 }

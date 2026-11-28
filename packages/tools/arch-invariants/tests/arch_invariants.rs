@@ -161,8 +161,7 @@ fn cross_file_repr_c_abi_layout_asserts_and_cache_line_locks() {
     let store_refs: Vec<_> = store_owned.iter().map(|(r, p)| (r.clone(), &p.ast)).collect();
     let violations = ast_layout::scan_repr_c_abi_locks(&abi_refs, &store_refs);
 
-    assert_staged_violations(
-        Stage::Post1B1D,
+    assert_no_violations(
         "Cross-file #[repr(C)] ABI layout asserts & cache-line locks (NodeRow=32, NveNodeRow=32, NveEvent=64)",
         &violations,
     );
@@ -175,21 +174,76 @@ fn bare_primitive_domain_fields_in_core_and_module_roots() {
     let mut v_store = Vec::new();
     let mut v_1b1d = Vec::new();
 
-    for dir in ["abi", "store", "engine", "tables", "components", "codec"] {
-        for rel in idx.rs_files_under(&format!("packages/core/{dir}/src")) {
-            if is_test_or_bench_rs(&rel) {
+    let mut v_handle_hygiene = Vec::new();
+    let mut v_handle_params = Vec::new();
+    let mut saw_abi_id_file = false;
+    for root in ["packages", "hosts", "examples"] {
+        for rel in idx.rs_files_under(root) {
+            if is_self_invariant_file(&rel) {
                 continue;
             }
             if let Some(parsed) = idx.parse_rust(&rel) {
-                let target = if dir == "store" && rel != "packages/core/store/src/events.rs" {
-                    &mut v_store
-                } else {
-                    &mut v_1b1d
-                };
-                ast_layout::scan_bare_primitive_domain_fields(&rel, &parsed.raw, &parsed.ast, target);
+                if rel == "packages/core/abi/src/id.rs" {
+                    saw_abi_id_file = true;
+                }
+                ast_layout::scan_handle_hygiene(&rel, &parsed.raw, &parsed.ast, &mut v_handle_hygiene);
             }
         }
     }
+    assert!(
+        saw_abi_id_file,
+        "handle hygiene scan must visit and parse `packages/core/abi/src/id.rs` so it cannot pass vacuously"
+    );
+    assert_no_violations(
+        "Unified NodeId/SurfaceId privacy, zero raw tuple constructors outside id.rs, and zero StoreNodeId aliases",
+        &v_handle_hygiene,
+    );
+
+    let mut core_crates_scanned = 0usize;
+    let mut core_files_scanned = 0usize;
+    for pkg in idx.graph.workspace().iter() {
+        let Some(dir) = pkg.source().workspace_path().map(|p| p.as_str().replace('\\', "/")) else {
+            continue;
+        };
+        if dir.starts_with("packages/core/") {
+            core_crates_scanned += 1;
+            for rel in idx.rs_files_under(&format!("{dir}/src")) {
+                if is_test_or_bench_rs(&rel) {
+                    continue;
+                }
+                if let Some(parsed) = idx.parse_rust(&rel) {
+                    core_files_scanned += 1;
+                    let target = if dir == "packages/core/store"
+                        && rel != "packages/core/store/src/events.rs"
+                    {
+                        &mut v_store
+                    } else {
+                        &mut v_1b1d
+                    };
+                    ast_layout::scan_bare_primitive_domain_fields(
+                        &rel,
+                        &parsed.raw,
+                        &parsed.ast,
+                        target,
+                    );
+                    ast_layout::scan_bare_handle_params(
+                        &rel,
+                        &parsed.raw,
+                        &parsed.ast,
+                        &mut v_handle_params,
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        core_crates_scanned > 0 && core_files_scanned > 0,
+        "bare handle parameter scan must visit and parse packages/core/* source files so it cannot pass vacuously"
+    );
+    assert_no_violations(
+        "Zero bare primitive surface_id/node_id/frame_id/interface_id parameters in core Rust APIs",
+        &v_handle_params,
+    );
     for pkg in idx.graph.workspace().iter() {
         let Some(dir) = pkg.source().workspace_path().map(|p| p.as_str().replace('\\', "/")) else {
             continue;
@@ -213,7 +267,7 @@ fn bare_primitive_domain_fields_in_core_and_module_roots() {
     assert_no_violations("Zero bare primitive domain fields in packages/core/store", &v_store);
     assert_staged_violations(
         Stage::Post1B1D,
-        "Zero bare primitive domain fields in core/{abi,engine,tables,components,codec} & modules/<cap>",
+        "Zero bare primitive domain fields in core/{abi,engine,tables,codec} & modules/<cap>",
         &v_1b1d,
     );
 }
@@ -318,7 +372,7 @@ fn active_hot_path_utf8_alloc_guards_and_zero_fnv1a_repo_wide() {
         &hot_path::check_hot_path_perf_and_utf8(idx),
     );
     assert_no_violations(
-        "Zero per-node Any::downcast_ref across backends, core/{abi,components,tables}, engine/layout, and hot store",
+        "Zero per-node Any::downcast_ref across backends, core/{abi,tables}, engine/layout, and hot store",
         &hot_path::check_zero_per_node_downcast_ref(idx),
     );
     assert_no_violations(
@@ -347,13 +401,11 @@ fn staged_table_hygiene_platform_purity_acronyms_and_codegen_53bit() {
         }
     }
 
-    assert_staged_violations(
-        Stage::Post1B1D,
+    assert_no_violations(
         "NveTable field hygiene (#[bits], sentinels, split bools), Unset variants, SET_* masks, Tier-1 encode/decode_bytes, dioxus numeric->String",
         &v_table,
     );
-    assert_staged_violations(
-        Stage::Post1B1D,
+    assert_no_violations(
         "Platform purity: zero CSS/HTML formatters in packages/core/* and zero motion/MotionClock in core",
         &v_purity,
     );

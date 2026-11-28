@@ -11,12 +11,14 @@ spatial-focus = ["dep:nve-tv"]
 
 [dependencies]
 nve-abi = { workspace = true }
-nve-components = { workspace = true }
+nve-codec = { workspace = true }
+nve-tables = { workspace = true }
 nve-dioxus = { workspace = true }
 nve-engine = { workspace = true }
 nve-store = { workspace = true }
 nve-i18n = { workspace = true }
 nve-interop = { version = "0.1.0", path = "../../core/interop", default-features = false }
+nve-motion = { workspace = true }
 nve-tv = { workspace = true, optional = true }
 nve-web-html = { workspace = true }
 base64 = { workspace = true }
@@ -30,7 +32,7 @@ web-sys = { workspace = true, features = ["Storage"] }
 [dev-dependencies]
 nve-backend-headless = { workspace = true }
 nve-backend-web = { workspace = true }
-nve-components = { workspace = true }
+nve-tables = { workspace = true }
 nve-rpc = { workspace = true }
 nve-store = { workspace = true }
 nve-web-html-web = { workspace = true }

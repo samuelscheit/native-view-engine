@@ -1,19 +1,25 @@
 //! `ChangeSet` + `NodeStore` → `NVE2` bytes.
 
 use nve_abi::table::{table_flags, MAX_TABLE_SLOTS};
+use rustc_hash::FxHashMap;
 
 use crate::changes::ChangeSet;
 use crate::id::ResourceId;
+use crate::resource::words_as_le_bytes;
 use crate::span_pool::StrSpan;
 use crate::store::NodeStore;
 use crate::table::TableSlot;
 
 use super::{pad4, Op, HEADER_WORDS, MAGIC, VERSION};
 
-/// Sender-side session state: which tables the receiver already knows.
+/// Sender-side session state: declared table bitmask plus reusable topological-sort scratch
+/// buffers (zero steady-state allocations when encoding nested resources).
 #[derive(Debug, Default, Clone)]
 pub struct WireEncoder {
     declared: u128,
+    topo_state: FxHashMap<ResourceId, u8>,
+    topo_out: Vec<ResourceId>,
+    topo_stack: Vec<(ResourceId, usize)>,
 }
 
 struct W<'a> {
@@ -159,6 +165,19 @@ impl WireEncoder {
             }
         }
 
+        // Expand transitive child resources so keyframes define every dependency before its parent.
+        let mut cursor = 0usize;
+        let res_store = store.resources();
+        while cursor < changes.resources_defined.len() {
+            let rid = changes.resources_defined[cursor];
+            cursor += 1;
+            for &cid in res_store.children_of(rid) {
+                if !cid.is_none() && seen_res.insert(cid) {
+                    changes.resources_defined.push(cid);
+                }
+            }
+        }
+
         let label_map = has_labels.then_some(&local_to_wire);
         self.encode_inner(store, &changes, &forced, label_map, out);
     }
@@ -278,28 +297,44 @@ impl WireEncoder {
             self.declared |= declared_now;
         }
 
-        w.list(Op::CreateNodes, 0, changes.created.iter().map(|n| n.0));
+        w.list(Op::CreateNodes, 0, changes.created.iter().map(|n| n.raw()));
 
         if !changes.resources_defined.is_empty() {
-            w.begin(Op::DefineResources, 0, changes.resources_defined.len() as u32);
             let res = store.resources();
-            for &id in &changes.resources_defined {
+            let has_children = changes
+                .resources_defined
+                .iter()
+                .any(|&id| !res.children_of(id).is_empty());
+            let emit_order: &[ResourceId] = if !has_children {
+                &changes.resources_defined
+            } else {
+                topo_sort_defined_resources_into(
+                    &changes.resources_defined,
+                    res,
+                    &mut self.topo_state,
+                    &mut self.topo_out,
+                    &mut self.topo_stack,
+                );
+                &self.topo_out
+            };
+            w.begin(Op::DefineResources, 0, emit_order.len() as u32);
+            for &id in emit_order {
                 let kind = res.kind(id).unwrap_or_default();
+                let children = res.children_of(id);
+                let raw_words = res.raw_words(id).unwrap_or(&[]);
+                let raw_bytes = words_as_le_bytes(raw_words);
+                debug_assert!(raw_bytes.len() <= u32::MAX as usize);
+                let byte_len = raw_bytes.len() as u32;
                 w.u32(id.0);
                 w.u32(kind.lo());
                 w.u32(kind.hi());
                 w.u32(res.is_ephemeral(id) as u32);
-                let len_at = w.out.len();
-                w.u32(0);
-                let start = w.out.len();
-                assert!(
-                    res.encode(id, w.out),
-                    "NVE2 encode: missing registered codec for resource {id:?} (kind {kind:?})"
-                );
-                let len = u32::try_from(w.out.len() - start)
-                    .expect("NVE2 resource payload exceeds u32::MAX");
-                w.out[len_at..len_at + 4].copy_from_slice(&len.to_le_bytes());
-                w.out.resize(pad4(w.out.len()), 0);
+                w.u32(children.len() as u32);
+                for &cid in children {
+                    w.u32(cid.0);
+                }
+                w.u32(byte_len);
+                w.out.extend_from_slice(raw_bytes);
             }
             w.end();
         }
@@ -323,7 +358,7 @@ impl WireEncoder {
                         }
                         let words = store.words(id, t.slot).unwrap_or(&[]);
                         let m = mask & !str_pairs;
-                        w.u32(id.0);
+                        w.u32(id.raw());
                         w.u32(m);
                         let mut bits = m;
                         while bits != 0 {
@@ -356,7 +391,7 @@ impl WireEncoder {
                                     len <= 0x00FF_FFFF,
                                     "NVE2 string length {len} exceeds 16 MiB wire limit"
                                 );
-                                w.u32(id.0);
+                                w.u32(id.raw());
                                 w.u32((i as u32) | ((len as u32) << 8));
                                 w.bytes(text.as_bytes());
                             }
@@ -365,23 +400,23 @@ impl WireEncoder {
                     }
                 }
             }
-            w.list(Op::Detach, slot, t.detached.iter().map(|n| n.0));
+            w.list(Op::Detach, slot, t.detached.iter().map(|n| n.raw()));
         }
 
         if !changes.children.is_empty() {
             w.begin(Op::SetChildren, 0, changes.children.len() as u32);
             for &p in &changes.children {
                 let kids = store.children(p);
-                w.u32(p.0);
+                w.u32(p.raw());
                 w.u32(kids.len() as u32);
                 for k in kids {
-                    w.u32(k.0);
+                    w.u32(k.raw());
                 }
             }
             w.end();
         }
 
-        w.list(Op::RemoveNodes, 0, changes.removed.iter().map(|n| n.0));
+        w.list(Op::RemoveNodes, 0, changes.removed.iter().map(|n| n.raw()));
         w.list(
             Op::ReleaseResources,
             0,
@@ -392,7 +427,7 @@ impl WireEncoder {
             w.begin(Op::Commands, 0, changes.commands.len() as u32);
             for c in &changes.commands {
                 let payload = changes.command_payload(c);
-                w.u32(c.node.0);
+                w.u32(c.node.raw());
                 w.u32(wire_of(c.table) as u32);
                 w.u32(c.op);
                 w.u32(payload.len() as u32);
@@ -413,6 +448,48 @@ impl WireEncoder {
         ];
         for (i, v) in header.iter().enumerate() {
             out[base + i * 4..base + i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        }
+    }
+}
+
+/// Iterative post-order topological sort of newly defined resources into reusable scratch buffers so
+/// children always precede their parent in `Op::DefineResources` with zero steady-state allocs.
+fn topo_sort_defined_resources_into(
+    defined: &[ResourceId],
+    res: &crate::resource::ResourceStore,
+    state: &mut FxHashMap<ResourceId, u8>,
+    out: &mut Vec<ResourceId>,
+    stack: &mut Vec<(ResourceId, usize)>,
+) {
+    // Map each defined id -> state (`0` = unvisited, `1` = on stack, `2` = emitted).
+    state.clear();
+    out.clear();
+    stack.clear();
+    state.reserve(defined.len());
+    out.reserve(defined.len());
+    stack.reserve(defined.len());
+    for &id in defined {
+        state.insert(id, 0);
+    }
+    for &root in defined {
+        if state.get(&root).copied() != Some(0) {
+            continue;
+        }
+        state.insert(root, 1);
+        stack.push((root, 0));
+        while let Some((cur, idx)) = stack.last_mut() {
+            let kids = res.children_of(*cur);
+            if *idx < kids.len() {
+                let kid = kids[*idx];
+                *idx += 1;
+                if state.get(&kid).copied() == Some(0) {
+                    state.insert(kid, 1);
+                    stack.push((kid, 0));
+                }
+            } else if let Some((done, _)) = stack.pop() {
+                state.insert(done, 2);
+                out.push(done);
+            }
         }
     }
 }

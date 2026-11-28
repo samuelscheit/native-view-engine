@@ -5,16 +5,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use nve_abi::{ColorRgba, EventMask, FrameId, NativeEventKind, SurfaceId};
+use nve_abi::{ColorRgba, EventSet, FrameId, InteractionEvent, NodeId, SurfaceId, ValidatedEvents};
 use nve_backend_skia::gpu::{GpuBackendKind, GpuFramePresenter, GpuSurfaceConfig, GpuSwapchain};
 use nve_backend_skia::raster::PixelBuffer;
-use nve_components::tables::{
+use nve_tables::tables::{
     FlexDirection, Interaction, Layout, TextContent, Typography, Visual, register_core_tables,
 };
 use nve_engine::loader::LoaderError;
 use nve_engine::{Frame0Meta, Frame0Miss, HotPatchMsg, Viewport};
 use nve_store::wire::WireEncoder;
-use nve_store::{ChangeSet, Length, NodeId as StoreNodeId, NodeStore, Rgba};
+use nve_store::{ChangeSet, Length, NodeStore, Rgba};
 use tungstenite::Message;
 
 use super::session::prewarm_frame0_into_replica;
@@ -62,50 +62,43 @@ impl DesktopApp for MockCounterApp {
     fn render(&mut self, _frame_id: FrameId) -> &[u8] {
         let mut tx = self.store.tx();
         if !self.initialized {
-            let _ = tx.create_at(StoreNodeId::ROOT);
-            let _ = tx.create_at(StoreNodeId(2));
-            let _ = tx.create_at(StoreNodeId(3));
-            let _ = tx.create_at(StoreNodeId(4));
+            let _ = tx.create_at(NodeId::ROOT);
+            let _ = tx.create_at(NodeId::new(2, 0));
+            let _ = tx.create_at(NodeId::new(3, 0));
+            let _ = tx.create_at(NodeId::new(4, 0));
 
-            tx.set(StoreNodeId(2), Layout::WIDTH, Length::percent(100.0));
-            tx.set(StoreNodeId(2), Layout::HEIGHT, Length::percent(100.0));
+            tx.set(NodeId::new(2, 0), Layout::WIDTH, Length::percent(100.0));
+            tx.set(NodeId::new(2, 0), Layout::HEIGHT, Length::percent(100.0));
             let p = Length::points(20.0);
-            tx.set(StoreNodeId(2), Layout::PADDING_TOP, p);
-            tx.set(StoreNodeId(2), Layout::PADDING_RIGHT, p);
-            tx.set(StoreNodeId(2), Layout::PADDING_BOTTOM, p);
-            tx.set(StoreNodeId(2), Layout::PADDING_LEFT, p);
-            tx.set(StoreNodeId(2), Layout::ROW_GAP, Length::points(12.0));
-            tx.set(StoreNodeId(2), Layout::COLUMN_GAP, Length::points(12.0));
-            tx.set(
-                StoreNodeId(2),
-                Layout::FLEX_DIRECTION,
-                FlexDirection::Column,
-            );
-            tx.set(StoreNodeId(2), Visual::BACKGROUND, Rgba::rgb(15, 23, 42));
+            tx.set(NodeId::new(2, 0), Layout::PADDING_TOP, p);
+            tx.set(NodeId::new(2, 0), Layout::PADDING_RIGHT, p);
+            tx.set(NodeId::new(2, 0), Layout::PADDING_BOTTOM, p);
+            tx.set(NodeId::new(2, 0), Layout::PADDING_LEFT, p);
+            tx.set(NodeId::new(2, 0), Layout::ROW_GAP, Length::points(12.0));
+            tx.set(NodeId::new(2, 0), Layout::COLUMN_GAP, Length::points(12.0));
+            tx.set(NodeId::new(2, 0), Layout::FLEX_DIRECTION, FlexDirection::Column);
+            tx.set(NodeId::new(2, 0), Visual::BACKGROUND, Rgba::rgb(15, 23, 42));
 
-            tx.set(StoreNodeId(3), Typography::COLOR, Rgba::WHITE);
-            tx.set(StoreNodeId(3), Typography::FONT_SIZE, 20.0);
+            tx.set(NodeId::new(3, 0), Typography::COLOR, Rgba::WHITE);
+            tx.set(NodeId::new(3, 0), Typography::FONT_SIZE, 20.0);
 
-            tx.set(StoreNodeId(4), Layout::WIDTH, Length::points(160.0));
-            tx.set(StoreNodeId(4), Layout::HEIGHT, Length::points(48.0));
-            tx.set(StoreNodeId(4), Visual::BORDER_RADIUS, 10.0);
-            tx.set(
-                StoreNodeId(4),
-                Interaction::EVENT_MASK,
-                EventMask::PRESS as u32,
-            );
+            tx.set(NodeId::new(4, 0), Layout::WIDTH, Length::points(160.0));
+            tx.set(NodeId::new(4, 0), Layout::HEIGHT, Length::points(48.0));
+            tx.set(NodeId::new(4, 0), Visual::BORDER_RADIUS, 10.0);
+            tx.edit::<Interaction>(NodeId::new(4, 0))
+                .listeners(EventSet::one(InteractionEvent::Press));
 
-            tx.set_children(StoreNodeId(2), &[StoreNodeId(3), StoreNodeId(4)]);
-            tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
+            tx.set_children(NodeId::new(2, 0), &[NodeId::new(3, 0), NodeId::new(4, 0)]);
+            tx.set_children(NodeId::ROOT, &[NodeId::new(2, 0)]);
             self.initialized = true;
         }
         tx.set_str(
-            StoreNodeId(3),
+            NodeId::new(3, 0),
             TextContent::TEXT,
             &format!("{}: {}", self.label, self.count),
         );
         tx.set(
-            StoreNodeId(4),
+            NodeId::new(4, 0),
             Visual::BACKGROUND,
             Rgba::new(
                 self.button_color.r,
@@ -121,10 +114,10 @@ impl DesktopApp for MockCounterApp {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, events: nve_abi::NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
         let mut handled = false;
         for ev in events.iter() {
-            if ev.node_id() == 4 && ev.kind() == Some(NativeEventKind::Press) {
+            if ev.node() == NodeId::new(4, 0) && ev.interaction() == Some(InteractionEvent::Press) {
                 self.count += 1;
                 self.button_color = ColorRgba::rgb(16, 185, 129);
                 handled = true;
@@ -176,11 +169,16 @@ fn hit_test_click_dispatches_press_and_rerenders_pixels() {
         height: 200.0,
         scale_factor: 1.0,
     };
-    let mut session =
-        DesktopSession::new(MockCounterApp::new(), 1, viewport, ColorRgba::BLACK, false);
+    let mut session = DesktopSession::new(
+        MockCounterApp::new(),
+        SurfaceId::ROOT,
+        viewport,
+        ColorRgba::BLACK,
+        false,
+    );
     session.render_and_rasterize().unwrap();
 
-    let btn = session.layout_of(4).expect("button layout");
+    let btn = session.layout_of(NodeId::new(4, 0)).expect("button layout");
     let cx = btn.x + btn.width * 0.5;
     let cy = btn.y + btn.height * 0.5;
 
@@ -206,11 +204,16 @@ fn handles_tier1_template_patch_tier2_dylib_reload_and_dev_status() {
         height: 200.0,
         scale_factor: 1.0,
     };
-    let mut session =
-        DesktopSession::new(MockCounterApp::new(), 1, viewport, ColorRgba::BLACK, true);
+    let mut session = DesktopSession::new(
+        MockCounterApp::new(),
+        SurfaceId::ROOT,
+        viewport,
+        ColorRgba::BLACK,
+        true,
+    );
     session.render_and_rasterize().unwrap();
 
-    let btn = session.layout_of(4).unwrap();
+    let btn = session.layout_of(NodeId::new(4, 0)).unwrap();
     let cx = btn.x + btn.width * 0.5;
     let cy = btn.y + btn.height * 0.5;
     assert!(session.handle_click_logical(cx, cy).unwrap());
@@ -284,8 +287,10 @@ fn websocket_hot_reload_client_receives_messages_and_invokes_wake() {
             dylib_path: "target/debug/libdemo.dylib".into(),
             build_ms: 210,
         };
-        ws.send(Message::Binary(m1.to_bytes().into())).unwrap();
-        ws.send(Message::Binary(m2.to_bytes().into())).unwrap();
+        ws.send(Message::Binary(m1.to_bytes().unwrap().into()))
+            .unwrap();
+        ws.send(Message::Binary(m2.to_bytes().unwrap().into()))
+            .unwrap();
         let _ = ws.close(None);
     });
 
@@ -332,8 +337,13 @@ fn resize_updates_hidpi_viewport_and_scales_pixel_buffer() {
         height: 150.0,
         scale_factor: 1.0,
     };
-    let mut session =
-        DesktopSession::new(MockCounterApp::new(), 1, viewport, ColorRgba::BLACK, false);
+    let mut session = DesktopSession::new(
+        MockCounterApp::new(),
+        SurfaceId::ROOT,
+        viewport,
+        ColorRgba::BLACK,
+        false,
+    );
     session.render_and_rasterize().unwrap();
     assert_eq!(session.pixel_buffer().width(), 200);
     assert_eq!(session.pixel_buffer().height(), 150);
@@ -345,7 +355,7 @@ fn resize_updates_hidpi_viewport_and_scales_pixel_buffer() {
     assert_eq!(session.pixel_buffer().width(), 600);
     assert_eq!(session.pixel_buffer().height(), 400);
 
-    let btn = session.layout_of(4).unwrap();
+    let btn = session.layout_of(NodeId::new(4, 0)).unwrap();
     let px = ((btn.x + btn.width * 0.5) * 2.0) as u32;
     let py = ((btn.y + btn.height * 0.5) * 2.0) as u32;
     assert_eq!(session.pixel_buffer().get_rgb(px, py), Some((37, 99, 235)));
@@ -370,8 +380,13 @@ fn desktop_session_presents_to_swapchain_and_records_frame_telemetry() {
         height: 160.0,
         scale_factor: 1.0,
     };
-    let mut session =
-        DesktopSession::new(MockCounterApp::new(), 1, viewport, ColorRgba::BLACK, true);
+    let mut session = DesktopSession::new(
+        MockCounterApp::new(),
+        SurfaceId::ROOT,
+        viewport,
+        ColorRgba::BLACK,
+        true,
+    );
     session.render_and_rasterize().unwrap();
     let init_tel = session
         .last_frame_telemetry()
@@ -402,7 +417,7 @@ fn desktop_session_presents_to_swapchain_and_records_frame_telemetry() {
 
     let mut readback = PixelBuffer::new(1, 1);
     sw.copy_to_pixel_buffer(&mut readback).unwrap();
-    let btn = session.layout_of(4).unwrap();
+    let btn = session.layout_of(NodeId::new(4, 0)).unwrap();
     let px = ((btn.x + btn.width * 0.5) * 2.0) as u32;
     let py = ((btn.y + btn.height * 0.5) * 2.0) as u32;
     assert_eq!(readback.get_rgb(px, py), Some((37, 99, 235)));
@@ -415,11 +430,16 @@ fn frame0_nve2_save_cold_prewarm_and_meta_enforcement() {
         height: 200.0,
         scale_factor: 1.0,
     };
-    let mut session =
-        DesktopSession::new(MockCounterApp::new(), 1, viewport, ColorRgba::BLACK, false);
+    let mut session = DesktopSession::new(
+        MockCounterApp::new(),
+        SurfaceId::ROOT,
+        viewport,
+        ColorRgba::BLACK,
+        false,
+    );
     session.render_and_rasterize().unwrap();
 
-    let btn = session.layout_of(4).unwrap();
+    let btn = session.layout_of(NodeId::new(4, 0)).unwrap();
     let cx = btn.x + btn.width * 0.5;
     let cy = btn.y + btn.height * 0.5;
     assert!(session.handle_click_logical(cx, cy).unwrap());
@@ -427,7 +447,7 @@ fn frame0_nve2_save_cold_prewarm_and_meta_enforcement() {
     let frame0_path =
         std::env::temp_dir().join(format!("nve_skia_shell_test_{}.nve2", std::process::id()));
     let meta = Frame0Meta {
-        table_schema_hash: nve_components::tables::core_tables_schema_hash(),
+        table_schema_hash: nve_tables::tables::core_tables_schema_hash(),
         app_build_id: 7,
         env_hash: 0,
     };
@@ -441,8 +461,14 @@ fn frame0_nve2_save_cold_prewarm_and_meta_enforcement() {
         app_build_id: 8,
         ..meta
     };
-    let mismatch =
-        prewarm_frame0_into_replica(&frame0_path, wrong_meta, 1, viewport, ColorRgba::BLACK, LayoutEngineChoice::Taffy);
+    let mismatch = prewarm_frame0_into_replica(
+        &frame0_path,
+        wrong_meta,
+        SurfaceId::ROOT,
+        viewport,
+        ColorRgba::BLACK,
+        LayoutEngineChoice::Taffy,
+    );
     assert!(matches!(
         mismatch,
         Err(DesktopHostError::Frame0(Frame0Miss::BuildIdMismatch {
@@ -451,9 +477,15 @@ fn frame0_nve2_save_cold_prewarm_and_meta_enforcement() {
         }))
     ));
 
-    let (_replica, pixel_buffer, loaded_footer) =
-        prewarm_frame0_into_replica(&frame0_path, meta, 1, viewport, ColorRgba::BLACK, LayoutEngineChoice::Taffy)
-            .expect("prewarm frame0");
+    let (_replica, pixel_buffer, loaded_footer) = prewarm_frame0_into_replica(
+        &frame0_path,
+        meta,
+        SurfaceId::ROOT,
+        viewport,
+        ColorRgba::BLACK,
+        LayoutEngineChoice::Taffy,
+    )
+    .expect("prewarm frame0");
     assert_eq!(loaded_footer.node_count, footer.node_count);
     assert_eq!(
         pixel_buffer.get_rgb(cx as u32, cy as u32),
@@ -466,15 +498,21 @@ fn frame0_nve2_save_cold_prewarm_and_meta_enforcement() {
         height: 400.0,
         scale_factor: 1.0,
     };
-    let (wide_replica, wide_buf, _) =
-        prewarm_frame0_into_replica(&frame0_path, meta, 1, wide_vp, ColorRgba::BLACK, LayoutEngineChoice::Taffy)
-            .expect("prewarm wide viewport");
+    let (wide_replica, wide_buf, _) = prewarm_frame0_into_replica(
+        &frame0_path,
+        meta,
+        SurfaceId::ROOT,
+        wide_vp,
+        ColorRgba::BLACK,
+        LayoutEngineChoice::Taffy,
+    )
+    .expect("prewarm wide viewport");
     assert_eq!(wide_buf.width(), 600);
     assert_eq!(
         wide_replica
             .backend()
             .layout_tree()
-            .layout_of(2)
+            .layout_of(NodeId::new(2, 0))
             .unwrap()
             .width,
         600.0
@@ -505,7 +543,7 @@ fn skia_shell_default_frame0_meta_is_stable_across_extra_table_registration() {
     assert_eq!(cold_meta.app_build_id, 0);
     assert_eq!(
         cold_meta.table_schema_hash,
-        nve_components::tables::core_tables_schema_hash()
+        nve_tables::tables::core_tables_schema_hash()
     );
 
     let viewport = Viewport {
@@ -513,8 +551,13 @@ fn skia_shell_default_frame0_meta_is_stable_across_extra_table_registration() {
         height: 200.0,
         scale_factor: 1.0,
     };
-    let mut session =
-        DesktopSession::new(MockCounterApp::new(), 1, viewport, ColorRgba::BLACK, false);
+    let mut session = DesktopSession::new(
+        MockCounterApp::new(),
+        SurfaceId::ROOT,
+        viewport,
+        ColorRgba::BLACK,
+        false,
+    );
     session.render_and_rasterize().unwrap();
 
     let frame0_path = std::env::temp_dir().join(format!(
@@ -531,9 +574,15 @@ fn skia_shell_default_frame0_meta_is_stable_across_extra_table_registration() {
     let post_reg_meta = Frame0Meta::default_core();
     assert_eq!(post_reg_meta, cold_meta);
 
-    let (_replica, _buf, loaded_footer) =
-        prewarm_frame0_into_replica(&frame0_path, post_reg_meta, 1, viewport, ColorRgba::BLACK, LayoutEngineChoice::Taffy)
-            .expect("cold prewarm must hit cache despite late module table registration");
+    let (_replica, _buf, loaded_footer) = prewarm_frame0_into_replica(
+        &frame0_path,
+        post_reg_meta,
+        SurfaceId::ROOT,
+        viewport,
+        ColorRgba::BLACK,
+        LayoutEngineChoice::Taffy,
+    )
+    .expect("cold prewarm must hit cache despite late module table registration");
     assert_eq!(loaded_footer.node_count, saved_footer.node_count);
 
     let _ = std::fs::remove_file(&frame0_path);
@@ -541,7 +590,7 @@ fn skia_shell_default_frame0_meta_is_stable_across_extra_table_registration() {
 
 #[test]
 fn hot_app_slot_reports_loader_error_for_missing_dylib() {
-    let err = HotAppSlot::load(Path::new("/nonexistent/path/libmissing_nve.dylib"), 1)
+    let err = HotAppSlot::load(Path::new("/nonexistent/path/libmissing_nve.dylib"), SurfaceId::ROOT)
         .err()
         .expect("expected loader error for nonexistent dylib");
     assert!(matches!(err, DesktopHostError::Loader(LoaderError::Io(_))));
@@ -579,14 +628,14 @@ fn render_visual_verification_ppms_at_2x_hidpi() {
 
     for (lib_stem, w, h, clear, out_path) in targets {
         let dylib = workspace_root.join(format!("target/debug/{lib_stem}.{dylib_ext}"));
-        let app =
-            HotAppSlot::load(&dylib, 1).unwrap_or_else(|e| panic!("failed to load {dylib:?}: {e}"));
+        let app = HotAppSlot::load(&dylib, SurfaceId::ROOT)
+            .unwrap_or_else(|e| panic!("failed to load {dylib:?}: {e}"));
         let viewport = Viewport {
             width: w,
             height: h,
             scale_factor: 2.0,
         };
-        let mut session = DesktopSession::new(app, 1, viewport, clear, false);
+        let mut session = DesktopSession::new(app, SurfaceId::ROOT, viewport, clear, false);
         session
             .render_and_rasterize()
             .expect("render and rasterize at 2x HiDPI");

@@ -258,7 +258,7 @@ fn self_imports_local_globs_reverse_globs_inline_mod_and_sdk_shadowing() {
 
     // 2. Module `{self}` mirror + single-segment `use Foo::*;` cross-crate isolation + `use self::Al::*;`.
     let mod_self_a = r#"
-        use nve_components::tables::{self, AlignItems};
+        use nve_tables::tables::{self, AlignItems};
         use nve_abi::FlexDirection::{self, Column};
         pub fn to_abi(d: tables::FlexDirection) -> FlexDirection {
             match d {
@@ -269,7 +269,7 @@ fn self_imports_local_globs_reverse_globs_inline_mod_and_sdk_shadowing() {
     "#;
     let mod_self_b = r#"
         use nve_abi::{self, FlexDirection};
-        use nve_components::tables::FlexDirection as TableFlexDir;
+        use nve_tables::tables::FlexDirection as TableFlexDir;
         pub fn from_abi(d: nve_abi::FlexDirection) -> TableFlexDir {
             match d {
                 FlexDirection::Column => TableFlexDir::Column, FlexDirection::Row => TableFlexDir::Row,
@@ -335,10 +335,10 @@ fn self_imports_local_globs_reverse_globs_inline_mod_and_sdk_shadowing() {
         use taffy::AlignItems;
         use crate::FlexAlign as Fa;
         use crate::platform::windows;
-        pub fn convert_internal(a: nve_components::tables::AlignItems) -> Fa {
+        pub fn convert_internal(a: nve_tables::tables::AlignItems) -> Fa {
             match a {
-                nve_components::tables::AlignItems::Stretch => Fa::Stretch, nve_components::tables::AlignItems::FlexStart => Fa::FlexStart,
-                nve_components::tables::AlignItems::Center => Fa::Center, nve_components::tables::AlignItems::FlexEnd => Fa::FlexEnd,
+                nve_tables::tables::AlignItems::Stretch => Fa::Stretch, nve_tables::tables::AlignItems::FlexStart => Fa::FlexStart,
+                nve_tables::tables::AlignItems::Center => Fa::Center, nve_tables::tables::AlignItems::FlexEnd => Fa::FlexEnd,
             }
         }
         pub fn convert_win_mod(a: windows::WinMode) -> Fa {

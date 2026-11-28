@@ -3,9 +3,9 @@
 
 use nve_backend_web::html::write_attr as push_attr;
 use nve_backend_web::{WebSystemCommitCtx, WebTableSystem};
-use nve_components::tables::Accessibility;
+use nve_tables::tables::Accessibility;
 use nve_store::{NodeId, NodeStore, NveTable, TableSlot};
-use nve_web_html::{HtmlSemantics, PopoverMode};
+use nve_web_html::HtmlSemantics;
 
 #[cfg(target_arch = "wasm32")]
 use crate::overlay;
@@ -25,10 +25,10 @@ impl WebTableSystem for HtmlSemanticsWebSystem {
 
     fn tag_name<'a>(&self, store: &'a NodeStore, node: NodeId) -> Option<&'a str> {
         let row = store.try_row::<HtmlSemantics>(node)?;
-        if row.popover() != PopoverMode::None && row.element().as_html_tag().is_none() {
-            return Some("div");
+        if let Some(el) = row.element() {
+            return Some(el.as_html_tag());
         }
-        row.element().as_html_tag()
+        row.popover().map(|_| "div")
     }
 
     fn write_ssr_attrs(&self, store: &NodeStore, node: NodeId, out: &mut String) {
@@ -38,14 +38,14 @@ impl WebTableSystem for HtmlSemanticsWebSystem {
         if row.open() {
             out.push_str(" open");
         }
-        if let Some(cb) = row.closed_by().as_html_attr() {
-            push_attr("closedby", cb, out);
+        if let Some(cb) = row.closed_by() {
+            push_attr("closedby", cb.as_html_attr(), out);
         }
-        if let Some(pop) = row.popover().as_html_attr() {
-            push_attr("popover", pop, out);
+        if let Some(pop) = row.popover() {
+            push_attr("popover", pop.as_html_attr(), out);
         }
-        if let Some(pa) = row.popover_action().as_html_attr() {
-            push_attr("popovertargetaction", pa, out);
+        if let Some(pa) = row.popover_action() {
+            push_attr("popovertargetaction", pa.as_html_attr(), out);
         }
         if row.data_nve_open() {
             push_attr("data-nve-open", "true", out);
@@ -78,18 +78,18 @@ impl WebTableSystem for HtmlSemanticsWebSystem {
         } else {
             ctx.remove_attr(node, "open");
         }
-        if let Some(cb) = row.closed_by().as_html_attr() {
-            ctx.set_attr(node, "closedby", cb);
+        if let Some(cb) = row.closed_by() {
+            ctx.set_attr(node, "closedby", cb.as_html_attr());
         } else {
             ctx.remove_attr(node, "closedby");
         }
-        if let Some(pop) = row.popover().as_html_attr() {
-            ctx.set_attr(node, "popover", pop);
+        if let Some(pop) = row.popover() {
+            ctx.set_attr(node, "popover", pop.as_html_attr());
         } else {
             ctx.remove_attr(node, "popover");
         }
-        if let Some(pa) = row.popover_action().as_html_attr() {
-            ctx.set_attr(node, "popovertargetaction", pa);
+        if let Some(pa) = row.popover_action() {
+            ctx.set_attr(node, "popovertargetaction", pa.as_html_attr());
         } else {
             ctx.remove_attr(node, "popovertargetaction");
         }
@@ -101,7 +101,7 @@ impl WebTableSystem for HtmlSemanticsWebSystem {
         // Top-layer state is applied in Step 6, after child reconciliation placed (and possibly
         // moved) every element: a Step-5 move would evict a `:modal` applied any earlier.
         #[cfg(target_arch = "wasm32")]
-        if is_dialog || row.popover() != PopoverMode::None {
+        if is_dialog || row.popover().is_some() {
             ctx.request_connected_sync(node);
         }
     }

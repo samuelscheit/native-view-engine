@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 
 pub use nve_abi::SERVICE_FILESYSTEM;
 use nve_host_services::{
-    pack_typed, resolve_typed, BinReader, BinWriter, HostServiceHandler, HostServiceProvider,
-    ServiceError,
+    pack_typed, resolve_typed, ByteReader, ByteWriter, HostServiceHandler, HostServiceProvider,
+    NveCodec, NveDecode, NveEncode, ServiceError, MAX_PAYLOAD_BYTES, MAX_SEQ_ITEMS,
 };
 
 pub use native::{native_standard_path, NativeFilesystem};
@@ -23,7 +23,8 @@ pub const METHOD_SAVE_FILE: u32 = 3;
 
 /// Well-known platform directory categories.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveCodec)]
+#[nve_codec(crate_path = "::nve_host_services")]
 pub enum StandardPathKind {
     Data = 1,
     Cache = 2,
@@ -33,19 +34,6 @@ pub enum StandardPathKind {
     Downloads = 6,
 }
 
-impl StandardPathKind {
-    pub const fn from_u8(raw: u8) -> Option<Self> {
-        match raw {
-            1 => Some(Self::Data),
-            2 => Some(Self::Cache),
-            3 => Some(Self::Config),
-            4 => Some(Self::Temp),
-            5 => Some(Self::Documents),
-            6 => Some(Self::Downloads),
-            _ => None,
-        }
-    }
-}
 
 /// Extension filter displayed by native open/save file dialogs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,52 +78,48 @@ pub fn encode_standard_path_request(kind: StandardPathKind) -> Vec<u8> {
 }
 
 pub fn decode_standard_path_request(bytes: &[u8]) -> Result<StandardPathKind, ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let raw = r.read_u8()?;
-    r.finish()?;
-    StandardPathKind::from_u8(raw)
-        .ok_or_else(|| ServiceError::InvalidArg(format!("unknown StandardPathKind {raw}")))
+    Ok(StandardPathKind::decode_exact(bytes)?)
 }
 
 pub fn encode_standard_path_response(path: &str) -> Result<Vec<u8>, ServiceError> {
-    let mut w = BinWriter::with_capacity(4 + path.len());
+    let mut w = ByteWriter::with_capacity(4 + path.len());
     w.write_str(path)?;
     Ok(w.into_bytes())
 }
 
 pub fn decode_standard_path_response(bytes: &[u8]) -> Result<String, ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let path = r.read_string()?;
+    let mut r = ByteReader::new(bytes);
+    let path = r.read_string(MAX_PAYLOAD_BYTES)?;
     r.finish()?;
     Ok(path)
 }
 
-fn write_filters(w: &mut BinWriter, filters: &[FileFilter]) -> Result<(), ServiceError> {
+fn write_filters(w: &mut ByteWriter, filters: &[FileFilter]) -> Result<(), ServiceError> {
     let count = u32::try_from(filters.len())
         .map_err(|_| ServiceError::InvalidArg("filter count exceeds u32::MAX".into()))?;
     w.write_u32(count);
     for filter in filters {
         w.write_str(&filter.name)?;
-        w.write_str_vec(&filter.extensions)?;
+        filter.extensions.encode(w)?;
     }
     Ok(())
 }
 
-fn read_filters(r: &mut BinReader<'_>) -> Result<Vec<FileFilter>, ServiceError> {
-    let count = r.read_seq_len(8)?;
+fn read_filters(r: &mut ByteReader<'_>) -> Result<Vec<FileFilter>, ServiceError> {
+    let count = r.read_len(MAX_SEQ_ITEMS, 8)?;
     let mut filters = Vec::with_capacity(count);
     for _ in 0..count {
-        let name = r.read_string()?;
-        let extensions = r.read_string_vec()?;
+        let name = r.read_string(MAX_PAYLOAD_BYTES)?;
+        let extensions = Vec::<String>::decode(r)?;
         filters.push(FileFilter { name, extensions });
     }
     Ok(filters)
 }
 
 pub fn encode_file_picker_options(opts: &FilePickerOptions) -> Result<Vec<u8>, ServiceError> {
-    let mut w = BinWriter::new();
-    w.write_opt_str(opts.title.as_deref())?;
-    w.write_opt_str(opts.initial_dir.as_deref())?;
+    let mut w = ByteWriter::new();
+    w.write_opt(opts.title.as_deref(), ByteWriter::write_str)?;
+    w.write_opt(opts.initial_dir.as_deref(), ByteWriter::write_str)?;
     write_filters(&mut w, &opts.filters)?;
     w.write_bool(opts.allow_multiple);
     w.write_bool(opts.pick_directories);
@@ -143,9 +127,9 @@ pub fn encode_file_picker_options(opts: &FilePickerOptions) -> Result<Vec<u8>, S
 }
 
 pub fn decode_file_picker_options(bytes: &[u8]) -> Result<FilePickerOptions, ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let title = r.read_opt_string()?;
-    let initial_dir = r.read_opt_string()?;
+    let mut r = ByteReader::new(bytes);
+    let title = r.read_opt(|r| r.read_string(MAX_PAYLOAD_BYTES))?;
+    let initial_dir = r.read_opt(|r| r.read_string(MAX_PAYLOAD_BYTES))?;
     let filters = read_filters(&mut r)?;
     let allow_multiple = r.read_bool()?;
     let pick_directories = r.read_bool()?;
@@ -160,32 +144,32 @@ pub fn decode_file_picker_options(bytes: &[u8]) -> Result<FilePickerOptions, Ser
 }
 
 pub fn encode_pick_files_response(paths: &[String]) -> Result<Vec<u8>, ServiceError> {
-    let mut w = BinWriter::new();
-    w.write_str_vec(paths)?;
+    let mut w = ByteWriter::new();
+    paths.encode(&mut w)?;
     Ok(w.into_bytes())
 }
 
 pub fn decode_pick_files_response(bytes: &[u8]) -> Result<Vec<String>, ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let paths = r.read_string_vec()?;
+    let mut r = ByteReader::new(bytes);
+    let paths = Vec::<String>::decode(&mut r)?;
     r.finish()?;
     Ok(paths)
 }
 
 pub fn encode_save_file_options(opts: &SaveFileOptions) -> Result<Vec<u8>, ServiceError> {
-    let mut w = BinWriter::new();
-    w.write_opt_str(opts.title.as_deref())?;
-    w.write_opt_str(opts.default_name.as_deref())?;
-    w.write_opt_str(opts.initial_dir.as_deref())?;
+    let mut w = ByteWriter::new();
+    w.write_opt(opts.title.as_deref(), ByteWriter::write_str)?;
+    w.write_opt(opts.default_name.as_deref(), ByteWriter::write_str)?;
+    w.write_opt(opts.initial_dir.as_deref(), ByteWriter::write_str)?;
     write_filters(&mut w, &opts.filters)?;
     Ok(w.into_bytes())
 }
 
 pub fn decode_save_file_options(bytes: &[u8]) -> Result<SaveFileOptions, ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let title = r.read_opt_string()?;
-    let default_name = r.read_opt_string()?;
-    let initial_dir = r.read_opt_string()?;
+    let mut r = ByteReader::new(bytes);
+    let title = r.read_opt(|r| r.read_string(MAX_PAYLOAD_BYTES))?;
+    let default_name = r.read_opt(|r| r.read_string(MAX_PAYLOAD_BYTES))?;
+    let initial_dir = r.read_opt(|r| r.read_string(MAX_PAYLOAD_BYTES))?;
     let filters = read_filters(&mut r)?;
     r.finish()?;
     Ok(SaveFileOptions {
@@ -197,14 +181,14 @@ pub fn decode_save_file_options(bytes: &[u8]) -> Result<SaveFileOptions, Service
 }
 
 pub fn encode_save_file_response(path: Option<&str>) -> Result<Vec<u8>, ServiceError> {
-    let mut w = BinWriter::new();
-    w.write_opt_str(path)?;
+    let mut w = ByteWriter::new();
+    w.write_opt(path, ByteWriter::write_str)?;
     Ok(w.into_bytes())
 }
 
 pub fn decode_save_file_response(bytes: &[u8]) -> Result<Option<String>, ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let path = r.read_opt_string()?;
+    let mut r = ByteReader::new(bytes);
+    let path = r.read_opt(|r| r.read_string(MAX_PAYLOAD_BYTES))?;
     r.finish()?;
     Ok(path)
 }

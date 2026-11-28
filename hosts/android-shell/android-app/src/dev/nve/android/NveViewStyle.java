@@ -153,8 +153,8 @@ final class NveViewStyle {
 
     /** TalkBack node info of one view, refreshed in place each frame. */
     static final class A11y extends View.AccessibilityDelegate {
-        int role;
-        int checked;
+        int role = -1;
+        int checked = -1;
         boolean disabled;
         String hint = "";
         String valueText = "";
@@ -165,7 +165,7 @@ final class NveViewStyle {
             final String cls = className(role);
             if (cls != null) info.setClassName(cls);
             info.setEnabled(!disabled);
-            if (checked != NveTables.Values.AriaTriState.UNSET) {
+            if (checked >= 0) {
                 info.setCheckable(true);
                 setChecked(info, checked);
             }
@@ -206,13 +206,13 @@ final class NveViewStyle {
         final A11y d = st.a11y;
         d.hint = s.text(a, row, NveTables.Accessibility.HINT);
         d.valueText = s.text(a, row, NveTables.Accessibility.VALUE_TEXT);
-        d.role = a.u32(row, NveTables.Accessibility.ROLE);
-        d.checked = a.u32(row, NveTables.Accessibility.CHECKED);
+        d.role = a.u32Or(row, NveTables.Accessibility.ROLE, -1);
+        d.checked = a.u32Or(row, NveTables.Accessibility.CHECKED, -1);
         d.disabled = disabled;
         view.setContentDescription(label.isEmpty() ? null : label);
         view.setImportantForAccessibility(a.bool(row, NveTables.Accessibility.HIDDEN)
                 ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS : View.IMPORTANT_FOR_ACCESSIBILITY_YES);
-        view.setSelected(a.u32(row, NveTables.Accessibility.SELECTED) == NveTables.Values.AriaTriState.TRUE);
+        view.setSelected(a.u32Or(row, NveTables.Accessibility.SELECTED, -1) == NveTables.Values.AriaTriState.TRUE);
         view.setAccessibilityDelegate(d);
     }
 

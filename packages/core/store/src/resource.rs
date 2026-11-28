@@ -1,567 +1,631 @@
-//! `ResourceStore`: refcounted, `xxh64`-deduplicated variable-length blobs (SVG pictures, draw
-//! lists, shadow lists, gradients, state rules, transitions, attribute maps) referenced from row
-//! words by `ResourceId`.
+//! Flat-buffer [`ResourceStore`]: refcounted, `xxh64`-deduplicated 4-byte-aligned word blobs
+//! backed directly by two contiguous [`SpanPool`] slabs (`SpanPool<u32>` for payload words and
+//! `SpanPool<ResourceId>` for transitive child resource references).
 //!
-//! In-process backends read the typed value directly (zero encode/decode); values are encoded
-//! only for dedup hashing, when a frame crosses a wire boundary, and when a foreign host borrows
-//! the canonical payload ([`ResourceStore::encoded`]). `EPHEMERAL` resources skip hashing and are
-//! rewritten in place (120 Hz live canvas draw lists); their encoding is cached lazily on demand.
+//! Zero `Arc<dyn Any>`, zero `downcast_ref`, zero global `CODECS` registry, zero `Box<[u8]>`.
+//! In-process readers borrow typed zero-copy `View<'a>` handles directly over the `u32` slab;
+//! `NVE2` wire framing copies the exact slab words verbatim.
 
-use std::any::{Any, TypeId};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::any::TypeId;
+use std::collections::VecDeque;
+use std::sync::OnceLock;
 
 use nve_abi::Key64;
 use nve_hash::xxh64;
 use rustc_hash::FxHashMap;
 
 use crate::id::ResourceId;
+use crate::resource_ingress::ValidatedWords;
+use crate::span_pool::{Span, SpanPool, MAX_SPAN_LEN};
 
-const RES_PENDING_FREE: u8 = 1 << 0;
-const RES_IN_FREE: u8 = 1 << 1;
-const RES_DEFINED_THIS_FRAME: u8 = 1 << 2;
-const RES_CREATED_THIS_FRAME: u8 = 1 << 3;
-const RES_RELEASED_THIS_FRAME: u8 = 1 << 4;
+#[path = "resource_wire.rs"]
+mod wire;
 
-/// A typed blob that can live in the [`ResourceStore`] and cross the wire.
-pub trait Resource: Send + Sync + 'static {
-    /// Stable kind identity (`Key64::of("nve.box_shadows")`).
+const _: () = assert!(
+    cfg!(target_endian = "little"),
+    "nve-store flat u32 ResourceStore requires a little-endian target"
+);
+
+/// Maximum `u32` words permitted in a single flat resource payload (`64 MiB`, well below
+/// `u32::MAX / 4` so `NVE2` `u32` byte-length framing can never overflow).
+pub const MAX_RESOURCE_WORDS: usize = 16 * 1024 * 1024;
+
+const _: () = assert!(MAX_RESOURCE_WORDS <= (MAX_SPAN_LEN as usize) / 4);
+
+const RES_PENDING_FREE: u16 = 1 << 0;
+const RES_IN_FREE: u16 = 1 << 1;
+const RES_DEFINED_THIS_FRAME: u16 = 1 << 2;
+const RES_CREATED_THIS_FRAME: u16 = 1 << 3;
+const RES_RELEASED_THIS_FRAME: u16 = 1 << 4;
+const RES_OCCUPIED: u16 = 1 << 5;
+const RES_EPHEMERAL: u16 = 1 << 6;
+const RES_CHILDREN_HELD: u16 = 1 << 7;
+
+/// Zero-copy little-endian byte view of a `u32` word slice (used for `xxh64` hashing, wire copy,
+/// and length-prefixed byte/UTF-8 payloads).
+#[inline(always)]
+pub fn words_as_le_bytes(words: &[u32]) -> &[u8] {
+    // SAFETY: Compile-time assert guarantees little-endian; `u32` has no uninitialized padding
+    // bytes, `u8` has alignment 1, and `core::mem::size_of_val(words) <= isize::MAX`.
+    unsafe {
+        core::slice::from_raw_parts(words.as_ptr().cast::<u8>(), core::mem::size_of_val(words))
+    }
+}
+
+/// A 4-byte-aligned flat-word blob stored directly inside [`ResourceStore`]'s contiguous
+/// `SpanPool<u32>` slab.
+///
+/// # Soundness Contract
+///
+/// [`Self::view`] receives [`ValidatedWords<'a, Self>`], which can only be constructed after
+/// [`Self::validate`] returned `true`. Implementations may elide redundant per-read UTF-8 scans
+/// only on spans explicitly verified inside [`Self::validate`]. [`ResourceStore::get`] validates
+/// wire-origin entries once (caching the validated [`TypeId`] in an atomic [`OnceLock`]) and
+/// verifies every child [`ResourceId`] reported by [`Self::child_resources`] is tracked in the
+/// entry's refcounted child span before returning `Some(Self::view(words))`.
+pub trait FlatResource: 'static {
+    /// Stable kind identity (`Key64::of("nve.res.box_shadows")`).
     const KIND: Key64;
-    fn encode(&self, out: &mut Vec<u8>);
-    fn decode(bytes: &[u8]) -> Option<Self>
-    where
-        Self: Sized;
+
+    /// Zero-copy borrowed view directly over the flat `u32` slab words.
+    type View<'a>;
+
+    /// Serializes `self` into flat `u32` words in `out` (returning `false` if an encode-side limit
+    /// is exceeded).
+    fn write_words(&self, out: &mut Vec<u32>) -> bool;
+
+    /// Validates tags, lengths, bounds, UTF-8, and nested payloads of `words`.
+    fn validate(words: &[u32]) -> bool;
+
+    /// Constructs a zero-copy typed view over ingress-validated `words`.
+    fn view<'a>(words: ValidatedWords<'a, Self>) -> Self::View<'a>;
+
+    /// Visits every non-none nested [`ResourceId`] embedded in `words` so [`ResourceStore`] can
+    /// retain/release transitive dependencies and topologically order `NVE2` `DefineResources`.
+    #[inline]
+    fn child_resources(_words: &[u32], _visit: &mut dyn FnMut(ResourceId)) {}
 }
 
-type AnyArc = Arc<dyn Any + Send + Sync>;
-type EncodeFn = fn(&(dyn Any + Send + Sync), &mut Vec<u8>);
-type DecodeFn = fn(&[u8]) -> Option<AnyArc>;
-
-#[derive(Clone, Copy)]
-struct Codec {
-    type_id: TypeId,
-    encode: EncodeFn,
-    decode: DecodeFn,
-}
-
-static CODECS: RwLock<Vec<(u64, Codec)>> = RwLock::new(Vec::new());
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "Track 1B-1d ResourceStore type-erased codec boundary"
-)]
-fn encode_erased<R: Resource>(v: &(dyn Any + Send + Sync), out: &mut Vec<u8>) {
-    if let Some(r) = v.downcast_ref::<R>() {
-        r.encode(out);
-    }
-}
-
-fn decode_erased<R: Resource>(bytes: &[u8]) -> Option<AnyArc> {
-    R::decode(bytes).map(|r| Arc::new(r) as AnyArc)
-}
-
-/// Registers `R`'s codec so frames carrying it can be encoded/applied. Idempotent for the same
-/// Rust type; panics if a different Rust type collides on `R::KIND`.
-pub fn register_codec<R: Resource>() {
-    let tid = TypeId::of::<R>();
-    let mut reg = CODECS.write().unwrap_or_else(|e| e.into_inner());
-    if let Some((_, existing)) = reg.iter().find(|(k, _)| *k == R::KIND.0) {
-        assert_eq!(
-            existing.type_id,
-            tid,
-            "Resource KIND collision on {:?} between distinct Rust types",
-            R::KIND
-        );
-        return;
-    }
-    reg.push((
-        R::KIND.0,
-        Codec {
-            type_id: tid,
-            encode: encode_erased::<R>,
-            decode: decode_erased::<R>,
-        },
-    ));
-}
-
-fn codec(kind: Key64) -> Option<Codec> {
-    let reg = CODECS.read().unwrap_or_else(|e| e.into_inner());
-    reg.iter().find(|(k, _)| *k == kind.0).map(|(_, c)| *c)
-}
-
-struct Entry {
+pub(crate) struct Entry {
     kind: Key64,
+    validated_type: OnceLock<TypeId>,
+    span: Span<u32>,
+    children: Span<ResourceId>,
     refs: u32,
     hash: u64,
-    ephemeral: bool,
-    flags: u8,
-    value: Option<AnyArc>,
-    /// Canonical `Resource::encode` bytes of `value`: filled eagerly for interned / wire-defined
-    /// entries (dedup hits and wire sends never re-encode) and lazily for ephemeral entries on the
-    /// first [`ResourceStore::encoded`] borrow; reset whenever `value` changes in place.
-    encoded: OnceLock<Box<[u8]>>,
+    generation: u8,
+    flags: u16,
 }
 
-impl Entry {
-    const fn vacant() -> Self {
+impl Default for Entry {
+    #[inline]
+    fn default() -> Self {
         Self {
             kind: Key64(0),
+            validated_type: OnceLock::new(),
+            span: Span::EMPTY,
+            children: Span::EMPTY,
             refs: 0,
             hash: 0,
-            ephemeral: false,
+            generation: 0,
             flags: 0,
-            value: None,
-            encoded: OnceLock::new(),
         }
     }
 }
 
-/// Value of a replica resource whose kind has no codec in this image (e.g. a module resource
-/// defined by a separately linked app): kept as opaque canonical bytes, so it still counts as
-/// defined, re-encodes byte-exact, and is borrowable via [`ResourceStore::encoded`], while typed
-/// [`ResourceStore::get`] reads stay `None`.
-struct OpaqueResource;
-
-/// One shared [`OpaqueResource`] value: opaque entries differ only in their bytes.
-fn opaque_resource() -> AnyArc {
-    static OPAQUE: OnceLock<AnyArc> = OnceLock::new();
-    Arc::clone(OPAQUE.get_or_init(|| Arc::new(OpaqueResource)))
-}
-
-/// Refcounted blob store. Index `0` is reserved for [`ResourceId::NONE`].
+/// Flat-buffer refcounted resource store. Index `0` is reserved for [`ResourceId::NONE`].
 pub struct ResourceStore {
     entries: Vec<Entry>,
-    dedup: FxHashMap<(u64, u64), u32>,
-    free: Vec<u32>,
+    words: SpanPool<u32>,
+    children: SpanPool<ResourceId>,
+    dedup: FxHashMap<(u64, u64), ResourceId>,
+    /// FIFO so a freed slot is reused as late as possible, maximizing the window in which a stale
+    /// `ResourceId` still meets its own (bumped) generation instead of a recycled one.
+    free: VecDeque<u32>,
     pending_free: Vec<u32>,
     pub(crate) defined: Vec<ResourceId>,
     pub(crate) released: Vec<ResourceId>,
-    scratch: Vec<u8>,
+    scratch: Vec<u32>,
+    child_scratch: Vec<ResourceId>,
+    old_children_scratch: Vec<ResourceId>,
+    work_stack: Vec<ResourceId>,
+    visit_marks: Vec<u32>,
+    visit_epoch: u32,
 }
 
 impl Default for ResourceStore {
     fn default() -> Self {
         Self {
-            entries: vec![Entry::vacant()],
+            entries: vec![Entry::default()],
+            words: SpanPool::default(),
+            children: SpanPool::default(),
             dedup: FxHashMap::default(),
-            free: Vec::new(),
+            free: VecDeque::new(),
             pending_free: Vec::new(),
             defined: Vec::new(),
             released: Vec::new(),
             scratch: Vec::new(),
+            child_scratch: Vec::new(),
+            old_children_scratch: Vec::new(),
+            work_stack: Vec::new(),
+            visit_marks: Vec::new(),
+            visit_epoch: 0,
         }
     }
 }
 
 impl ResourceStore {
-    /// Byte size of one slot in `ResourceStore::entries`, used by [`crate::wire::WireDecoder`]
-    /// to charge slot growth against its session slot-memory budget.
-    pub(crate) const ENTRY_BYTES: usize = size_of::<Entry>();
+    /// Whole contiguous payload word slab (publishable zero-copy).
+    #[inline(always)]
+    pub fn word_slab(&self) -> &[u32] {
+        self.words.data()
+    }
 
-    fn slot(&mut self) -> u32 {
-        while let Some(i) = self.free.pop() {
+    /// Number of live `u32` words currently occupied in the payload slab.
+    #[inline(always)]
+    pub fn words_live(&self) -> usize {
+        self.words.live()
+    }
+
+    /// Number of live child `ResourceId` edges currently occupied in the child slab.
+    #[inline(always)]
+    pub fn child_edges_live(&self) -> usize {
+        self.children.live()
+    }
+
+    #[inline(always)]
+    pub(crate) fn entry(&self, id: ResourceId) -> Option<&Entry> {
+        let i = id.index();
+        if i == 0 {
+            return None;
+        }
+        let e = self.entries.get(i)?;
+        ((e.flags & RES_OCCUPIED) != 0 && e.generation == id.generation()).then_some(e)
+    }
+
+    #[inline(always)]
+    pub(crate) fn entry_mut(&mut self, id: ResourceId) -> Option<&mut Entry> {
+        let i = id.index();
+        if i == 0 {
+            return None;
+        }
+        let e = self.entries.get_mut(i)?;
+        ((e.flags & RES_OCCUPIED) != 0 && e.generation == id.generation()).then_some(e)
+    }
+
+    fn slot(&mut self) -> Option<ResourceId> {
+        while let Some(i) = self.free.pop_front() {
             if let Some(e) = self.entries.get_mut(i as usize) {
                 let was_in_free = e.flags & RES_IN_FREE != 0;
                 e.flags &= !RES_IN_FREE;
                 if was_in_free
                     && e.refs == 0
-                    && e.value.is_none()
-                    && (e.flags & RES_PENDING_FREE) == 0
+                    && (e.flags & (RES_OCCUPIED | RES_PENDING_FREE)) == 0
                 {
-                    return i;
+                    return Some(ResourceId::new(i, e.generation));
                 }
             }
         }
-        self.entries.push(Entry::vacant());
-        (self.entries.len() - 1) as u32
+        if self.entries.len() > ResourceId::MAX_INDEX as usize {
+            return None;
+        }
+        let next = self.entries.len() as u32;
+        self.entries.push(Entry::default());
+        Some(ResourceId::new(next, 0))
     }
 
-    fn insert(
-        &mut self,
-        kind: Key64,
-        hash: u64,
-        ephemeral: bool,
-        value: AnyArc,
-        encoded: OnceLock<Box<[u8]>>,
-    ) -> ResourceId {
-        let i = self.slot();
-        self.entries[i as usize] = Entry {
-            kind,
+    fn finish_intern_scratch<R: FlatResource>(&mut self) -> Option<ResourceId> {
+        if self.scratch.len() > MAX_RESOURCE_WORDS || !R::validate(&self.scratch) {
+            return None;
+        }
+        let hash = xxh64(words_as_le_bytes(&self.scratch), R::KIND.0);
+        let tid = TypeId::of::<R>();
+        if let Some(&rid) = self.dedup.get(&(R::KIND.0, hash))
+            && let Some(e) = self.entries.get_mut(rid.index())
+            && (e.flags & (RES_OCCUPIED | RES_EPHEMERAL)) == RES_OCCUPIED
+            && e.generation == rid.generation()
+            && e.refs > 0
+            && e.kind == R::KIND
+            && e.validated_type.get() == Some(&tid)
+            && self.words.get(e.span) == self.scratch.as_slice()
+        {
+            e.refs = e.refs.checked_add(1)?;
+            return Some(rid);
+        }
+
+        // Collect, sort, dedup, and validate every child resource edge.
+        let Self {
+            scratch,
+            child_scratch,
+            ..
+        } = self;
+        child_scratch.clear();
+        R::child_resources(scratch, &mut |cid| {
+            if !cid.is_none() {
+                child_scratch.push(cid);
+            }
+        });
+        child_scratch.sort_unstable();
+        child_scratch.dedup();
+        if child_scratch.len() > MAX_SPAN_LEN as usize {
+            return None;
+        }
+        for &cid in &self.child_scratch {
+            if !self.is_live(cid) {
+                return None;
+            }
+        }
+
+        let rid = self.slot()?;
+        // Retain every referenced child before populating the new parent slot.
+        for idx in 0..self.child_scratch.len() {
+            let cid = self.child_scratch[idx];
+            self.retain(cid);
+        }
+
+        let span = self.words.replace(Span::EMPTY, &self.scratch);
+        let child_span = self.children.replace(Span::EMPTY, &self.child_scratch);
+        self.entries[rid.index()] = Entry {
+            kind: R::KIND,
+            validated_type: OnceLock::from(tid),
+            span,
+            children: child_span,
             refs: 1,
             hash,
-            ephemeral,
-            flags: RES_DEFINED_THIS_FRAME | RES_CREATED_THIS_FRAME,
-            value: Some(value),
-            encoded,
+            generation: rid.generation(),
+            flags: RES_OCCUPIED
+                | RES_CHILDREN_HELD
+                | RES_DEFINED_THIS_FRAME
+                | RES_CREATED_THIS_FRAME,
         };
-        if !ephemeral {
-            self.dedup.entry((kind.0, hash)).or_insert(i);
-        }
-        self.defined.push(ResourceId(i));
-        ResourceId(i)
+        self.dedup.entry((R::KIND.0, hash)).or_insert(rid);
+        self.defined.push(rid);
+        Some(rid)
     }
 
-    /// Interns `value`, returning an id holding one new reference. Equal content (same kind,
-    /// `xxh64` hash, AND verified encoded-byte equality against cached bytes) shares one id
-    /// without re-encoding the existing entry.
-    pub fn intern<R: Resource>(&mut self, value: R) -> ResourceId {
+    fn finish_ephemeral_scratch<R: FlatResource>(&mut self, old: ResourceId) -> Option<ResourceId> {
+        if self.scratch.len() > MAX_RESOURCE_WORDS || !R::validate(&self.scratch) {
+            return None;
+        }
+        let Self {
+            scratch,
+            child_scratch,
+            ..
+        } = self;
+        child_scratch.clear();
+        R::child_resources(scratch, &mut |cid| {
+            if !cid.is_none() {
+                child_scratch.push(cid);
+            }
+        });
+        child_scratch.sort_unstable();
+        child_scratch.dedup();
+        if child_scratch.len() > MAX_SPAN_LEN as usize {
+            return None;
+        }
+        for &cid in &self.child_scratch {
+            if !self.is_live(cid) {
+                return None;
+            }
+        }
+
+        let tid = TypeId::of::<R>();
+        let can_reuse = self.entry(old).is_some_and(|e| {
+            (e.flags & RES_EPHEMERAL) != 0
+                && e.refs == 1
+                && e.kind == R::KIND
+                && e.validated_type.get() == Some(&tid)
+        });
+
+        if can_reuse {
+            let mut budget = usize::MAX;
+            let creates_cycle = self.reaches_child_scratch_budgeted(old.index(), &mut budget);
+            if !creates_cycle {
+                // Retain new children BEFORE releasing old children so shared children never hit 0.
+                for idx in 0..self.child_scratch.len() {
+                    let cid = self.child_scratch[idx];
+                    self.retain(cid);
+                }
+                let old_idx = old.index();
+                let old_span = self.entries[old_idx].span;
+                let old_children = self.entries[old_idx].children;
+                let old_flags = self.entries[old_idx].flags;
+                self.old_children_scratch.clear();
+                self.old_children_scratch
+                    .extend_from_slice(self.children.get(old_children));
+
+                let new_span = self.words.replace(old_span, &self.scratch);
+                let new_children = self.children.replace(old_children, &self.child_scratch);
+                let e = &mut self.entries[old_idx];
+                e.span = new_span;
+                e.children = new_children;
+                e.flags |= RES_OCCUPIED | RES_EPHEMERAL | RES_CHILDREN_HELD;
+                if (e.flags & RES_DEFINED_THIS_FRAME) == 0 {
+                    e.flags |= RES_DEFINED_THIS_FRAME;
+                    self.defined.push(old);
+                }
+                if (old_flags & RES_CHILDREN_HELD) != 0 {
+                    for idx in 0..self.old_children_scratch.len() {
+                        let cid = self.old_children_scratch[idx];
+                        self.release(cid);
+                    }
+                }
+                return Some(old);
+            }
+        }
+
+        // Allocate a fresh ephemeral slot (caller releases `old` via `swap_resource` if desired).
+        let rid = self.slot()?;
+        for idx in 0..self.child_scratch.len() {
+            let cid = self.child_scratch[idx];
+            self.retain(cid);
+        }
+        let span = self.words.replace(Span::EMPTY, &self.scratch);
+        let child_span = self.children.replace(Span::EMPTY, &self.child_scratch);
+        self.entries[rid.index()] = Entry {
+            kind: R::KIND,
+            validated_type: OnceLock::from(tid),
+            span,
+            children: child_span,
+            refs: 1,
+            hash: 0,
+            generation: rid.generation(),
+            flags: RES_OCCUPIED
+                | RES_EPHEMERAL
+                | RES_CHILDREN_HELD
+                | RES_DEFINED_THIS_FRAME
+                | RES_CREATED_THIS_FRAME,
+        };
+        self.defined.push(rid);
+        Some(rid)
+    }
+
+    /// Interns `words` directly (0 allocations on dedup hit), returning `None` if `R::validate`
+    /// fails, `words.len() > MAX_SPAN_LEN`, or any embedded child resource is not live.
+    pub fn try_intern_words<R: FlatResource>(&mut self, words: &[u32]) -> Option<ResourceId> {
         self.scratch.clear();
-        value.encode(&mut self.scratch);
-        let hash = xxh64(&self.scratch, R::KIND.0);
-        if let Some(&i) = self.dedup.get(&(R::KIND.0, hash))
-            && let Some(e) = self.entries.get_mut(i as usize)
-            && e.value.as_deref().is_some_and(|v| v.is::<R>())
-            && e.encoded.get().map(AsRef::as_ref) == Some(self.scratch.as_slice())
-        {
-            e.refs += 1;
-            return ResourceId(i);
-        }
-        register_codec::<R>();
-        let encoded = OnceLock::from(Box::<[u8]>::from(self.scratch.as_slice()));
-        self.insert(R::KIND, hash, false, Arc::new(value), encoded)
+        self.scratch.extend_from_slice(words);
+        self.finish_intern_scratch::<R>()
     }
 
-    /// Replaces the value of ephemeral `old` in place when it is uniquely owned (no hashing, no
-    /// new id, and zero `Arc::new` allocation when the `Arc` has no external clones); otherwise
-    /// allocates a fresh ephemeral id. Returns the id now holding the value.
-    pub fn set_ephemeral<R: Resource>(&mut self, old: ResourceId, value: R) -> ResourceId {
-        if let Some(e) = self.entries.get_mut(old.0 as usize)
-            && !old.is_none()
-            && e.ephemeral
-            && e.refs == 1
-            && e.kind == R::KIND
-        {
-            if let Some(arc) = e.value.as_mut()
-                && let Some(any_mut) = Arc::get_mut(arc)
-                && let Some(slot) = any_mut.downcast_mut::<R>()
-            {
-                *slot = value;
-            } else {
-                e.value = Some(Arc::new(value));
-            }
-            e.encoded = OnceLock::new();
-            if e.flags & RES_DEFINED_THIS_FRAME == 0 {
-                e.flags |= RES_DEFINED_THIS_FRAME;
-                self.defined.push(old);
-            }
-            return old;
+    /// Interns via a closure writing flat words directly into the reusable scratch buffer (0 heap
+    /// allocations on dedup hit once scratch is warm).
+    pub fn try_intern_with<R: FlatResource>(
+        &mut self,
+        write: impl FnOnce(&mut Vec<u32>) -> bool,
+    ) -> Option<ResourceId> {
+        self.scratch.clear();
+        if !write(&mut self.scratch) {
+            return None;
         }
-        register_codec::<R>();
-        self.insert(R::KIND, 0, true, Arc::new(value), OnceLock::new())
+        self.finish_intern_scratch::<R>()
     }
 
-    /// Adds a reference to `id`.
+    /// Interns `value`, returning `None` if encoding exceeds limits, fails validation, or references
+    /// a dead child resource.
+    pub fn try_intern<R: FlatResource>(&mut self, value: &R) -> Option<ResourceId> {
+        self.try_intern_with::<R>(|out| value.write_words(out))
+    }
+
+    /// Interns `value`, returning [`ResourceId::NONE`] if validation or encode-side limits fail.
     #[inline]
+    pub fn intern<R: FlatResource>(&mut self, value: &R) -> ResourceId {
+        self.try_intern(value).unwrap_or(ResourceId::NONE)
+    }
+
+    /// Rewrites ephemeral `old` in place via a zero-alloc scratch closure when uniquely owned and
+    /// acyclic; otherwise allocates a fresh ephemeral resource.
+    pub fn try_set_ephemeral_with<R: FlatResource>(
+        &mut self,
+        old: ResourceId,
+        write: impl FnOnce(&mut Vec<u32>) -> bool,
+    ) -> Option<ResourceId> {
+        self.scratch.clear();
+        if !write(&mut self.scratch) {
+            return None;
+        }
+        self.finish_ephemeral_scratch::<R>(old)
+    }
+
+    /// Rewrites ephemeral `old` in place when uniquely owned; otherwise allocates a fresh ephemeral
+    /// resource. Returns `None` if encoding/validation fails.
+    pub fn try_set_ephemeral<R: FlatResource>(
+        &mut self,
+        old: ResourceId,
+        value: &R,
+    ) -> Option<ResourceId> {
+        self.try_set_ephemeral_with::<R>(old, |out| value.write_words(out))
+    }
+
+    /// Rewrites ephemeral `old` in place (falling back to [`ResourceId::NONE`] on invalid input).
+    #[inline]
+    pub fn set_ephemeral<R: FlatResource>(&mut self, old: ResourceId, value: &R) -> ResourceId {
+        self.try_set_ephemeral(old, value).unwrap_or(ResourceId::NONE)
+    }
+
+    /// Adds a reference to `id`. When `refs` transitions `0 -> 1` on a wire-defined resource with
+    /// children, iteratively retains all transitive child resources.
     pub fn retain(&mut self, id: ResourceId) {
-        if !id.is_none()
-            && let Some(e) = self.entries.get_mut(id.0 as usize)
-        {
-            e.refs += 1;
+        let Some(e) = self.entry_mut(id) else {
+            return;
+        };
+        if e.refs > 0 {
+            debug_assert!(e.refs < u32::MAX, "ResourceStore: refcount saturated");
+            e.refs = e.refs.saturating_add(1);
+            return;
+        }
+        // Slow path: `0 -> 1` transition may need to retain transitive children iteratively.
+        self.work_stack.clear();
+        self.work_stack.push(id);
+        while let Some(cur) = self.work_stack.pop() {
+            let Some(entry) = self.entry_mut(cur) else {
+                continue;
+            };
+            let was_zero = entry.refs == 0;
+            debug_assert!(entry.refs < u32::MAX, "ResourceStore: refcount saturated");
+            entry.refs = entry.refs.saturating_add(1);
+            if was_zero && (entry.flags & RES_CHILDREN_HELD) == 0 {
+                entry.flags |= RES_CHILDREN_HELD;
+                let kids = entry.children;
+                if !kids.is_empty() {
+                    self.work_stack.extend_from_slice(self.children.get(kids));
+                }
+            }
         }
     }
 
-    /// Drops a reference; the slot is recycled at the next frame boundary.
+    /// Drops a reference iteratively; when `refs` reaches `0`, cascades releases to transitive
+    /// children and schedules slot/span recycling at the next frame boundary.
     pub fn release(&mut self, id: ResourceId) {
         if id.is_none() {
             return;
         }
-        let Some(e) = self.entries.get_mut(id.0 as usize) else {
-            return;
-        };
-        debug_assert!(e.refs > 0, "resource {id:?} over-released");
-        if e.refs == 0 {
-            return;
-        }
-        e.refs -= 1;
-        if e.refs == 0 {
-            if !e.ephemeral && self.dedup.get(&(e.kind.0, e.hash)).copied() == Some(id.0) {
-                self.dedup.remove(&(e.kind.0, e.hash));
+        self.work_stack.clear();
+        self.work_stack.push(id);
+        while let Some(cur) = self.work_stack.pop() {
+            let idx = cur.index();
+            if idx == 0 {
+                continue;
             }
-            if e.flags & RES_PENDING_FREE == 0 {
-                e.flags |= RES_PENDING_FREE;
-                self.pending_free.push(id.0);
+            let Some(e) = self.entries.get_mut(idx) else {
+                continue;
+            };
+            if (e.flags & RES_OCCUPIED) == 0 || e.generation != cur.generation() {
+                continue;
             }
-            if e.flags & RES_CREATED_THIS_FRAME == 0 && e.flags & RES_RELEASED_THIS_FRAME == 0 {
-                e.flags |= RES_RELEASED_THIS_FRAME;
-                self.released.push(id);
+            debug_assert!(e.refs > 0, "resource {cur:?} over-released");
+            if e.refs == 0 || e.refs == u32::MAX {
+                continue;
             }
-        }
-    }
-
-    /// Typed value of `id`.
-    #[inline]
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "Track 1B-1d ResourceStore type-erased read boundary"
-    )]
-    pub fn get<R: Resource>(&self, id: ResourceId) -> Option<&R> {
-        self.entries
-            .get(id.0 as usize)?
-            .value
-            .as_deref()?
-            .downcast_ref::<R>()
-    }
-
-    /// Shared handle to the value of `id` (cheap clone for backends that cache it).
-    #[inline]
-    pub fn get_arc<R: Resource>(&self, id: ResourceId) -> Option<Arc<R>> {
-        self.entries
-            .get(id.0 as usize)?
-            .value
-            .clone()?
-            .downcast::<R>()
-            .ok()
-    }
-
-    pub fn kind(&self, id: ResourceId) -> Option<Key64> {
-        self.entries.get(id.0 as usize).map(|e| e.kind)
-    }
-
-    pub fn is_live(&self, id: ResourceId) -> bool {
-        self.entries.get(id.0 as usize).is_some_and(|e| e.refs > 0)
-    }
-
-    /// Wire encoding of `id` (`false` if its kind has no registered codec).
-    ///
-    /// Copies the cached canonical bytes when present; otherwise encodes straight into `out`
-    /// without populating the cache (per-frame ephemeral wire sends stay allocation-free).
-    pub fn encode(&self, id: ResourceId, out: &mut Vec<u8>) -> bool {
-        let Some(e) = self.entries.get(id.0 as usize) else {
-            return false;
-        };
-        let Some(value) = e.value.as_deref() else {
-            return false;
-        };
-        if let Some(bytes) = e.encoded.get() {
-            out.extend_from_slice(bytes);
-            return true;
-        }
-        let Some(c) = codec(e.kind) else {
-            return false;
-        };
-        (c.encode)(value, out);
-        true
-    }
-
-    /// Borrowed canonical `Resource::encode` payload of live resource `id` (the exact bytes an
-    /// `NVE2` `DefineResources` entry carries), encoded and cached on first use.
-    ///
-    /// Opaque replica resources (kinds without a codec here) return their wire bytes verbatim.
-    /// `None` for `ResourceId::NONE`, released / recycled ids, and local values whose kind has no
-    /// registered codec. The slice stays valid until the store is next mutated.
-    pub fn encoded(&self, id: ResourceId) -> Option<&[u8]> {
-        if id.is_none() {
-            return None;
-        }
-        let e = self.entries.get(id.0 as usize)?;
-        if e.refs == 0 {
-            return None;
-        }
-        let value = e.value.as_deref()?;
-        if let Some(bytes) = e.encoded.get() {
-            return Some(bytes);
-        }
-        let c = codec(e.kind)?;
-        Some(e.encoded.get_or_init(|| {
-            let mut out = Vec::new();
-            (c.encode)(value, &mut out);
-            out.into_boxed_slice()
-        }))
-    }
-
-    /// Number of resource slots (live, free, and the reserved slot `0`).
-    pub fn slots(&self) -> usize {
-        self.entries.len()
-    }
-
-    /// Whether `id` holds a value (defined and not yet recycled).
-    pub(crate) fn is_defined(&self, id: ResourceId) -> bool {
-        self.entries
-            .get(id.0 as usize)
-            .is_some_and(|e| e.value.is_some())
-    }
-
-    pub(crate) fn is_ephemeral(&self, id: ResourceId) -> bool {
-        self.entries.get(id.0 as usize).is_some_and(|e| e.ephemeral)
-    }
-
-    /// Fallibly mirrors a resource defined by a wire frame at exactly `id` (replica stores),
-    /// validating slot growth against `budget` (via `bounded_target_cap`) and reserving backing
-    /// vectors before mutating state so hostile ids cannot overshoot `SessionBudget` or abort.
-    /// Kinds without a codec in this image are kept as [`OpaqueResource`] bytes; known kinds must
-    /// decode.
-    pub(crate) fn try_define_at(
-        &mut self,
-        id: ResourceId,
-        kind: Key64,
-        ephemeral: bool,
-        bytes: &[u8],
-        budget: Option<&mut crate::wire::budget::SessionBudget>,
-    ) -> Result<bool, crate::wire::WireError> {
-        if id.is_none() {
-            return Ok(false);
-        }
-        let i = id.0 as usize;
-        let needed = i.checked_add(1).ok_or(crate::wire::WireError::Budget)?;
-        let budget_plan = if let Some(b) = budget.as_deref() {
-            Some(crate::wire::budget::SessionBudget::bounded_target_cap(
-                self.entries.capacity(),
-                self.entries.len(),
-                needed,
-                Self::ENTRY_BYTES,
-                b.remaining(),
-            )?)
-        } else {
-            None
-        };
-        let exact_copy = || -> Result<OnceLock<Box<[u8]>>, crate::wire::WireError> {
-            let mut copy = Vec::new();
-            copy.try_reserve_exact(bytes.len())
-                .map_err(|_| crate::wire::WireError::Alloc)?;
-            copy.extend_from_slice(bytes);
-            Ok(OnceLock::from(copy.into_boxed_slice()))
-        };
-        let (value, encoded): (AnyArc, OnceLock<Box<[u8]>>) = match codec(kind) {
-            Some(c) => {
-                let Some(value) = (c.decode)(bytes) else {
-                    return Ok(false);
-                };
-                let encoded = if ephemeral {
-                    OnceLock::new()
-                } else {
-                    exact_copy()?
-                };
-                (value, encoded)
-            }
-            None => (opaque_resource(), exact_copy()?),
-        };
-        if let (Some((target, delta_bytes)), Some(b)) = (budget_plan, budget) {
-            if target > self.entries.capacity() {
-                self.entries
-                    .try_reserve_exact(target - self.entries.len())
-                    .map_err(|_| crate::wire::WireError::Alloc)?;
-                b.charge(delta_bytes)?;
-            }
-        } else if self.entries.capacity() < needed {
-            let add = needed - self.entries.len();
-            self.entries
-                .try_reserve(add)
-                .map_err(|_| crate::wire::WireError::Alloc)?;
-        }
-        self.pending_free
-            .try_reserve(1)
-            .map_err(|_| crate::wire::WireError::Alloc)?;
-        self.defined
-            .try_reserve(1)
-            .map_err(|_| crate::wire::WireError::Alloc)?;
-        if !ephemeral {
-            self.dedup
-                .try_reserve(1)
-                .map_err(|_| crate::wire::WireError::Alloc)?;
-        }
-        while self.entries.len() < needed {
-            self.entries.push(Entry::vacant());
-        }
-        let prev = &self.entries[i];
-        if !prev.ephemeral
-            && prev.value.is_some()
-            && self.dedup.get(&(prev.kind.0, prev.hash)).copied() == Some(id.0)
-        {
-            self.dedup.remove(&(prev.kind.0, prev.hash));
-        }
-        let e = &mut self.entries[i];
-        let refs = e.refs;
-        let already_defined = e.flags & RES_DEFINED_THIS_FRAME != 0;
-        let was_pending = e.flags & RES_PENDING_FREE != 0;
-        let preserved = e.flags & (RES_IN_FREE | RES_PENDING_FREE | RES_RELEASED_THIS_FRAME);
-        let hash = if ephemeral { 0 } else { xxh64(bytes, kind.0) };
-        let mut flags = RES_DEFINED_THIS_FRAME | preserved;
-        if refs == 0 {
-            flags |= RES_PENDING_FREE;
-        }
-        *e = Entry {
-            kind,
-            refs,
-            hash,
-            ephemeral,
-            flags,
-            value: Some(value),
-            encoded,
-        };
-        if refs == 0 && !was_pending {
-            self.pending_free.push(id.0);
-        }
-        if !ephemeral {
-            self.dedup.entry((kind.0, hash)).or_insert(id.0);
-        }
-        if !already_defined {
-            self.defined.push(id);
-        }
-        Ok(true)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn define_at(
-        &mut self,
-        id: ResourceId,
-        kind: Key64,
-        ephemeral: bool,
-        bytes: &[u8],
-    ) -> bool {
-        self.try_define_at(id, kind, ephemeral, bytes, None)
-            .unwrap_or(false)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn entries_cap(&self) -> usize {
-        self.entries.capacity()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn free_len(&self) -> usize {
-        self.free.len()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn pending_free_len(&self) -> usize {
-        self.pending_free.len()
-    }
-
-    /// Frees slots released during the previous frame and drops their values.
-    pub(crate) fn end_frame(&mut self) {
-        for &id in &self.defined {
-            if let Some(e) = self.entries.get_mut(id.0 as usize) {
-                e.flags &= !(RES_DEFINED_THIS_FRAME | RES_CREATED_THIS_FRAME);
-            }
-        }
-        for &id in &self.released {
-            if let Some(e) = self.entries.get_mut(id.0 as usize) {
-                e.flags &= !RES_RELEASED_THIS_FRAME;
-            }
-        }
-        for i in self.pending_free.drain(..) {
-            let e = &mut self.entries[i as usize];
-            e.flags &= !(RES_PENDING_FREE | RES_CREATED_THIS_FRAME | RES_RELEASED_THIS_FRAME);
+            e.refs -= 1;
             if e.refs == 0 {
-                if !e.ephemeral
-                    && e.value.is_some()
-                    && self.dedup.get(&(e.kind.0, e.hash)).copied() == Some(i)
+                if (e.flags & RES_EPHEMERAL) == 0
+                    && self.dedup.get(&(e.kind.0, e.hash)).copied() == Some(cur)
                 {
                     self.dedup.remove(&(e.kind.0, e.hash));
                 }
-                e.value = None;
-                e.encoded = OnceLock::new();
-                if e.flags & RES_IN_FREE == 0 {
-                    e.flags |= RES_IN_FREE;
-                    self.free.push(i);
+                if (e.flags & RES_PENDING_FREE) == 0 {
+                    e.flags |= RES_PENDING_FREE;
+                    self.pending_free.push(cur.index() as u32);
+                }
+                if (e.flags & RES_CREATED_THIS_FRAME) == 0
+                    && (e.flags & RES_RELEASED_THIS_FRAME) == 0
+                {
+                    e.flags |= RES_RELEASED_THIS_FRAME;
+                    self.released.push(cur);
+                }
+                if (e.flags & RES_CHILDREN_HELD) != 0 {
+                    e.flags &= !RES_CHILDREN_HELD;
+                    let kids = e.children;
+                    if !kids.is_empty() {
+                        self.work_stack.extend_from_slice(self.children.get(kids));
+                    }
                 }
             }
         }
-        self.defined.clear();
-        self.released.clear();
+    }
+
+    /// Zero-copy typed view over `id`'s flat `u32` words.
+    ///
+    /// Local entries were sealed at intern time (`O(1)` slice load); wire-origin entries are
+    /// validated once via `R::validate` + child-span check and cached atomically in `Entry` so
+    /// subsequent reads never re-scan payloads.
+    #[inline]
+    pub fn get<R: FlatResource>(&self, id: ResourceId) -> Option<R::View<'_>> {
+        let e = self.entry(id)?;
+        if e.kind != R::KIND {
+            return None;
+        }
+        let words = self.words.get(e.span);
+        let tid = TypeId::of::<R>();
+        if let Some(&cached) = e.validated_type.get() {
+            if cached != tid {
+                return None;
+            }
+        } else {
+            if !self.validate_wire_entry::<R>(e, words) {
+                return None;
+            }
+            if *e.validated_type.get_or_init(|| tid) != tid {
+                return None;
+            }
+        }
+        Some(R::view(ValidatedWords::new_unchecked(words)))
+    }
+
+    #[cold]
+    fn validate_wire_entry<R: FlatResource>(&self, e: &Entry, words: &[u32]) -> bool {
+        if !R::validate(words) {
+            return false;
+        }
+        let tracked = self.children.get(e.children);
+        let mut ok = true;
+        R::child_resources(words, &mut |cid| {
+            if !cid.is_none() && (tracked.binary_search(&cid).is_err() || !self.is_defined(cid)) {
+                ok = false;
+            }
+        });
+        ok
+    }
+
+    /// Raw flat `u32` words of `id` (if occupied with matching generation).
+    #[inline]
+    pub fn raw_words(&self, id: ResourceId) -> Option<&[u32]> {
+        let e = self.entry(id)?;
+        Some(self.words.get(e.span))
+    }
+
+    /// Little-endian byte view of `id`'s flat words: the exact payload an `NVE2`
+    /// `DefineResources` entry carries and foreign hosts borrow (zero-copy; `None` for
+    /// `ResourceId::NONE`, released, recycled, or stale-generation ids). Valid until the store is
+    /// next mutated.
+    #[inline]
+    pub fn payload_bytes(&self, id: ResourceId) -> Option<&[u8]> {
+        let e = self.entry(id)?;
+        (e.refs > 0).then(|| words_as_le_bytes(self.words.get(e.span)))
+    }
+
+    /// Sorted, deduplicated child [`ResourceId`] dependencies owned by `id`.
+    #[inline]
+    pub fn children_of(&self, id: ResourceId) -> &[ResourceId] {
+        match self.entry(id) {
+            Some(e) => self.children.get(e.children),
+            None => &[],
+        }
+    }
+
+    pub fn kind(&self, id: ResourceId) -> Option<Key64> {
+        self.entry(id).map(|e| e.kind)
+    }
+
+    #[inline]
+    pub fn is_live(&self, id: ResourceId) -> bool {
+        self.entry(id).is_some_and(|e| e.refs > 0)
+    }
+
+    /// Returns `true` iff `id` is currently live (`refs > 0`, generation matches) and compatible
+    /// with resource type `R` (matching `R::KIND` and any sealed `TypeId`).
+    #[inline]
+    pub fn is_live_of<R: FlatResource>(&self, id: ResourceId) -> bool {
+        self.entry(id).is_some_and(|e| {
+            e.refs > 0
+                && e.kind == R::KIND
+                && e.validated_type.get().is_none_or(|&t| t == TypeId::of::<R>())
+        })
+    }
+
+    /// Returns `true` iff `id` is currently live (`refs > 0`, generation matches) with `kind`.
+    #[inline]
+    pub fn is_live_with_kind(&self, id: ResourceId, kind: Key64) -> bool {
+        self.entry(id)
+            .is_some_and(|e| e.refs > 0 && e.kind == kind)
     }
 
     /// Number of live resources.
     pub fn live(&self) -> usize {
-        self.entries.iter().filter(|e| e.refs > 0).count()
+        self.entries
+            .iter()
+            .filter(|e| (e.flags & RES_OCCUPIED) != 0 && e.refs > 0)
+            .count()
     }
 }

@@ -2,11 +2,11 @@ use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 use nve_abi::{
-    decode_events, encode_bin_value_to_vec, encode_events, BinValueView, NveLayoutApi, NveMapEntry,
-    NveSizeConstraints, NveSurfaceApi, NveValue, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    encode_bin_value_to_vec, BinValueView, EventBatchBuf, FrameId, NveLayoutApi, NveMapEntry,
+    NveSizeConstraints, NveSurfaceApi, NveValue, SurfaceId, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 use nve_bench::{build_event_batch, build_node_tree_cmd, nve_bench_get_interface};
-use nve_components::tables::register_core_tables;
+use nve_tables::tables::register_core_tables;
 use nve_store::wire::WireDecoder;
 use nve_store::{ChangeSet, NodeStore};
 
@@ -17,14 +17,14 @@ fn bench_nve2_wire_codec(c: &mut Criterion) {
     for &nodes in &[100usize, 1_000, 10_000] {
         encode_group.throughput(Throughput::Elements(nodes as u64));
         encode_group.bench_with_input(BenchmarkId::from_parameter(nodes), &nodes, |b, &n| {
-            b.iter(|| black_box(build_node_tree_cmd(black_box(n), 1)));
+            b.iter(|| black_box(build_node_tree_cmd(black_box(n), FrameId(1))));
         });
     }
     encode_group.finish();
 
     let mut decode_group = c.benchmark_group("abi/nve2_wire_decode");
     for &nodes in &[100usize, 1_000, 10_000] {
-        let encoded = build_node_tree_cmd(nodes, 1);
+        let encoded = build_node_tree_cmd(nodes, FrameId(1));
         decode_group.throughput(Throughput::Bytes(encoded.len() as u64));
         decode_group.bench_with_input(BenchmarkId::from_parameter(nodes), &encoded, |b, bytes| {
             b.iter_batched(
@@ -49,14 +49,16 @@ fn bench_event_ring_codec(c: &mut Criterion) {
     let mut group = c.benchmark_group("abi/event_ring");
     for &count in &[16usize, 256] {
         let events = build_event_batch(count);
-        let encoded = encode_events(&events);
+        let encoded = events.to_wire_bytes();
 
         group.throughput(Throughput::Elements(count as u64));
         group.bench_with_input(BenchmarkId::new("encode", count), &events, |b, evs| {
-            b.iter(|| black_box(encode_events(black_box(evs))));
+            b.iter(|| black_box(black_box(evs).to_wire_bytes()));
         });
         group.bench_with_input(BenchmarkId::new("decode", count), &encoded, |b, bytes| {
-            b.iter(|| black_box(decode_events(black_box(bytes)).expect("decode valid bench events")));
+            b.iter(|| {
+                black_box(EventBatchBuf::decode_wire(black_box(bytes)).expect("decode valid bench events"))
+            });
         });
     }
     group.finish();
@@ -78,7 +80,7 @@ fn bench_ffi_interface_overhead(c: &mut Criterion) {
         *ptr
     };
     // SAFETY: `surface_api.create` returns an opaque handle valid until `surface_api.destroy`.
-    let handle = unsafe { (surface_api.create)(1) };
+    let handle = unsafe { (surface_api.create)(SurfaceId::ROOT) };
 
     group.bench_function("lookup_interface", |b| {
         b.iter(|| {
@@ -115,9 +117,9 @@ fn bench_ffi_interface_overhead(c: &mut Criterion) {
     });
 
     group.bench_function("surface_render_slice", |b| {
-        let mut frame = 1u64;
+        let mut frame = FrameId(1);
         b.iter(|| {
-            frame += 1;
+            frame = frame.next();
             // SAFETY: `handle` is live until destroyed after this benchmark group.
             unsafe { black_box((surface_api.render)(black_box(handle), black_box(frame))) }
         });

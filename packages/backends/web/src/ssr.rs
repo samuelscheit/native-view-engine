@@ -5,7 +5,7 @@
 use core::fmt::Write as _;
 
 use nve_abi::Xxh64Hasher;
-use nve_components::tables::{StreamBoundary, TextContent, TextInput};
+use nve_tables::tables::{StreamBoundary, TextContent, TextInput};
 use nve_store::{NodeId, NodeStore};
 
 use crate::css::{write_compositor_css, NVE_BASE_RESET_CSS};
@@ -205,7 +205,7 @@ impl WebBackend {
             Some(state) => state.open_slot(store, id, out)?,
             None => false,
         };
-        let resolved = sheet.resolve_node(store, id);
+        let resolved = sheet.resolve_node(store, id, self.renderer.registry());
 
         out.push('<');
         out.push_str(tag);
@@ -228,7 +228,7 @@ impl WebBackend {
                 sys.write_inline_css(store, id, &mut inline);
             }
         }
-        if let Some(patch) = self.patch_css.get(&id.raw()) {
+        if let Some(patch) = self.patch_css.get(&id) {
             inline.push_str(patch);
         }
         if !inline.is_empty() {

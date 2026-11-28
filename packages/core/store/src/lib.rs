@@ -20,45 +20,85 @@ mod column;
 mod commit;
 pub mod events;
 mod id;
+mod inherited;
 mod node_mut;
 mod node_ref;
 mod resource;
+mod resource_ingress;
 mod row;
+mod row_patch;
 mod span_pool;
 mod store;
+mod store_types;
 mod table;
 mod tx;
 mod value;
 pub mod wire;
 
 pub use changes::{ChangeSet, Command, TableChanges};
-pub use events::{TableEventBus, TypedTableEvent};
+pub use events::SurfaceEventTracker;
 pub use id::{Idx, IndexVec, NodeId, NodeIndex, ResourceId, TableSet, TableSetIter};
-pub use node_mut::NodeMut;
+pub use inherited::{InheritedTable, ResolvedRow};
+pub use node_mut::{NodeMut, TempResources};
 pub use node_ref::NodeRef;
+pub use nve_abi::{
+    EventBatchBuf, EventEnum, EventFlags, EventId, EventSet, NveEvent, NveEventBatch, SurfaceId,
+    TimestampUs, ValidatedEvent, ValidatedEvents,
+};
 pub use nve_abi::table::{
-    FieldDesc, FieldKind, Storage, TableDesc, TableKey, ValueSetDesc, Word, effect, table_flags,
+    effect, table_flags, FieldDesc, FieldKind, OptEncoding, Storage, TableDesc, TableKey,
+    ValueSetDesc, Word,
 };
-pub use nve_abi_macros::NveTable;
-pub use resource::{Resource, ResourceStore, register_codec};
+pub use nve_abi_macros::{NveTable, WordEnum};
+pub use resource::{words_as_le_bytes, FlatResource, ResourceStore, MAX_RESOURCE_WORDS};
+pub use resource_ingress::{
+    padded_word_len, read_bytes_words, read_fixed_str_pack, read_fixed_str_pack_unchecked,
+    read_str_words, read_str_words_unchecked, validate_bytes_words, validate_fixed_str_pack,
+    validate_str_words, write_bytes_words, write_fixed_str_pack, write_str_words, ValidatedWords,
+};
 pub use row::{DirtyList, RowRef, RowWriter};
-pub use span_pool::{ChildSpan, Span, SpanPool, StrArena, StrSpan, class_cap};
-pub use store::{NodeRow, NodeStore, RealizationOrder, StoreStats, TableStorage};
-pub use table::{
-    MAX_STATIC_TABLE_SLOTS, NveTable, Prop, RegistryError, Res, ResProp, Str, StrProp, TableField,
-    TableSlot, desc, slot_of, tables_schema_hash,
+pub use row_patch::{
+    prop_written, RowPatch, RowPatchView, TableOpsIter, TableOpsView, WordMask, WordOp, WordOpKind,
+    WordOpsIter, MAX_PATCH_TABLES, WORD_OP_RESOURCE, WORD_OP_SCALAR,
 };
-pub use tx::Transaction;
-pub use value::{Length, Rgba, WordValue};
+pub use span_pool::{class_cap, ChildSpan, Span, SpanPool, StrArena, StrSpan};
+pub use store::{NodeRow, NodeStore};
+pub use store_types::{RealizationOrder, StoreStats, TableStorage};
+pub use table::{
+    desc, slot_of, tables_schema_hash, HasEvents, NveTable, Prop, RegistryError, Res, ResProp,
+    ScalarField, Str, StrProp, TableField, TableSlot, MAX_STATIC_TABLE_SLOTS,
+};
+pub use tx::{Transaction, TxCore};
+pub use value::{GridLine, Length, OptWord, Rgba, WordValue};
 
 #[doc(hidden)]
 pub mod __private {
     pub use crate::table::register_static;
-    pub use nve_abi::table::{
-        FieldDesc, FieldKind, Storage, TableDesc, ValueSetDesc, compute_table_schema_hash,
+    pub use crate::value::{
+        bitflags_width, opt_bool_to_word, opt_i16_to_word, opt_i8_to_word, opt_node_to_word,
+        opt_nz_u16_to_word, opt_nz_u32_to_word, opt_nz_u8_to_word, opt_surf_to_word,
+        opt_u16_to_word, opt_u8_to_word,
     };
-    pub use nve_hash::{Key64, const_id};
+    pub use nve_abi::define_bitflags;
+    pub use nve_abi::table::{
+        compute_table_schema_hash, finalize_table_flags, pack_table, trim_bytes, trim_words,
+        FieldDesc, FieldKind, OptEncoding, PackInput, PackKind, PackLayout, Storage, TableDesc,
+        ValueSetDesc, NO_VAL_WORD,
+    };
+    pub use nve_hash::{const_id, Key64};
 }
 
 #[cfg(test)]
+mod inherited_edge_tests;
+#[cfg(test)]
+mod row_patch_tests;
+#[cfg(test)]
+mod inherited_tests;
+#[cfg(test)]
+mod table_packing_tests;
+#[cfg(test)]
+mod table_wire_tests;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod wire_resource_tests;

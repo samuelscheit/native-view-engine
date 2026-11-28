@@ -6,13 +6,14 @@ use std::io;
 use std::path::Path;
 
 use nve_abi::xxh64;
+use nve_codec::ByteReader;
 use nve_store::wire::{WireDecoder, WireEncoder};
 use nve_store::{NodeId, NodeStore};
 
 use crate::store_backend::Frame0SubmitError;
 use crate::{BackendApplyStats, StoreBackend, StoreWireReplica};
 
-use super::{PersistenceError, le_u32, le_u64, remove_corrupt_frame0, write_file_atomic};
+use super::{PersistenceError, remove_corrupt_frame0, write_file_atomic};
 #[cfg(not(target_arch = "wasm32"))]
 use super::{ReadBoundedError, read_file_bounded};
 
@@ -35,7 +36,7 @@ impl Frame0Meta {
     /// shared across `nve prerender`, `nve-skia-shell`, and native hosts.
     pub fn default_core() -> Self {
         Self {
-            table_schema_hash: nve_components::tables::core_tables_schema_hash(),
+            table_schema_hash: nve_tables::tables::core_tables_schema_hash(),
             app_build_id: 0,
             env_hash: 0,
         }
@@ -65,13 +66,14 @@ impl Frame0Footer {
     }
 
     pub fn from_bytes(b: &[u8; FRAME0_FOOTER_SIZE]) -> Self {
+        let mut r = ByteReader::new(b);
         Self {
-            node_count: le_u32(&b[0..4]),
-            flags: le_u32(&b[4..8]),
-            table_schema_hash: le_u64(&b[8..16]),
-            app_build_id: le_u64(&b[16..24]),
-            env_hash: le_u64(&b[24..32]),
-            payload_xxh64: le_u64(&b[32..40]),
+            node_count: r.read_u32().unwrap_or(0),
+            flags: r.read_u32().unwrap_or(0),
+            table_schema_hash: r.read_u64().unwrap_or(0),
+            app_build_id: r.read_u64().unwrap_or(0),
+            env_hash: r.read_u64().unwrap_or(0),
+            payload_xxh64: r.read_u64().unwrap_or(0),
         }
     }
 }

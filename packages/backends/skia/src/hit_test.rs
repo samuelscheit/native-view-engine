@@ -13,7 +13,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             store,
             x,
             y,
-            |id, base| self.motion.resolve_animated_transform(id.raw(), base),
+            |id, base| self.frame_hooks.resolve_transform(id, base),
             |id| LaidOutScene::<L>::is_event_target(store, id),
         )
     }
@@ -23,7 +23,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             store,
             x,
             y,
-            |id, base| self.motion.resolve_animated_transform(id.raw(), base),
+            |id, base| self.frame_hooks.resolve_transform(id, base),
             |id| self.layout_tree.is_interaction_target(store, id),
         )
     }
@@ -33,7 +33,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             store,
             x,
             y,
-            |id, base| self.motion.resolve_animated_transform(id.raw(), base),
+            |id, base| self.frame_hooks.resolve_transform(id, base),
             |id| LaidOutScene::<L>::is_scroll_container(store, id),
         )
     }

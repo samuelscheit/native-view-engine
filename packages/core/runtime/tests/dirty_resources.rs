@@ -4,11 +4,11 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
-use nve_abi::{FrameId, NveEventBatchRef};
-use nve_components::tables::{Image, ImageSrc};
+use nve_abi::{FrameId, ValidatedEvents};
+use nve_tables::tables::{Image, ImageSrc, ImageSrcView};
 use nve_runtime::{AppFrame, RuntimeApp, RuntimeBuilder, SurfaceRuntime};
 use nve_store::wire::WireEncoder;
-use nve_store::{ChangeSet, NodeId, NodeStore, ResourceId};
+use nve_store::{ChangeSet, FlatResource, NodeId, NodeStore, ResourceId, ValidatedWords};
 
 struct Session {
     store: NodeStore,
@@ -100,11 +100,14 @@ fn recycled_and_new_resource_ids_are_listed_and_untouched_ones_are_not() {
     assert_ne!(a, b, "the released id is still pending free this frame");
     assert!(published(&rt, a).1.is_empty(), "the released id is no longer live");
 
-    // The next new source recycles `a`'s slot: same id, different bytes, so it MUST be dirty.
+    // The next new source recycles `a`'s slot with bumped generation: dirty, new bytes, old gen stale.
     rt.submit_nve2(&s.set_src("asset://c.png")).expect("swap to c");
-    let (dirty, bytes_c) = published(&rt, a);
-    assert_eq!(dirty, vec![a], "the freed slot is recycled and reported dirty");
+    let a_id = ResourceId(a);
+    let recycled = ResourceId::new(a_id.index() as u32, a_id.generation().wrapping_add(1)).raw();
+    let (dirty, bytes_c) = published(&rt, recycled);
+    assert_eq!(dirty, vec![recycled], "the freed slot is recycled with bumped generation and reported dirty");
     assert_ne!(bytes_c, bytes_a, "the recycled id carries new bytes");
+    assert!(published(&rt, a).1.is_empty(), "stale generation stays dead after slot recycle");
 }
 
 /// Direct-store app rewriting one ephemeral `Image::src` in place on every render: the same id
@@ -142,7 +145,7 @@ impl RuntimeApp for EphemeralApp {
         AppFrame::Direct { changes: &self.changes }
     }
 
-    fn dispatch_events(&mut self, _events: NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, _events: ValidatedEvents<'_>) -> bool {
         false
     }
 
@@ -194,5 +197,9 @@ fn rewrites_merged_across_pumps_of_one_tick_are_listed_once() {
     assert_eq!(pending.load(Ordering::Acquire), 0, "every pending render ran in this tick");
     let (dirty, bytes) = published(&rt, id);
     assert_eq!(dirty, vec![id], "one id rewritten by several pumps is listed once");
-    assert!(bytes.ends_with(b"gen-3"), "the last rewrite wins: {bytes:?}");
+    let (chunks, rem) = bytes.as_chunks::<4>();
+    assert!(rem.is_empty(), "FlatResource payload is 4-byte aligned: {bytes:?}");
+    let words: Vec<u32> = chunks.iter().map(|&c| u32::from_le_bytes(c)).collect();
+    let validated = ValidatedWords::<ImageSrc>::try_new(&words).expect("valid ImageSrc words");
+    assert_eq!(ImageSrc::view(validated), ImageSrcView::Url("gen-3"), "the last rewrite wins");
 }

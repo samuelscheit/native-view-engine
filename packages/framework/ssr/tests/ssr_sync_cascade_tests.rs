@@ -4,6 +4,7 @@
 
 mod support;
 
+use nve_abi::SurfaceId;
 use nve_dioxus::DioxusSurface;
 use nve_dioxus::prelude::*;
 use nve_query_dioxus::prelude::*;
@@ -53,7 +54,7 @@ async fn three_hop_sync_error_cascade_settles_in_ssr_shell() {
             SsrPageOptions::new("Cascade", web_backend),
             StreamPlan::default(),
             erased_ssr_query_client(ControlledTransport::default()),
-            |c| DioxusSurface::new(1, CascadeApp).with_context(c),
+            |c| DioxusSurface::new(SurfaceId::ROOT, CascadeApp).with_context(c),
         )
         .await
         .expect("cascade page renders");

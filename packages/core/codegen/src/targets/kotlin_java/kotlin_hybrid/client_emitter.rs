@@ -132,7 +132,7 @@ pub(super) fn emit_kotlin_view(out: &mut CodeWriter, v: &HybridViewSpec, spec: &
 pub(super) fn emit_kotlin_client(
     out: &mut CodeWriter,
     pascal: &str,
-    interface_id: u32,
+    interface_id: nve_abi::InterfaceId,
     schema_hash: u64,
     methods: &[HybridMethodSpec],
     view: Option<&HybridViewSpec>,
@@ -145,7 +145,7 @@ pub(super) fn emit_kotlin_client(
     writeln!(
         out,
         "        const val INTERFACE_ID: Int = {} // 0x{interface_id:08X}",
-        kotlin_int_literal(interface_id)
+        kotlin_int_literal(interface_id.raw())
     );
     writeln!(
         out,

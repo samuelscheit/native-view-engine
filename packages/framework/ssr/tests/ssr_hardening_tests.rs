@@ -16,6 +16,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use http::Response;
+use nve_abi::{FrameId, SurfaceId};
 use nve_backend_web::StreamingError;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
@@ -48,7 +49,7 @@ async fn render_slow(
         page,
         StreamPlan::default().with_total_deadline(Duration::from_secs(10)),
         erased_ssr_query_client(transport.clone()),
-        |c| DioxusSurface::new(1, SlowPanelApp).with_context(c),
+        |c| DioxusSurface::new(SurfaceId::ROOT, SlowPanelApp).with_context(c),
     )
     .await
 }
@@ -123,7 +124,7 @@ async fn query_suspense_under_table_rows_or_select_fails_before_headers() {
                     view {
                         nve_table: table_attr_fn(move |tx, node| match tag {
                             Tag::Html(el) => {
-                                tx.edit::<HtmlSemantics>(node).element(el);
+                                tx.edit::<HtmlSemantics>(node).element(Some(el));
                             }
                             Tag::Select => {
                                 tx.edit::<TagOverride>(node).tag("select");
@@ -172,7 +173,11 @@ async fn query_suspense_under_table_rows_or_select_fails_before_headers() {
                 SsrPageOptions::new("Trap", web_backend_with_tag_override),
                 StreamPlan::default(),
                 erased_ssr_query_client(transport),
-                move |c| DioxusSurface::new(1, TrapApp).with_context(c).with_context(trap),
+                move |c| {
+                    DioxusSurface::new(SurfaceId::ROOT, TrapApp)
+                        .with_context(c)
+                        .with_context(trap)
+                },
             )
             .await
             .expect_err("trap placement must fail before headers");
@@ -285,7 +290,7 @@ async fn suspense_parent_unmounting_mid_stream_ends_stream_without_waiting_for_d
             StreamPlan::default().with_total_deadline(Duration::from_secs(10)),
             erased_ssr_query_client(transport.clone()),
             move |c| {
-                DioxusSurface::new(1, UnmountApp)
+                DioxusSurface::new(SurfaceId::ROOT, UnmountApp)
                     .with_context(c)
                     .with_context(UnmountSignal(Rc::new(RefCell::new(Some(unmount_rx)))))
             },
@@ -381,7 +386,7 @@ async fn duplicate_explicit_id_with_first_settled_pre_headers_still_streams_seco
             SsrPageOptions::new("DupPreHeaders", web_backend),
             StreamPlan::default().with_total_deadline(Duration::from_secs(5)),
             erased_ssr_query_client(transport.clone()),
-            |c| DioxusSurface::new(1, DupPreHeadersApp).with_context(c),
+            |c| DioxusSurface::new(SurfaceId::ROOT, DupPreHeadersApp).with_context(c),
         )
         .await
         .expect("streaming response");
@@ -483,7 +488,7 @@ async fn streaming_error_boundary_dehydrates_preceding_ok_waterfall_and_non_quer
             SsrPageOptions::new("MultiErrorSsr", web_backend),
             StreamPlan::default().with_total_deadline(Duration::from_secs(5)),
             erased_ssr_query_client(transport.clone()),
-            |c| DioxusSurface::new(1, MultiErrorSsrApp).with_context(c),
+            |c| DioxusSurface::new(SurfaceId::ROOT, MultiErrorSsrApp).with_context(c),
         )
         .await
         .expect("streaming response");
@@ -507,10 +512,11 @@ async fn streaming_error_boundary_dehydrates_preceding_ok_waterfall_and_non_quer
     let stats = hydrate_client_from_html(&client, &full);
     assert!(stats.len() >= 3, "expected seq=0 + two slot deltas, got {stats:?}");
 
-    let mut client_surface = DioxusSurface::new(1, MultiErrorSsrApp).with_context(client.clone());
+    let mut client_surface =
+        DioxusSurface::new(SurfaceId::ROOT, MultiErrorSsrApp).with_context(client.clone());
     let mut web = web_backend();
     let mut frame = 1;
-    client_surface.commit_to(frame, &mut web).expect("commit frame");
+    client_surface.commit_to(FrameId(frame), &mut web).expect("commit frame");
     pump_client_settled(&mut client_surface, &mut web, &mut frame);
     let client_html = web.render_html(client_surface.store());
     assert!(client_html.contains("WF_ERR_FALLBACK"), "{client_html}");

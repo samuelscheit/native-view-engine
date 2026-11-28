@@ -43,7 +43,7 @@ pub fn build_host_swift(dir: &Path, extra: &[&str]) -> SwiftHost {
     let pkg = workspace_root().join("packages/core/host-swift/Sources");
     copy_tree(&pkg.join("NveHost"), &sources.join("NveHost"));
     copy_tree(&pkg.join("NveHostAbi"), &sources.join("NveHostAbi"));
-    let generated = nve_codegen::generate_all_abi_files(nve_components::tables::CORE_TABLE_DESCS)
+    let generated = nve_codegen::generate_all_abi_files(nve_tables::tables::CORE_TABLE_DESCS)
         .expect("generate host ABI files");
     for file in generated {
         if let Some(rel) = file

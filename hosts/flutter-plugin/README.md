@@ -16,7 +16,7 @@ Flutter widget tree
 - **Painting** reads the published scene tables directly (`NveScenePainter`): fills, borders,
   radius, opacity, visibility, overflow clip, `z_index`, transforms, inherited typography, text,
   text inputs, images, and scroll shifts. Module tables paint through `NveTablePainter`s
-  (`NveCanvasTablePainter` for `NVE_DRAW1` draw lists).
+  (`NveCanvasTablePainter` for flat `nve.res.draw_list` draw lists).
 - **Input**: pointer down/move/up and press go to the runtime's hit-test target; wheel and drag
   (past touch slop) scroll the deepest scroll container via `scroll_by`.
 - **Semantics**: `Accessibility` roles/states/labels, text, inputs (masked when secure), images,

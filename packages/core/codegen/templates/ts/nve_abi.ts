@@ -10,7 +10,11 @@ export const NVE_RUNTIME_SCHEMA_HASH = new Key64({{ rt.hash.lo_hex() }}, {{ rt.h
 {%- if let Some(doc) = k.doc %}
 /** {{ spell::one_line(doc) }} */
 {%- endif %}
+{%- if k.ty == "u64" %}
+export const {{ k.name }} = new Key64({{ spell::lo_hex(k.value) }}, {{ spell::hi_hex(k.value) }});
+{%- else %}
 export const {{ k.name }} = {{ spell::uint(k.value, k.hex) }};
+{%- endif %}
 {%- endfor %}
 
 /** Modular interface IDs passed to `nve_get_interface(uint32_t)`. */

@@ -2,10 +2,13 @@
 
 #if defined(_WIN32) && defined(NVE_WITH_RNW_FABRIC) && NVE_WITH_RNW_FABRIC
 
+#include <nve/host/bin_codec.hpp>
 #include <nve/host/utf8.h>
 
 #include <winrt/Microsoft.UI.Dispatching.h>
 
+#include <span>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -20,11 +23,10 @@ namespace rnw_input = winrt::Microsoft::ReactNative::Composition::Input;
 
 /// Owned copy of one app-emitted event (the runtime's batch is borrowed for the sink call only).
 struct EmittedEvent {
-  NveDirectEvent ev{};
+  NveEvent ev{};
   std::string name;
   std::string text;
-  std::string value_str;  // NVE_VAL_STR
-  std::string payload;    // NVE_VAL_BYTES (custom event payload, forwarded as `payloadJson` when UTF-8)
+  std::vector<uint8_t> payload;  // custom event payload (`NveBinValue` or raw UTF-8 JSON)
 };
 
 struct NveRnwComponentUserData : winrt::implements<NveRnwComponentUserData, winrt::Windows::Foundation::IInspectable> {
@@ -34,24 +36,35 @@ struct NveRnwComponentUserData : winrt::implements<NveRnwComponentUserData, winr
   rnw::ComponentView::Destroying_revoker destroying_revoker{};
 };
 
-std::string_view slice(NveStrSlice s) noexcept {
-  return s.ptr != nullptr ? std::string_view(reinterpret_cast<const char*>(s.ptr), s.len) : std::string_view();
-}
-
 void write_event(rnw::IJSValueWriter const& writer, const EmittedEvent& e) {
   writer.WriteObjectBegin();
   writer.WritePropertyName(L"surfaceId");
-  writer.WriteInt64(static_cast<int64_t>(e.ev.surface_id));
+  writer.WriteInt64(static_cast<int64_t>(e.ev.surface));
   writer.WritePropertyName(L"nodeId");
-  writer.WriteInt64(static_cast<int64_t>(e.ev.node_id));
+  writer.WriteInt64(static_cast<int64_t>(e.ev.node));
   writer.WritePropertyName(L"timestampUs");
-  writer.WriteInt64(static_cast<int64_t>(e.ev.timestamp_us));
-  writer.WritePropertyName(L"kind");
-  writer.WriteInt64(static_cast<int64_t>(e.ev.kind));
+  writer.WriteInt64(static_cast<int64_t>(e.ev.timestamp));
+  writer.WritePropertyName(L"table");
+  writer.WriteInt64(static_cast<int64_t>(e.ev.table));
+  writer.WritePropertyName(L"event");
+  writer.WriteInt64(static_cast<int64_t>(e.ev.event));
+  writer.WritePropertyName(L"flags");
+  writer.WriteInt64(static_cast<int64_t>(e.ev.flags));
   writer.WritePropertyName(L"name");
   writer.WriteString(winrt::to_hstring(e.name));
-  for (const auto& [key, v] : {std::pair{L"x", e.ev.x}, std::pair{L"y", e.ev.y}, std::pair{L"width", e.ev.width},
-                               std::pair{L"height", e.ev.height}}) {
+  const bool has_xywh = host::is_scroll_event(e.ev, NVE_SCROLL_EVENT_SCROLL) ||
+                        host::is_layout_event(e.ev, NVE_LAYOUT_EVENT_LAYOUT);
+  const bool has_xy = e.ev.table == NVE_TABLE_INTERACTION &&
+                      e.ev.event != static_cast<uint32_t>(NVE_INTERACTION_EVENT_FOCUS) &&
+                      e.ev.event != static_cast<uint32_t>(NVE_INTERACTION_EVENT_BLUR) &&
+                      e.ev.event != static_cast<uint32_t>(NVE_INTERACTION_EVENT_KEY_DOWN) &&
+                      e.ev.event != static_cast<uint32_t>(NVE_INTERACTION_EVENT_KEY_UP);
+  const float x = (has_xywh || has_xy) ? host::event_payload_f32(e.ev, 0u) : 0.0f;
+  const float y = (has_xywh || has_xy) ? host::event_payload_f32(e.ev, 1u) : 0.0f;
+  const float w = has_xywh ? host::event_payload_f32(e.ev, 2u) : 0.0f;
+  const float h = has_xywh ? host::event_payload_f32(e.ev, 3u) : 0.0f;
+  for (const auto& [key, v] : {std::pair{L"x", x}, std::pair{L"y", y}, std::pair{L"width", w},
+                               std::pair{L"height", h}}) {
     writer.WritePropertyName(key);
     writer.WriteDouble(static_cast<double>(v));
   }
@@ -59,18 +72,37 @@ void write_event(rnw::IJSValueWriter const& writer, const EmittedEvent& e) {
     writer.WritePropertyName(L"text");
     writer.WriteString(winrt::to_hstring(e.text));
   }
-  if (!e.payload.empty() &&
-      nve_utf8_valid(reinterpret_cast<const uint8_t*>(e.payload.data()), e.payload.size()) != 0) {
+  std::span<const uint8_t> raw_utf8;
+  bool has_bin_value = false;
+  if (!e.payload.empty()) {
+    if (host::BinReader::validate(e.payload) == host::BinError::None) {
+      has_bin_value = true;
+      host::BinReader probe(e.payload);
+      if (probe.peek_tag() == host::BinTag::Bytes) {
+        const std::span<const uint8_t> b = probe.read_bytes();
+        if (probe.ok() && !b.empty() && nve_utf8_valid(b.data(), b.size()) != 0) raw_utf8 = b;
+      }
+    } else if (nve_utf8_valid(e.payload.data(), e.payload.size()) != 0) {
+      raw_utf8 = e.payload;
+    }
+  }
+  if (!raw_utf8.empty()) {
     writer.WritePropertyName(L"payloadJson");
-    writer.WriteString(winrt::to_hstring(e.payload));
+    writer.WriteString(winrt::to_hstring(
+        std::string_view(reinterpret_cast<const char*>(raw_utf8.data()), raw_utf8.size())));
   }
   writer.WritePropertyName(L"value");
-  switch (e.ev.value.tag) {
-    case NVE_VAL_BOOL: writer.WriteBoolean(e.ev.value.data.bool_val != 0u); break;
-    case NVE_VAL_I64: writer.WriteInt64(e.ev.value.data.i64_val); break;
-    case NVE_VAL_F64: writer.WriteDouble(e.ev.value.data.f64_val); break;
-    case NVE_VAL_STR: writer.WriteString(winrt::to_hstring(e.value_str)); break;
-    default: writer.WriteNull(); break;  // bytes travel as `payloadJson`; arrays / maps are not forwarded
+  if (has_bin_value) {
+    host::BinReader r(e.payload);
+    switch (r.peek_tag()) {
+      case host::BinTag::Bool: writer.WriteBoolean(r.read_bool()); break;
+      case host::BinTag::I64: writer.WriteInt64(r.read_i64()); break;
+      case host::BinTag::F64: writer.WriteDouble(r.read_f64()); break;
+      case host::BinTag::Str: writer.WriteString(winrt::to_hstring(r.read_str())); break;
+      default: writer.WriteNull(); break;  // bytes travel as `payloadJson`; arrays / maps are not forwarded
+    }
+  } else {
+    writer.WriteNull();
   }
   writer.WriteObjectEnd();
 }
@@ -108,16 +140,17 @@ winrt::com_ptr<NveRnwComponentUserData> initialize_view_host(rnw_comp::ViewCompo
   }
 
   auto weak = user_data->get_weak();
-  user_data->host->set_event_callback([weak](std::span<const NveDirectEvent> events) {
+  user_data->host->set_event_callback([weak](NveEventBatch batch) {
     auto strong = weak.get();
     if (!strong || !strong->event_emitter) return;
-    for (const NveDirectEvent& ev : events) {
-      EmittedEvent e{ev, std::string(slice(ev.name)), std::string(slice(ev.text)),
-                     ev.value.tag == NVE_VAL_STR ? std::string(slice(ev.value.data.str_val)) : std::string(),
-                     ev.value.tag == NVE_VAL_BYTES && ev.value.data.bytes_val.ptr != nullptr
-                         ? std::string(reinterpret_cast<const char*>(ev.value.data.bytes_val.ptr), ev.value.data.bytes_val.len)
-                         : std::string()};
-      e.ev.name = e.ev.text = NveStrSlice{nullptr, 0u};  // borrowed: never touched after this call
+    for (const NveEvent& ev : host::batch_events(batch)) {
+      const std::span<const uint8_t> data =
+          host::is_custom_event(ev) ? host::event_custom_data(ev, batch) : std::span<const uint8_t>();
+      EmittedEvent e{ev,
+                     std::string(host::event_custom_name(ev, batch)),
+                     std::string(host::event_text(ev, batch)),
+                     std::vector<uint8_t>(data.begin(), data.end())};
+      e.ev.bytes = RawEventBytes{0u, 0u};  // borrowed: never touched after this call
       const std::wstring name = e.name.empty() ? std::wstring(L"nveEvent") : std::wstring(winrt::to_hstring(e.name));
       strong->event_emitter.DispatchEvent(name, [e = std::move(e)](rnw::IJSValueWriter const& w) { write_event(w, e); });
     }

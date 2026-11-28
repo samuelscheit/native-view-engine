@@ -48,8 +48,9 @@ final class HostTextTest {
 
     static ImageSource source(int tag, String payload) {
         final byte[] p = payload.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        final java.nio.ByteBuffer b = java.nio.ByteBuffer.allocate(5 + p.length).order(java.nio.ByteOrder.LITTLE_ENDIAN);
-        b.put((byte) tag).putInt(p.length).put(p);
+        final int pad = (4 - (p.length & 3)) & 3;
+        final java.nio.ByteBuffer b = java.nio.ByteBuffer.allocate(8 + p.length + pad).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.putInt(tag).putInt(p.length).put(p).put(new byte[pad]);
         b.flip();
         return ImageSource.decode(b);
     }

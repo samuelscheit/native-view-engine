@@ -360,7 +360,8 @@ void NveWinVisualTree::Adapter::update(Handle& handle, const host::NodeData& nod
   }
   if (v.kind == host::NodeKind::TextInput) {
     const bool secure = node.input.secure || node.input.input_kind == NVE_INPUT_KIND_PASSWORD;
-    v.input = WinTextInput{std::string(node.input.value),
+    v.input = WinTextInput{node.input.events,
+                           std::string(node.input.value),
                            std::string(node.input.placeholder),
                            node.input.multiline && !secure,  // a password field is single-line
                            secure,
@@ -370,6 +371,7 @@ void NveWinVisualTree::Adapter::update(Handle& handle, const host::NodeData& nod
   }
   v.scroll = node.scroll;
   v.interaction = node.interaction;
+  v.layout_events = node.layout_events;
   v.href.assign(node.href);
   v.synced = true;
 }

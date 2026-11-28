@@ -42,9 +42,10 @@ multi-window = []
 nve-abi = { workspace = true }
 nve-system-env = { workspace = true }
 nve-store = { workspace = true }
-nve-components = { workspace = true }
+nve-tables = { workspace = true }
 nve-canvas = { workspace = true, optional = true }
 nve-canvas-web = { workspace = true, optional = true }
+nve-motion-web = { workspace = true }
 nve-web-html = { workspace = true }
 nve-web-html-web = { workspace = true }
 nve-engine = { workspace = true }

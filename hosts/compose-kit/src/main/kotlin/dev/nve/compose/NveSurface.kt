@@ -267,7 +267,7 @@ private fun Modifier.nveBox(box: NveBox): Modifier {
 private fun Modifier.nveSemantics(node: NveNode, visible: Boolean): Modifier {
     val s = node.semantics
     if (s.hidden || !visible) return clearAndSetSemantics {}
-    if (s.label.isEmpty() && s.testId.isEmpty() && !s.disabled && s.role == NveTables.Values.AriaRole.NONE) return this
+    if (s.label.isEmpty() && s.testId.isEmpty() && !s.disabled && s.role == null) return this
     return semantics {
         if (s.label.isNotEmpty()) contentDescription = s.label
         if (s.testId.isNotEmpty()) testTag = s.testId

@@ -12,10 +12,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use nve_abi::{encode_events, EventPayload, NativeEvent, NativeEventKind};
-use nve_components::tables::{register_core_tables, TextContent};
+use nve_abi::{EventBatchBuf, SurfaceId, TimestampUs};
 use nve_store::wire::{WireDecoder, WireEncoder};
 use nve_store::{ChangeSet, NodeId, NodeStore};
+use nve_tables::tables::{register_core_tables, TextContent};
 use nve_wire::{
     generate_bearer_token, parse_wire_uri, NveNodePatchDeltaBuilder, NveNodePatchDeltaView,
     NveWireChannel, NveWireClient, NveWireClientConfig, NveWireFrame, NveWireKind, NveWireServer,
@@ -92,10 +92,10 @@ async fn live_quic_nve_wire_2_roundtrip_scene_command_patch_events_and_datagram(
     // 3. Compact 8-node NodePatchDelta (< 512 B).
     let mut pb = NveNodePatchDeltaBuilder::new();
     for i in 0..4u32 {
-        pb.set_text(10 + i, "SCORE 42");
+        pb.set_text(NodeId::new(10 + i, 0), "SCORE 42");
     }
     for i in 0..4u32 {
-        pb.set_bg_rgba(20 + i, 0x22C55EFF);
+        pb.set_bg_rgba(NodeId::new(20 + i, 0), 0x22C55EFF);
     }
     let patch_payload = pb.encode().unwrap();
     let patch_frame = NveWireFrame::new(NveWireKind::NodePatchDelta, 3, patch_payload);
@@ -111,13 +111,9 @@ async fn live_quic_nve_wire_2_roundtrip_scene_command_patch_events_and_datagram(
     assert_eq!(patch_view.patch_str(&patch_view.patches()[0]).unwrap(), "SCORE 42");
 
     // 4. Upstream EventBatch backchannel.
-    let event_bytes = encode_events(&[NativeEvent {
-        surface_id: 1,
-        kind: NativeEventKind::Press,
-        node_id: 2,
-        timestamp_us: 1234,
-        payload: EventPayload::Point { x: 10.0, y: 20.0 },
-    }]);
+    let mut ev_buf = EventBatchBuf::new();
+    ev_buf.push_press(SurfaceId::ROOT, NodeId::new(2, 0), TimestampUs(1234), 10.0, 20.0);
+    let event_bytes = ev_buf.to_wire_bytes();
     client.send_events(event_bytes.clone()).unwrap();
     let inbound = server
         .recv_inbound_async(Duration::from_secs(2))

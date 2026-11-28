@@ -68,8 +68,8 @@ public final class NativeRuntime {
     public static native int tick(long handle, float dtSeconds, int[] outChanged);
 
     /**
-     * Dispatches the first {@code length} bytes of an {@link EventRingWriter} ring (direct
-     * buffer); {@code outChanged[0]} is 1 when the app changed.
+     * Dispatches the first {@code length} bytes of an {@link EventRingWriter} {@code NVEV} v2
+     * frame (direct buffer); {@code outChanged[0]} is 1 when the app changed.
      */
     public static native int dispatchEvents(long handle, ByteBuffer ring, int length, int[] outChanged);
 

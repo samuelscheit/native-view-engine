@@ -1,4 +1,4 @@
-// Qt host: `QPainter` `NVE_DRAW1` rendering (all ops, pixels, clips, corrupt payloads, unbalanced
+// Qt host: `QPainter` flat draw-list rendering (all ops, pixels, clips, corrupt payloads, unbalanced
 // clip stacks, HiDPI rasterization), `nve.canvas` nodes (resource bytes, generation-driven
 // redraws, table detach), and the paired thin-client lifecycle.
 #include "NveQtWidgetInternal.hpp"
@@ -61,14 +61,17 @@ void test_qpainter_renderer() {
   }
   NVE_CHECK(img.pixelColor(5, 5).alpha() == 0);
 
-  // Corrupt payload: rejected before painting; painter state stays balanced.
+  // Corrupt payloads (truncated word stream & unaligned bytes): rejected before painting; painter state stays balanced.
   std::vector<uint8_t> bad = bytes;
-  bad.pop_back();
+  bad.resize(bad.size() - 4u);
+  std::vector<uint8_t> unaligned = bytes;
+  unaligned.pop_back();
   img.fill(Qt::white);
   {
     QPainter p(&img);
     p.save();
     NVE_CHECK(paint_draw_list(p, QRectF(0, 0, 40, 20), bad).error == DrawListError::Truncated);
+    NVE_CHECK(paint_draw_list(p, QRectF(0, 0, 40, 20), unaligned).error == DrawListError::Unaligned);
     p.restore();
     // An unbalanced clip stack is unwound: drawing afterwards is unclipped.
     DrawListEncoder unbalanced;
@@ -90,6 +93,7 @@ void test_qpainter_renderer() {
   NVE_CHECK(hi.width() == 80 && hi.height() == 40 && hi.devicePixelRatio() == 2.0);
   NVE_CHECK(hi.pixelColor(10, 10) == QColor(255, 0, 0) && hi.pixelColor(70, 10) == QColor(0, 255, 0));
   NVE_CHECK(rasterize_draw_list(bad, QSizeF(40, 20), 1.0).isNull());
+  NVE_CHECK(rasterize_draw_list(unaligned, QSizeF(40, 20), 1.0).isNull());
   NVE_CHECK(rasterize_draw_list(bytes, QSizeF(0, 20), 1.0).isNull());
   NVE_CHECK(rasterize_draw_list(bytes, QSizeF(std::nan(""), 20), 1.0).isNull());
 }
@@ -97,7 +101,12 @@ void test_qpainter_renderer() {
 std::vector<uint8_t> sparkline(float y) {
   const DrawPoint pts[] = {{0.0f, y}, {10.0f, 2.0f}, {20.0f, y}};
   DrawListEncoder e;
-  e.clear(DrawColorRgba::rgb(250, 250, 250)).stroke_polyline(pts, 1.5f, DrawColorRgba::rgb(37, 99, 235));
+  // Flat `u32`-word draw list (naturally 4-byte aligned for NVE2 DefineResources).
+  e.clear(DrawColorRgba::rgb(250, 250, 250))
+      .clip_rect(0.0f, 0.0f, 120.0f, 40.0f)
+      .stroke_polyline(pts, 1.5f, DrawColorRgba::rgb(37, 99, 235))
+      .restore_clip()
+      .fill_rect(0.0f, 0.0f, 2.0f, 2.0f, DrawColorRgba::rgb(37, 99, 235));
   return e.finish();
 }
 
@@ -146,7 +155,7 @@ void test_canvas_nodes() {
   NVE_CHECK(widget.nativeWidgetForNodeId(kCanvas) == node);
   // A corrupt draw list is kept but paints nothing (and does not crash the paint).
   std::vector<uint8_t> corrupt = second;
-  corrupt.resize(corrupt.size() - 3u);
+  corrupt.resize(corrupt.size() - 4u);  // truncate the last word while keeping 4-byte wire alignment
   w.define_resource(7u, kDrawListKind, corrupt);
   w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_TABLE_CANVAS_DRAW_LIST, 7u);
   w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_TABLE_CANVAS_GENERATION, 3u);

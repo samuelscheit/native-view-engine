@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 
 pub use nve_abi::SERVICE_CLIPBOARD;
 use nve_host_services::{
-    pack_typed, resolve_typed, BinReader, BinWriter, HostServiceHandler, HostServiceProvider,
-    ServiceError,
+    pack_typed, resolve_typed, ByteReader, ByteWriter, HostServiceHandler, HostServiceProvider,
+    ServiceError, MAX_PAYLOAD_BYTES,
 };
 
 pub use native::NativeClipboard;
@@ -32,15 +32,15 @@ pub trait ClipboardBackend: Send + Sync {
 
 /// Encodes a `write_text` request payload (`u32 len + UTF-8`) for cross-language FFI.
 pub fn encode_write_text_request(text: &str) -> Result<Vec<u8>, ServiceError> {
-    let mut w = BinWriter::with_capacity(4 + text.len());
+    let mut w = ByteWriter::with_capacity(4 + text.len());
     w.write_str(text)?;
     Ok(w.into_bytes())
 }
 
 /// Decodes a `write_text` request payload.
 pub fn decode_write_text_request(bytes: &[u8]) -> Result<String, ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let text = r.read_string()?;
+    let mut r = ByteReader::new(bytes);
+    let text = r.read_string(MAX_PAYLOAD_BYTES)?;
     r.finish()?;
     Ok(text)
 }
@@ -48,15 +48,15 @@ pub fn decode_write_text_request(bytes: &[u8]) -> Result<String, ServiceError> {
 /// Encodes a `read_text` response (`Option<String>`) for cross-language FFI.
 pub fn encode_read_text_response(text: Option<&str>) -> Result<Vec<u8>, ServiceError> {
     let cap = text.map_or(1, |s| 5 + s.len());
-    let mut w = BinWriter::with_capacity(cap);
-    w.write_opt_str(text)?;
+    let mut w = ByteWriter::with_capacity(cap);
+    w.write_opt(text, ByteWriter::write_str)?;
     Ok(w.into_bytes())
 }
 
 /// Decodes a `read_text` response.
 pub fn decode_read_text_response(bytes: &[u8]) -> Result<Option<String>, ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let text = r.read_opt_string()?;
+    let mut r = ByteReader::new(bytes);
+    let text = r.read_opt(|r| r.read_string(MAX_PAYLOAD_BYTES))?;
     r.finish()?;
     Ok(text)
 }
@@ -68,7 +68,7 @@ pub fn encode_has_text_response(has_text: bool) -> Vec<u8> {
 
 /// Decodes a `has_text` boolean response.
 pub fn decode_has_text_response(bytes: &[u8]) -> Result<bool, ServiceError> {
-    let mut r = BinReader::new(bytes);
+    let mut r = ByteReader::new(bytes);
     let val = r.read_bool()?;
     r.finish()?;
     Ok(val)

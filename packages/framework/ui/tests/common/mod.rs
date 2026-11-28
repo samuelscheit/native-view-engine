@@ -4,25 +4,23 @@
 use std::collections::HashMap;
 
 use nve_abi::{
-    pack_key_modifiers, ColorRgba, EdgeInsets, EventPayload, NativeEvent, NativeEventKind,
-    NodeId as AbiNodeId,
+    ColorRgba, EdgeInsets, EventBatchBuf, EventFlags, FrameId, NodeId, SurfaceId, TimestampUs,
 };
 use nve_backend_headless::HeadlessBackend;
-use nve_components::tables::{
+use nve_tables::tables::{
     Accessibility, AriaAutoComplete, AriaLive, AriaOrientation, AriaRelations, AriaTriState,
     BoxShadows, DebugId, Interaction, Layout, TextContent, TextInput, Visual,
 };
 use nve_dioxus::elements::backend::{StoreBackend, Viewport};
 use nve_dioxus::prelude::Element;
 use nve_dioxus::DioxusSurface;
-use nve_store::NodeId;
 use nve_web_html::{DataAttrList, HtmlDataAttrs, HtmlSemantics};
 
 pub struct UiHarness {
     pub surface: DioxusSurface,
     pub backend: HeadlessBackend,
-    num_attrs: HashMap<(AbiNodeId, &'static str), String>,
-    frame_id: u64,
+    num_attrs: HashMap<(NodeId, &'static str), String>,
+    frame_id: FrameId,
     timestamp_us: u64,
 }
 
@@ -31,7 +29,7 @@ impl UiHarness {
     pub fn new(root: fn() -> Element) -> Self {
         let mut backend = HeadlessBackend::new();
         backend.set_viewport(
-            1,
+            SurfaceId::ROOT,
             Viewport {
                 width: 800.0,
                 height: 600.0,
@@ -39,10 +37,10 @@ impl UiHarness {
             },
         );
         let mut h = Self {
-            surface: DioxusSurface::new(1, root),
+            surface: DioxusSurface::new(SurfaceId::ROOT, root),
             backend,
             num_attrs: HashMap::new(),
-            frame_id: 0,
+            frame_id: FrameId::ZERO,
             timestamp_us: 0,
         };
         h.render();
@@ -50,7 +48,7 @@ impl UiHarness {
     }
 
     pub fn render(&mut self) {
-        self.frame_id += 1;
+        self.frame_id = self.frame_id.next();
         self.surface
             .commit_to(self.frame_id, &mut self.backend)
             .expect("headless commit_to succeeded");
@@ -64,31 +62,33 @@ impl UiHarness {
         while let Some(id) = stack.pop() {
             if id != NodeId::ROOT {
                 if let Some(a) = store.try_row::<Accessibility>(id) {
-                    self.num_attrs
-                        .insert((id.raw(), "ariaValueNow"), format_num(a.value_now()));
-                    self.num_attrs
-                        .insert((id.raw(), "ariaValueMin"), format_num(a.value_min()));
-                    self.num_attrs
-                        .insert((id.raw(), "ariaValueMax"), format_num(a.value_max()));
+                    if let Some(v) = a.value_now() {
+                        self.num_attrs.insert((id, "ariaValueNow"), format_num(v));
+                    }
+                    if let Some(v) = a.value_min() {
+                        self.num_attrs.insert((id, "ariaValueMin"), format_num(v));
+                    }
+                    if let Some(v) = a.value_max() {
+                        self.num_attrs.insert((id, "ariaValueMax"), format_num(v));
+                    }
                 }
                 if let Some(i) = store.try_row::<Interaction>(id)
-                    && i.tab_index_set()
+                    && let Some(tab) = i.tab_index()
                 {
-                    self.num_attrs
-                        .insert((id.raw(), "tabIndex"), i.tab_index().to_string());
+                    self.num_attrs.insert((id, "tabIndex"), tab.to_string());
                 }
             }
             stack.extend_from_slice(store.children(id));
         }
     }
 
-    pub fn find(&self, tid: &str) -> AbiNodeId {
+    pub fn find(&self, tid: &str) -> NodeId {
         let found = self.maybe_find(tid);
         assert!(found.is_some(), "expected node with testID='{tid}'");
         found.expect("checked above")
     }
 
-    pub fn maybe_find(&self, tid: &str) -> Option<AbiNodeId> {
+    pub fn maybe_find(&self, tid: &str) -> Option<NodeId> {
         let store = self.surface.store();
         let mut stack = vec![NodeId::ROOT];
         while let Some(id) = stack.pop() {
@@ -96,7 +96,7 @@ impl UiHarness {
                 && let Some(dbg) = store.try_row::<DebugId>(id)
                 && dbg.test_id() == tid
             {
-                return Some(id.raw());
+                return Some(id);
             }
             stack.extend_from_slice(store.children(id));
         }
@@ -107,69 +107,64 @@ impl UiHarness {
         self.surface.store().stats().live_nodes
     }
 
-    pub fn children_of(&self, id: AbiNodeId) -> Vec<AbiNodeId> {
-        self.surface
-            .store()
-            .children(NodeId(id))
-            .iter()
-            .map(|n| n.raw())
-            .collect()
+    pub fn children_of(&self, id: NodeId) -> Vec<NodeId> {
+        self.surface.store().children(id).to_vec()
     }
 
-    pub fn bg(&self, id: AbiNodeId) -> ColorRgba {
+    pub fn bg(&self, id: NodeId) -> ColorRgba {
         self.surface
             .store()
-            .try_row::<Visual>(NodeId(id))
+            .try_row::<Visual>(id)
             .map_or(ColorRgba::TRANSPARENT, |v| ColorRgba::from_u32(v.background().0))
     }
 
-    pub fn border_width(&self, id: AbiNodeId) -> f32 {
+    pub fn border_width(&self, id: NodeId) -> f32 {
         self.surface
             .store()
-            .try_row::<Visual>(NodeId(id))
+            .try_row::<Visual>(id)
             .map_or(0.0, |v| v.border_width())
     }
 
-    pub fn border_color(&self, id: AbiNodeId) -> ColorRgba {
+    pub fn border_color(&self, id: NodeId) -> ColorRgba {
         self.surface
             .store()
-            .try_row::<Visual>(NodeId(id))
+            .try_row::<Visual>(id)
             .map_or(ColorRgba::TRANSPARENT, |v| {
                 ColorRgba::from_u32(v.border_color().0)
             })
     }
 
-    pub fn border_radius(&self, id: AbiNodeId) -> f32 {
+    pub fn border_radius(&self, id: NodeId) -> f32 {
         self.surface
             .store()
-            .try_row::<Visual>(NodeId(id))
+            .try_row::<Visual>(id)
             .map_or(0.0, |v| v.border_radius())
     }
 
-    pub fn opacity(&self, id: AbiNodeId) -> f32 {
+    pub fn opacity(&self, id: NodeId) -> f32 {
         self.surface
             .store()
-            .try_row::<Visual>(NodeId(id))
+            .try_row::<Visual>(id)
             .map_or(1.0, |v| v.opacity())
     }
 
-    pub fn has_box_shadow(&self, id: AbiNodeId) -> bool {
+    pub fn has_box_shadow(&self, id: NodeId) -> bool {
         let store = self.surface.store();
         store
-            .try_row::<Visual>(NodeId(id))
+            .try_row::<Visual>(id)
             .and_then(|v| {
                 let r = v.box_shadows();
                 (!r.is_none())
-                    .then(|| store.resource::<BoxShadows>(r).map(|b| !b.0.is_empty()))
+                    .then(|| store.resource::<BoxShadows>(r).map(|b| !b.is_empty()))
                     .flatten()
             })
             .unwrap_or(false)
     }
 
-    pub fn padding(&self, id: AbiNodeId) -> EdgeInsets {
+    pub fn padding(&self, id: NodeId) -> EdgeInsets {
         self.surface
             .store()
-            .try_row::<Layout>(NodeId(id))
+            .try_row::<Layout>(id)
             .map_or(EdgeInsets::default(), |l| EdgeInsets {
                 top: l.padding_top().value(),
                 right: l.padding_right().value(),
@@ -179,9 +174,9 @@ impl UiHarness {
     }
 
     /// Reads typed semantic/ARIA/data attributes directly from `NodeStore` word tables.
-    pub fn raw_str(&self, id: AbiNodeId, key: &str) -> Option<&str> {
+    pub fn raw_str(&self, id: NodeId, key: &str) -> Option<&str> {
         let store = self.surface.store();
-        let nid = NodeId(id);
+        let nid = id;
         if let Some(data_key) = key.strip_prefix("data-") {
             let res = store.try_row::<HtmlDataAttrs>(nid)?.entries();
             if res.is_none() {
@@ -189,10 +184,9 @@ impl UiHarness {
             }
             let list = store.resource::<DataAttrList>(res)?;
             return list
-                .0
                 .iter()
-                .find(|(k, _)| k == data_key || k == key)
-                .map(|(_, v)| v.as_str());
+                .find(|(k, _)| *k == data_key || *k == key)
+                .map(|(_, v)| v);
         }
         match key {
             "testID" => store
@@ -203,10 +197,10 @@ impl UiHarness {
                 .try_row::<DebugId>(nid)
                 .map(|d| d.id())
                 .filter(|s| !s.is_empty()),
-            "accessibilityRole" => {
-                let role = store.try_row::<Accessibility>(nid)?.role().as_aria_str();
-                (!role.is_empty()).then_some(role)
-            }
+            "accessibilityRole" => store
+                .try_row::<Accessibility>(nid)?
+                .role()
+                .map(|r| r.as_aria_str()),
             "accessibilityLabel" => store
                 .try_row::<Accessibility>(nid)
                 .map(|a| a.label())
@@ -231,20 +225,20 @@ impl UiHarness {
                 Some(if i.disabled() { "true" } else { "false" })
             }
             "ariaLive" => match store.try_row::<Accessibility>(nid)?.live() {
-                AriaLive::Polite => Some("polite"),
-                AriaLive::Assertive => Some("assertive"),
-                AriaLive::Off | AriaLive::Unset => None,
+                Some(AriaLive::Polite) => Some("polite"),
+                Some(AriaLive::Assertive) => Some("assertive"),
+                Some(AriaLive::Off) | None => None,
             },
             "ariaOrientation" => match store.try_row::<Accessibility>(nid)?.orientation() {
-                AriaOrientation::Horizontal => Some("horizontal"),
-                AriaOrientation::Vertical => Some("vertical"),
-                AriaOrientation::Unset => None,
+                Some(AriaOrientation::Horizontal) => Some("horizontal"),
+                Some(AriaOrientation::Vertical) => Some("vertical"),
+                None => None,
             },
             "ariaAutoComplete" => match store.try_row::<Accessibility>(nid)?.autocomplete() {
-                AriaAutoComplete::Inline => Some("inline"),
-                AriaAutoComplete::List => Some("list"),
-                AriaAutoComplete::None => Some("none"),
-                AriaAutoComplete::Unset => None,
+                Some(AriaAutoComplete::Inline) => Some("inline"),
+                Some(AriaAutoComplete::List) => Some("list"),
+                Some(AriaAutoComplete::None) => Some("none"),
+                None => None,
             },
             "ariaControls" | "ariaLabelledBy" | "ariaDescribedBy" | "ariaActiveDescendant" => {
                 let res = store.try_row::<Accessibility>(nid)?.relations();
@@ -253,10 +247,10 @@ impl UiHarness {
                 }
                 let rel = store.resource::<AriaRelations>(res)?;
                 let val = match key {
-                    "ariaControls" => rel.controls.as_str(),
-                    "ariaLabelledBy" => rel.labelled_by.as_str(),
-                    "ariaDescribedBy" => rel.described_by.as_str(),
-                    _ => rel.active_descendant.as_str(),
+                    "ariaControls" => rel.controls(),
+                    "ariaLabelledBy" => rel.labelled_by(),
+                    "ariaDescribedBy" => rel.described_by(),
+                    _ => rel.active_descendant(),
                 };
                 (!val.is_empty()).then_some(val)
             }
@@ -281,9 +275,9 @@ impl UiHarness {
         }
     }
 
-    pub fn raw_bool(&self, id: AbiNodeId, key: &str) -> Option<bool> {
+    pub fn raw_bool(&self, id: NodeId, key: &str) -> Option<bool> {
         let store = self.surface.store();
-        let nid = NodeId(id);
+        let nid = id;
         match key {
             "disabled" => store.try_row::<Interaction>(nid).map(|i| i.disabled()),
             "secureTextEntry" => store.try_row::<TextInput>(nid).map(|ti| ti.secure()),
@@ -297,7 +291,7 @@ impl UiHarness {
 
     pub fn text_of(&self, tid: &str) -> String {
         let id = self.find(tid);
-        self.collect_text(NodeId(id))
+        self.collect_text(id)
     }
 
     fn collect_text(&self, id: NodeId) -> String {
@@ -319,76 +313,55 @@ impl UiHarness {
 
     pub fn press(&mut self, tid: &str) {
         let id = self.find(tid);
-        let ts = self.next_ts();
-        assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 4.0, y: 4.0 },
-        }]));
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(SurfaceId::ROOT, id, ts, 4.0, 4.0);
+        assert!(self.surface.dispatch_events(batch.as_validated()));
         self.render();
     }
 
     pub fn keydown(&mut self, tid: &str, key: &str, shift: bool) {
         let id = self.find(tid);
-        let ts = self.next_ts();
-        assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::KeyDown,
-            payload: EventPayload::Key {
-                key: key.to_owned(),
-                code: String::new(),
-                key_code: 0,
-                modifiers: pack_key_modifiers(false, false, shift, false, false),
-                is_composing: false,
-            },
-        }]));
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_key_down(
+            SurfaceId::ROOT,
+            id,
+            ts,
+            key,
+            "",
+            EventFlags::from_modifiers(false, false, shift, false, false),
+            0,
+        );
+        assert!(self.surface.dispatch_events(batch.as_validated()));
         self.render();
     }
 
     /// Dispatches a host `Custom { name }` event (e.g. a bridged native `<dialog>` `close`).
     pub fn custom(&mut self, tid: &str, name: &str) {
         let id = self.find(tid);
-        let ts = self.next_ts();
-        assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::Custom,
-            payload: EventPayload::Custom {
-                name: name.to_owned(),
-                data: Vec::new(),
-            },
-        }]));
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_custom(SurfaceId::ROOT, id, ts, name, &[]);
+        assert!(self.surface.dispatch_events(batch.as_validated()));
         self.render();
     }
 
     pub fn focus(&mut self, tid: &str) {
         let id = self.find(tid);
-        let ts = self.next_ts();
-        assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::Focus,
-            payload: EventPayload::Empty,
-        }]));
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_focus(SurfaceId::ROOT, id, ts);
+        assert!(self.surface.dispatch_events(batch.as_validated()));
         self.render();
     }
 
     pub fn blur(&mut self, tid: &str) {
         let id = self.find(tid);
-        let ts = self.next_ts();
-        assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::Blur,
-            payload: EventPayload::Empty,
-        }]));
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_blur(SurfaceId::ROOT, id, ts);
+        assert!(self.surface.dispatch_events(batch.as_validated()));
         self.render();
     }
 
@@ -398,55 +371,38 @@ impl UiHarness {
 
     pub fn change_text(&mut self, tid: &str, value: &str) {
         let id = self.find(tid);
-        let ts = self.next_ts();
-        assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::TextChange,
-            payload: EventPayload::Text(value.to_owned()),
-        }]));
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_text_change(SurfaceId::ROOT, id, ts, value);
+        assert!(self.surface.dispatch_events(batch.as_validated()));
         self.render();
     }
 
     pub fn submit(&mut self, tid: &str, value: &str) {
         let id = self.find(tid);
-        let ts = self.next_ts();
-        assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::Submit,
-            payload: EventPayload::Text(value.to_owned()),
-        }]));
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_submit(SurfaceId::ROOT, id, ts, value);
+        assert!(self.surface.dispatch_events(batch.as_validated()));
         self.render();
     }
 
     pub fn scroll(&mut self, tid: &str, y: f32) {
         let id = self.find(tid);
-        let ts = self.next_ts();
-        assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::Scroll,
-            payload: EventPayload::Scroll {
-                x: 0.0,
-                y,
-                content_width: 800.0,
-                content_height: y + 600.0,
-            },
-        }]));
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_scroll(SurfaceId::ROOT, id, ts, 0.0, y, 800.0, y + 600.0);
+        assert!(self.surface.dispatch_events(batch.as_validated()));
         self.render();
     }
 }
 
-fn tri_str(v: AriaTriState) -> Option<&'static str> {
+fn tri_str(v: Option<AriaTriState>) -> Option<&'static str> {
     match v {
-        AriaTriState::True => Some("true"),
-        AriaTriState::False => Some("false"),
-        AriaTriState::Mixed => Some("mixed"),
-        AriaTriState::Unset => None,
+        Some(AriaTriState::True) => Some("true"),
+        Some(AriaTriState::False) => Some("false"),
+        Some(AriaTriState::Mixed) => Some("mixed"),
+        None => None,
     }
 }
 

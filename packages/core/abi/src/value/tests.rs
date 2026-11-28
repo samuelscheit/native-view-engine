@@ -1,6 +1,9 @@
 use std::mem::size_of;
 
-use crate::{DecodeError, NveBufferSlice};
+use crate::{
+    ByteLen, DecodeError, EventBatchBuf, NodeId, NveBufferSlice, NveEventBatch, PropFieldId,
+    SurfaceId, TimestampUs, ValidatedEvents,
+};
 
 use super::*;
 
@@ -9,7 +12,8 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
     let valid_u8 = [1u8, 2, 3, 4];
     let valid_val = NveValue::i64(42);
     let valid_entry = NveMapEntry::new("ok", NveValue::bool(true));
-    let valid_ev = NveDirectEvent::press(1, 2, 3, 4.0, 5.0);
+    let mut valid_buf = EventBatchBuf::new();
+    valid_buf.push_press(SurfaceId::ROOT, NodeId::new(2, 0), TimestampUs(3), 4.0, 5.0);
 
     // SAFETY: Adversarial boundary test — every FFI view method validates null, alignment, and
     // `isize::MAX` overflow before constructing any Rust slice, and valid stack buffers outlive all refs.
@@ -23,7 +27,7 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
             len: 4,
         };
         assert_eq!(null_str.try_as_bytes(), None);
-        assert_eq!(null_str.as_bytes(), &[][..]);
+        assert!(null_str.as_bytes().is_empty());
         assert_eq!(null_str.as_str(), Err(DecodeError::Truncated));
 
         let huge_str = NveStrSlice {
@@ -31,7 +35,7 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
             len: usize::MAX,
         };
         assert_eq!(huge_str.try_as_bytes(), None);
-        assert_eq!(huge_str.as_bytes(), &[][..]);
+        assert!(huge_str.as_bytes().is_empty());
         assert_eq!(huge_str.as_str(), Err(DecodeError::Truncated));
 
         let just_over_isize_str = NveStrSlice {
@@ -171,42 +175,26 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
         assert!(map_ref.get("").is_none());
         assert_eq!(map_ref.iter().count(), 0);
 
-        // 5. NveEventBatch / NveEventBatchRef: null+len>0 and misaligned (0x1) rejected cleanly.
+        // 5. NveEventBatch / ValidatedEvents: null+count>0 rejected cleanly.
         assert_eq!(
-            NveEventBatch::EMPTY
-                .try_as_slice()
-                .map(<[NveDirectEvent]>::len),
-            Some(0)
+            ValidatedEvents::try_from_raw(NveEventBatch::EMPTY)
+                .map(|b| b.len()),
+            Ok(0)
         );
         let null_batch = NveEventBatch {
-            ptr: std::ptr::null(),
-            len: 2,
-            _pad: 0,
+            events: std::ptr::null(),
+            bytes: std::ptr::null(),
+            event_count: 2,
+            bytes_len: ByteLen::ZERO,
         };
-        assert!(null_batch.try_as_slice().is_none());
-        assert!(null_batch.as_slice().is_empty());
-        assert!(NveEventBatchRef::try_from_raw(null_batch).is_none());
-        assert!(NveEventBatchRef::from_raw(null_batch).is_empty());
+        assert!(ValidatedEvents::try_from_raw(null_batch).is_err());
+        assert!(ValidatedEvents::from_raw(null_batch).is_empty());
 
-        let misaligned_batch = NveEventBatch {
-            ptr: std::ptr::without_provenance(1),
-            len: 1,
-            _pad: 0,
-        };
-        assert!(misaligned_batch.try_as_slice().is_none());
-        assert!(misaligned_batch.as_slice().is_empty());
-        assert!(NveEventBatchRef::try_from_raw(misaligned_batch).is_none());
-        assert!(NveEventBatchRef::from_raw(misaligned_batch).is_empty());
-
-        // Sanity: valid aligned event batch still works zero-copy.
-        let valid_batch = NveEventBatch {
-            ptr: &valid_ev as *const NveDirectEvent,
-            len: 1,
-            _pad: 0,
-        };
-        let batch_ref = NveEventBatchRef::try_from_raw(valid_batch).expect("valid batch");
+        // Sanity: valid aligned event batch works zero-copy.
+        let batch_ref =
+            ValidatedEvents::try_from_raw(valid_buf.as_raw_batch()).expect("valid batch");
         assert_eq!(batch_ref.len(), 1);
-        assert_eq!(batch_ref.get(0).unwrap().node_id(), 2);
+        assert_eq!(batch_ref.get(0).unwrap().node(), NodeId::new(2, 0));
     }
 }
 
@@ -216,10 +204,10 @@ fn prop_slice_and_command_slice_zero_copy_roundtrip_and_guards() {
     let label = "hello-zero-copy";
     let payload = [0xDEu8, 0xAD, 0xBE, 0xEF];
     let prop_entries = [
-        NvePropEntry::new(1, NveValue::bool(true)),
-        NvePropEntry::new(7, NveValue::i64(-12345)),
-        NvePropEntry::new(42, NveValue::from_str(label)),
-        NvePropEntry::new(99, NveValue::from_bytes(&payload)),
+        NvePropEntry::new(PropFieldId(1), NveValue::bool(true)),
+        NvePropEntry::new(PropFieldId(7), NveValue::i64(-12345)),
+        NvePropEntry::new(PropFieldId(42), NveValue::from_str(label)),
+        NvePropEntry::new(PropFieldId(99), NveValue::from_bytes(&payload)),
     ];
     let raw_props = NvePropSlice::from_slice(&prop_entries);
     assert_eq!(raw_props.len, 4);
@@ -230,24 +218,44 @@ fn prop_slice_and_command_slice_zero_copy_roundtrip_and_guards() {
         let props_ref = NvePropSliceRef::try_from_raw(raw_props).expect("valid prop slice");
         assert_eq!(props_ref.len(), 4);
         assert!(!props_ref.is_empty());
-        assert_eq!(props_ref.get(1).and_then(|v| v.as_bool()), Some(true));
-        assert_eq!(props_ref.get(7).and_then(|v| v.as_i64()), Some(-12345));
-        let borrowed_str = props_ref.get(42).and_then(|v| v.as_str()).unwrap();
+        assert_eq!(
+            props_ref.get(PropFieldId(1)).and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            props_ref.get(PropFieldId(7)).and_then(|v| v.as_i64()),
+            Some(-12345)
+        );
+        let borrowed_str = props_ref
+            .get(PropFieldId(42))
+            .and_then(|v| v.as_str())
+            .unwrap();
         assert_eq!(borrowed_str, label);
         assert_eq!(borrowed_str.as_ptr(), label.as_ptr(), "must be zero-copy");
-        let borrowed_bytes = props_ref.get(99).and_then(|v| v.as_bytes()).unwrap();
+        let borrowed_bytes = props_ref
+            .get(PropFieldId(99))
+            .and_then(|v| v.as_bytes())
+            .unwrap();
         assert_eq!(borrowed_bytes, &payload);
         assert_eq!(borrowed_bytes.as_ptr(), payload.as_ptr(), "must be zero-copy");
-        assert!(props_ref.get(404).is_none());
-        assert_eq!(props_ref.entry(2).map(|(id, _)| id), Some(42));
+        assert!(props_ref.get(PropFieldId(404)).is_none());
+        assert_eq!(props_ref.entry(2).map(|(id, _)| id), Some(PropFieldId(42)));
         assert!(props_ref.entry(4).is_none());
-        let ids: Vec<u16> = props_ref.iter().map(|(id, _)| id).collect();
-        assert_eq!(ids, vec![1, 7, 42, 99]);
+        let ids: Vec<PropFieldId> = props_ref.iter().map(|(id, _)| id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                PropFieldId(1),
+                PropFieldId(7),
+                PropFieldId(42),
+                PropFieldId(99)
+            ]
+        );
 
         // Empty / null / misaligned guards for NvePropSlice.
         let empty_props = NvePropSliceRef::try_from_raw(NvePropSlice::EMPTY).expect("empty");
         assert!(empty_props.is_empty());
-        assert!(empty_props.get(1).is_none());
+        assert!(empty_props.get(PropFieldId(1)).is_none());
 
         let null_non_empty = NvePropSlice {
             entries: std::ptr::null(),

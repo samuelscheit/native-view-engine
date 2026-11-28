@@ -1,16 +1,16 @@
 //! Data types and inline small-buffer collections for cross-framework gesture arbitration.
 
 use nve_abi::hash::HashMap;
-use nve_abi::SurfaceId;
+use nve_abi::{SurfaceId, TimestampUs};
 use serde::{Deserialize, Serialize};
 
-use crate::surface::FrameworkKind;
+use crate::surface::{FrameworkKind, SurfaceOrchestrator};
 
-pub(super) const INLINE_CHAIN_CAP: usize = 16;
+pub(super) const INLINE_CHAIN_CAP: usize = SurfaceOrchestrator::INLINE_ANCESTOR_CAP;
 
 /// Zero-dependency inline small-buffer surface ancestor chain.
-/// Stores up to 16 nested surfaces inline with zero heap allocation, spilling to `Vec` only on
-/// unusually deep trees (`len > 16`).
+/// Stores up to `INLINE_CHAIN_CAP` (32) nested surfaces inline with zero heap allocation,
+/// spilling to `Vec` only on unusually deep trees (`len > 32`).
 #[derive(Debug, Clone)]
 pub(super) enum SurfaceChain {
     Inline {
@@ -24,7 +24,7 @@ impl SurfaceChain {
     #[inline]
     pub(super) fn from_slice(slice: &[SurfaceId]) -> Self {
         if slice.len() <= INLINE_CHAIN_CAP {
-            let mut buf = [0u32; INLINE_CHAIN_CAP];
+            let mut buf = [SurfaceId::NULL; INLINE_CHAIN_CAP];
             buf[..slice.len()].copy_from_slice(slice);
             Self::Inline {
                 len: slice.len() as u8,
@@ -70,31 +70,31 @@ impl SurfaceChain {
     }
 }
 
-/// Fast integer-keyed map optimized for typical small counts (<= `N` entries stored inline with
+/// Fast key-indexed map optimized for typical small counts (<= `N` entries stored inline with
 /// zero heap allocation and cache-local linear key scan) with seamless spill to an Fx-hashed
 /// `HashMap` for larger tables.
 #[derive(Debug)]
-pub(super) enum FastU32Map<V, const N: usize> {
+pub(super) enum FastKeyMap<K, V, const N: usize> {
     Inline {
         len: u8,
-        keys: [u32; N],
+        keys: [K; N],
         vals: [Option<V>; N],
     },
-    Spill(HashMap<u32, V>),
+    Spill(HashMap<K, V>),
 }
 
-impl<V, const N: usize> Default for FastU32Map<V, N> {
+impl<K: Copy + Default, V, const N: usize> Default for FastKeyMap<K, V, N> {
     #[inline]
     fn default() -> Self {
         Self::Inline {
             len: 0,
-            keys: [0; N],
+            keys: [K::default(); N],
             vals: std::array::from_fn(|_| None),
         }
     }
 }
 
-impl<V, const N: usize> FastU32Map<V, N> {
+impl<K: Copy + Eq + std::hash::Hash, V, const N: usize> FastKeyMap<K, V, N> {
     #[inline(always)]
     pub(super) fn len(&self) -> usize {
         match self {
@@ -109,7 +109,7 @@ impl<V, const N: usize> FastU32Map<V, N> {
     }
 
     #[inline(always)]
-    pub(super) fn get(&self, key: u32) -> Option<&V> {
+    pub(super) fn get(&self, key: K) -> Option<&V> {
         match self {
             Self::Inline { len, keys, vals } => {
                 let n = usize::from(*len);
@@ -127,7 +127,7 @@ impl<V, const N: usize> FastU32Map<V, N> {
     }
 
     #[inline(always)]
-    pub(super) fn get_mut(&mut self, key: u32) -> Option<&mut V> {
+    pub(super) fn get_mut(&mut self, key: K) -> Option<&mut V> {
         match self {
             Self::Inline { len, keys, vals } => {
                 let n = usize::from(*len);
@@ -145,7 +145,7 @@ impl<V, const N: usize> FastU32Map<V, N> {
     }
 
     #[inline]
-    pub(super) fn insert(&mut self, key: u32, val: V) -> Option<V> {
+    pub(super) fn insert(&mut self, key: K, val: V) -> Option<V> {
         match self {
             Self::Inline { len, keys, vals } => {
                 let n = usize::from(*len);
@@ -178,7 +178,7 @@ impl<V, const N: usize> FastU32Map<V, N> {
     }
 
     #[inline]
-    pub(super) fn remove(&mut self, key: u32) -> Option<V> {
+    pub(super) fn remove(&mut self, key: K) -> Option<V> {
         match self {
             Self::Inline { len, keys, vals } => {
                 let n = usize::from(*len);
@@ -202,15 +202,15 @@ impl<V, const N: usize> FastU32Map<V, N> {
         }
     }
 
-    pub(super) fn retain<F: FnMut(u32, &mut V) -> bool>(&mut self, mut keep: F) {
+    pub(super) fn retain<F: FnMut(K, &mut V) -> bool>(&mut self, mut keep: F) {
         match self {
             Self::Inline { len, keys, vals } => {
                 let mut i = 0usize;
                 while i < usize::from(*len) {
-                    let should_keep = {
-                        let k = keys[i];
-                        let v = vals[i].as_mut().expect("occupied inline map slot");
-                        keep(k, v)
+                    let should_keep = if let Some(v) = vals[i].as_mut() {
+                        keep(keys[i], v)
+                    } else {
+                        false
                     };
                     if should_keep {
                         i += 1;
@@ -393,7 +393,7 @@ pub struct PointerSample {
     pub y: f32,
     pub delta_x: f32,
     pub delta_y: f32,
-    pub timestamp_us: u64,
+    pub timestamp_us: TimestampUs,
 }
 
 /// Why the arbitrator selected a disposition.

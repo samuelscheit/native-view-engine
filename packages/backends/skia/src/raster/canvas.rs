@@ -3,7 +3,7 @@
 //! Vector canvas (`Canvas`) and SVG (`Svg`) rasterization live in standalone leaf modules
 //! (`nve-canvas-skia`, `nve-svg-skia`) registered via `SkiaTableRegistry`.
 
-use nve_components::tables::ImageFit;
+use nve_tables::tables::ImageFit;
 use nve_engine::LayoutRect;
 
 use crate::image_cache::{compute_image_placement, ImageCache};

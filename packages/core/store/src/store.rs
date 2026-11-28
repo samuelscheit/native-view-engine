@@ -9,9 +9,10 @@ use nve_abi::table::{MAX_TABLE_SLOTS, TableDesc, Word};
 use crate::column::Column;
 use crate::id::{IndexVec, NodeId, NodeIndex, ResourceId, TableSet};
 pub(crate) use crate::node_ref::NodeRef;
-use crate::resource::{Resource, ResourceStore};
+use crate::resource::{FlatResource, ResourceStore};
 use crate::row::{DirtyList, RowRef};
 use crate::span_pool::{ChildSpan, SpanPool, StrArena, StrSpan};
+use crate::store_types::{RealizationOrder, StoreStats, TableStorage};
 use crate::table::{self, NveTable, OwnedTableDesc, TableMeta, TableSlot};
 use crate::wire::WireError;
 use crate::wire::budget::SessionBudget;
@@ -84,66 +85,6 @@ const _: () = {
     assert!(LIVE == nve_abi::NVE_NODE_ROW_FLAG_LIVE);
 };
 
-/// Ordered realization priority list: the first attached [`TableSlot`] in `slots` becomes the
-/// node's `primary_slot`; nodes with none of them get [`TableSlot::NONE`] (plain container).
-#[derive(Debug, Clone, Default)]
-pub struct RealizationOrder {
-    pub slots: Vec<TableSlot>,
-}
-
-impl RealizationOrder {
-    pub const fn new() -> Self {
-        Self { slots: Vec::new() }
-    }
-
-    /// Appends table `T` at the next (lower) realization priority.
-    pub fn with<T: NveTable>(mut self) -> Self {
-        self.slots.push(T::slot());
-        self
-    }
-
-    /// Appends an arbitrary [`TableSlot`] at the next (lower) realization priority.
-    pub fn with_slot(mut self, slot: TableSlot) -> Self {
-        self.slots.push(slot);
-        self
-    }
-
-    #[inline]
-    pub fn primary_slot(&self, tables: TableSet) -> TableSlot {
-        self.slots
-            .iter()
-            .copied()
-            .find(|&slot| tables.contains(slot))
-            .unwrap_or(TableSlot::NONE)
-    }
-}
-
-/// Memory and live-count snapshot of a [`NodeStore`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct StoreStats {
-    pub live_nodes: usize,
-    pub node_capacity: usize,
-    pub children_live: usize,
-    pub children_capacity: usize,
-    pub text_live: usize,
-    pub text_capacity: usize,
-    pub resources_live: usize,
-    pub table_count: usize,
-}
-
-/// One table's storage exactly as published in `NveTableView`.
-#[derive(Debug, Clone, Copy)]
-pub struct TableStorage<'a> {
-    /// `row_count * words` row words (dense: indexed by node index).
-    pub rows: &'a [Word],
-    /// Sparse: raw owner `NodeId` per row. Dense: empty (row = node index, at most `capacity()`).
-    pub owners: &'a [u32],
-    pub row_count: usize,
-    /// Sparse: page per `NVE_ROW_INDEX_PAGE_LEN` node indices (`NVE_ROW_INDEX_NO_PAGE` = none).
-    pub row_index_dir: &'a [u32],
-    /// Sparse: flattened pages of `row + 1` per node index (`0` = no row).
-    pub row_index_pages: &'a [u32],
-}
 
 /// The single owner of every node, table row, child list, string, and resource.
 pub struct NodeStore {
@@ -495,6 +436,11 @@ impl NodeStore {
         self.text.str(span)
     }
 
+    #[inline(always)]
+    pub(crate) fn text_arena(&self) -> &StrArena {
+        &self.text
+    }
+
     /// The contiguous UTF-8 text slab (published as `NveSceneView::text_slab`).
     #[inline]
     pub fn text_slab(&self) -> &[u8] {
@@ -513,8 +459,8 @@ impl NodeStore {
     }
 
     #[inline]
-    pub fn resource<R: Resource>(&self, id: ResourceId) -> Option<&R> {
-        self.resources.get(id)
+    pub fn resource<R: FlatResource>(&self, id: ResourceId) -> Option<R::View<'_>> {
+        self.resources.get::<R>(id)
     }
 
     /// Descriptor of a compiled/static table slot used in this store.
@@ -529,6 +475,27 @@ impl NodeStore {
     #[inline]
     pub(crate) fn table_meta(&self, slot: TableSlot) -> Option<&TableMeta> {
         self.columns[slot.0 as usize].as_ref().map(|c| &c.desc)
+    }
+
+    /// Word holding the `EventSet` listener bitmask for `slot`, or [`nve_abi::table::NO_VAL_WORD`]
+    /// when `slot` has no events or is not installed in this store.
+    #[inline]
+    pub fn events_word(&self, slot: TableSlot) -> u8 {
+        self.table_meta(slot)
+            .map_or(nve_abi::table::NO_VAL_WORD, TableMeta::events_word)
+    }
+
+    /// Raw 32-bit `EventSet` listener bitmask on live node `id` for `slot` (`0` if absent or no
+    /// events).
+    #[inline]
+    pub fn node_events_mask(&self, slot: TableSlot, id: NodeId) -> u32 {
+        let ew = self.events_word(slot);
+        if ew == nve_abi::table::NO_VAL_WORD {
+            return 0;
+        }
+        self.words(id, slot)
+            .and_then(|w| w.get(ew as usize).copied())
+            .unwrap_or(0)
     }
 
     /// Installs a session-scoped dynamic table column strictly in the dynamic slot partition

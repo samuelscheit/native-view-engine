@@ -24,7 +24,7 @@ mod enabled {
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
-    use nve_abi::{direct_event_to_native, encode_events, NveEventBatchRef, NveRuntimeMetrics};
+    use nve_abi::{EventBatchBuf, NveRuntimeMetrics, ValidatedEvents};
     use nve_wire::{
         parse_wire_uri, NveWireClientConfig, NveWireKind, NveWireTransportKind, NveWireUri,
         ReconnectConfig, ReconnectingWireClient, WireInboundItem, WireResyncState,
@@ -213,15 +213,13 @@ mod enabled {
             None
         }
 
-        pub(crate) fn send_events(&self, events: NveEventBatchRef<'_>) -> bool {
+        pub(crate) fn send_events(&self, events: ValidatedEvents<'_>) -> bool {
             if events.is_empty() || !self.client.is_connected() {
                 return false;
             }
-            let owned: Vec<_> = events.iter().filter_map(direct_event_to_native).collect();
-            if owned.is_empty() {
-                return false;
-            }
-            self.client.send_events(encode_events(&owned)).is_ok()
+            let mut batch = EventBatchBuf::with_capacity(events.len(), events.bytes().len());
+            batch.extend_from_validated(events);
+            self.client.send_events(batch.to_wire_bytes()).is_ok()
         }
 
         pub(crate) fn sync_metrics(&mut self, dst: &mut NveRuntimeMetrics) {
@@ -255,7 +253,7 @@ mod disabled {
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
-    use nve_abi::{NveEventBatchRef, NveRuntimeMetrics};
+    use nve_abi::{NveRuntimeMetrics, ValidatedEvents};
 
     use super::PairInboundEvent;
     use crate::builder::RuntimeError;
@@ -311,7 +309,7 @@ mod disabled {
             None
         }
 
-        pub(crate) fn send_events(&self, _events: NveEventBatchRef<'_>) -> bool {
+        pub(crate) fn send_events(&self, _events: ValidatedEvents<'_>) -> bool {
             false
         }
 

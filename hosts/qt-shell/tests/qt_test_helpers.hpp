@@ -61,10 +61,22 @@ inline void size_node(host::Nve2Writer& w, uint32_t id, float width, float heigh
   w.set_f32(id, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_FLEX_SHRINK, 0.0f);
 }
 
-inline void subscribe(host::Nve2Writer& w, uint32_t id, std::initializer_list<NveEventKind> kinds) {
+inline void subscribe(host::Nve2Writer& w, uint32_t id, std::initializer_list<NveInteractionEvent> kinds) {
   uint32_t mask = 0u;
-  for (const NveEventKind k : kinds) mask |= host::event_bit(k);
-  w.set(id, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_EVENT_MASK, mask);
+  for (const NveInteractionEvent k : kinds) mask |= host::event_set_bit(k);
+  w.set_events(id, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_EVENTS_WORD, mask);
+}
+
+inline void subscribe(host::Nve2Writer& w, uint32_t id, std::initializer_list<NveScrollEvent> kinds) {
+  uint32_t mask = 0u;
+  for (const NveScrollEvent k : kinds) mask |= host::event_set_bit(k);
+  w.set_events(id, NVE_TABLE_SCROLL_DESC, NVE_TABLE_SCROLL_EVENTS_WORD, mask);
+}
+
+inline void subscribe(host::Nve2Writer& w, uint32_t id, std::initializer_list<NveTextInputEvent> kinds) {
+  uint32_t mask = 0u;
+  for (const NveTextInputEvent k : kinds) mask |= host::event_set_bit(k);
+  w.set_events(id, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_EVENTS_WORD, mask);
 }
 
 /// A left click at widget-local `pos` (press + release, delivered synchronously).

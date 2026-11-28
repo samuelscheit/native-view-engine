@@ -20,7 +20,9 @@ final class GeneratedTest {
         for (NveModuleTables.Info t : NveModuleTables.all()) table(c, t.key, t.name, t.words, t.fields());
         c.eq(NveRuntimeAbi.STATUS_OK, 0, "NveRuntimeStatus values are STATUS_*");
         c.eq(NveRuntimeAbi.SIZEOF_NODE_ROW, 32, "NveNodeRow stride");
-        // ABI v4: 8 u32 header words (incl. the row-index lengths), then 5 pointers.
+        c.eq(NveAbi.SIZEOF_EVENT, 64, "NveEvent stride");
+        c.eq(NveAbi.EVENT_OFFSET_PAYLOAD, 32, "NveEvent.payload @32");
+        c.eq(NveAbi.EVENT_OFFSET_BYTES, 56, "NveEvent.bytes @56");
         c.eq(NveAbi.SIZEOF_TABLE_VIEW_64, 32 + 5 * 8, "NveTableView 64-bit size");
         c.eq(NveAbi.SIZEOF_TABLE_VIEW_32, 32 + 5 * 4, "NveTableView 32-bit size");
         c.eq(NveAbi.TABLE_VIEW_OFFSET_ROW_INDEX_DIR_LEN, 24, "NveTableView.row_index_dir_len @24");
@@ -34,8 +36,15 @@ final class GeneratedTest {
         final TableReader layout =
                 new TableReader().attach(NveTables.Layout.KEY, 0, NveTables.Layout.WORDS, 1, rows, null, null, 0, null, 0, null, 0);
         c.that(layout.f32(0, NveTables.Layout.FLEX_SHRINK) == 1.0f, "Layout.flex_shrink default is 1.0");
-        defaults[0] = 7;
-        c.eq(NveTables.Layout.defaults()[0], 2, "defaults() returns a fresh copy");
+        c.that(!layout.isPresent(0, NveTables.Layout.ASPECT_RATIO), "Layout.aspect_ratio default is absent");
+        c.eq(NveTables.Layout.EVENTS_WORD, 0, "Layout events word is 0");
+        defaults[NveTables.Layout.WIDTH.word] = 7;
+        c.eq(NveTables.Layout.defaults()[NveTables.Layout.WIDTH.word], 2, "defaults() returns a fresh copy");
+
+        c.that(NveTables.Typography.INHERITED && NveTables.Typography.COLOR.explicitBit == 0 && NveTables.Typography.COLOR.inherits,
+                "Typography is inherited with word-0 explicit bits");
+        c.eq(NveTables.Interaction.EVENTS_WORD, 0, "Interaction events word is 0");
+        c.eq(NveTables.Values.InteractionEventSet.PRESS, 1, "InteractionEventSet.PRESS");
 
         // A generated two-word STR spec reads its (offset, len) span.
         final FieldSpec label = NveTables.Accessibility.LABEL;
@@ -46,6 +55,7 @@ final class GeneratedTest {
                 .attach(NveTables.Accessibility.KEY, 0, NveTables.Accessibility.WORDS, 1, TableSceneTest.words(row), null, null, 0, null, 0, null, 0);
         c.eq(a11y.strOffset(0, label), 5, "Accessibility.label offset");
         c.eq(a11y.strLen(0, label), 7, "Accessibility.label len");
+        c.that(!a11y.isPresent(0, NveTables.Accessibility.ROLE), "Accessibility.role default absent");
     }
 
     private static void table(Check c, Key64 key, String name, int words, FieldSpec[] fields) {

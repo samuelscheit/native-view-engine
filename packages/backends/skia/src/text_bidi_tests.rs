@@ -1,6 +1,6 @@
 //! BiDi text shaping, grapheme-safe cursor hit-testing, and IME cursor rect tests over `NodeStore`.
 
-use nve_components::tables::{Layout, TextInput, Typography};
+use nve_tables::tables::{Layout, TextInput, Typography};
 use nve_engine::{StoreBackend, Viewport};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore};
 
@@ -12,7 +12,7 @@ fn text_input_bidi_caret_selection_and_ime_cursor_rect() {
     let mut changes = ChangeSet::default();
     let mut backend = SkiaBackend::new();
     backend.set_viewport(
-        1,
+        nve_abi::SurfaceId::ROOT,
         Viewport {
             width: 320.0,
             height: 120.0,
@@ -32,8 +32,8 @@ fn text_input_bidi_caret_selection_and_ime_cursor_rect() {
     tx.commit_into(&mut changes);
 
     backend.commit(&store, &changes).unwrap();
-    backend.set_focused_node(&store, Some(input.raw()));
-    assert_eq!(backend.focused_node(), Some(input.raw()));
+    backend.set_focused_node(&store, Some(input));
+    assert_eq!(backend.focused_node(), Some(input));
     assert!(backend.is_text_input(&store, input));
 
     let caret_start = backend.cursor_index_at_x(&store, input, 0.0).unwrap();

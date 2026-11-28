@@ -6,6 +6,7 @@
 
 use std::cell::RefCell;
 
+use nve_abi::SurfaceId;
 use nve_backend_web::WebBackend;
 use nve_dioxus::DioxusSurface;
 use nve_dioxus::prelude::*;
@@ -117,8 +118,8 @@ fn mount() -> Result<String, String> {
         scale_factor: 1.0,
     };
     let mut session = WebAppSession::new(
-        1,
-        DioxusSurface::new(1, ProbeDialogApp),
+        SurfaceId::ROOT,
+        DioxusSurface::new(SurfaceId::ROOT, ProbeDialogApp),
         crate::register_issues_web_systems,
         backend,
         viewport,

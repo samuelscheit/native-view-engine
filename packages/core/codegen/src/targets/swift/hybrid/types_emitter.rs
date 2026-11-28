@@ -288,7 +288,7 @@ pub(super) fn emit_swift_view(out: &mut CodeWriter, v: &HybridViewSpec, spec: &H
 pub(super) fn emit_swift_client(
     out: &mut CodeWriter,
     pascal: &str,
-    interface_id: u32,
+    interface_id: nve_abi::InterfaceId,
     schema_hash: u64,
     methods: &[HybridMethodSpec],
     view: Option<&HybridViewSpec>,

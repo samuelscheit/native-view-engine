@@ -6,22 +6,30 @@
 //! `NveMutationWriter` performs a single downcast to [`TableAttr`] and invokes
 //! `TableWriter::write_to(tx, node_id)` directly on the live `NodeStore` transaction.
 
+use std::any::Any;
+use std::marker::PhantomData;
 use std::rc::Rc;
 
 use dioxus_core::{AttributeValue, IntoAttributeValue};
-use nve_store::{NodeId, Transaction};
+use nve_store::{NodeId, NveTable, Transaction};
 
 /// Attribute wire name recognized by [`crate::NveMutationWriter`] for extensible [`TableAttr`]s.
 pub const NVE_TABLE_ATTR: &str = "nve_table";
 
 /// Trait implemented by capability crates and 3rd-party components to attach/update typed
 /// `NodeStore` word tables directly inside a Dioxus commit transaction.
-pub trait TableWriter: 'static {
+pub trait TableWriter: Any {
     /// Writes or updates one or more word tables on `node` inside `tx`.
     fn write_to(&self, tx: &mut Transaction<'_>, node: NodeId);
 
     /// Optional cleanup invoked when the attribute is removed (`AttributeValue::None`).
     fn clear_from(&self, _tx: &mut Transaction<'_>, _node: NodeId) {}
+
+    /// Whether `other` (same concrete writer type) would write identical state, letting Dioxus
+    /// skip rewrites across renders. Closure writers cannot know and answer `false`.
+    fn writes_same(&self, _other: &dyn TableWriter) -> bool {
+        false
+    }
 }
 
 /// Dioxus `IntoAttributeValue` payload carrying an arbitrary [`TableWriter`] into RSX.
@@ -67,6 +75,7 @@ impl PartialEq for TableAttr {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.writer, &other.writer)
+            || (self.same_writer_kind(other) && self.writer.writes_same(&*other.writer))
     }
 }
 
@@ -117,6 +126,47 @@ where
     fn clear_from(&self, tx: &mut Transaction<'_>, node: NodeId) {
         (self.clear)(tx, node);
     }
+}
+
+/// Value-keyed writer for one table `T`: equal values across renders skip the rewrite, and
+/// removing the attribute detaches `T`.
+struct ValueTableWriter<T, V> {
+    value: V,
+    write: fn(&mut Transaction<'_>, NodeId, &V),
+    table: PhantomData<fn() -> T>,
+}
+
+impl<T: NveTable, V: PartialEq + 'static> TableWriter for ValueTableWriter<T, V> {
+    #[inline]
+    fn write_to(&self, tx: &mut Transaction<'_>, node: NodeId) {
+        (self.write)(tx, node, &self.value);
+    }
+
+    #[inline]
+    fn clear_from(&self, tx: &mut Transaction<'_>, node: NodeId) {
+        tx.detach::<T>(node);
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "type-erased Dioxus attribute diff: one downcast per changed `nve_table` attribute, after the writer TypeIds matched (never per node)"
+    )]
+    fn writes_same(&self, other: &dyn TableWriter) -> bool {
+        (other as &dyn Any)
+            .downcast_ref::<Self>()
+            .is_some_and(|o| o.value == self.value && std::ptr::fn_addr_eq(o.write, self.write))
+    }
+}
+
+/// RSX-ready [`TableAttr`] writing `value` into table `T` via `write`. Unlike closure writers it
+/// is compared by value (no rewrite when unchanged) and detaches `T` when the attribute is
+/// removed, e.g. `nve_table: table_attr::<Motion, _>(specs, |tx, n, s| write_transitions(tx, n, s))`.
+#[inline]
+pub fn table_attr<T: NveTable, V: PartialEq + 'static>(
+    value: V,
+    write: fn(&mut Transaction<'_>, NodeId, &V),
+) -> TableAttr {
+    TableAttr::new(ValueTableWriter::<T, V> { value, write, table: PhantomData })
 }
 
 /// Wraps paired `(write, clear)` closures into an RSX-ready [`TableAttr`] that cleans up its

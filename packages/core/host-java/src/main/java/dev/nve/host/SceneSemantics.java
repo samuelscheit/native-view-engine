@@ -60,11 +60,12 @@ public final class SceneSemantics {
         return r >= 0 && t.interaction.bool(r, NveTables.Interaction.DISABLED);
     }
 
-    /** Subscribed to presses and not disabled. */
+    /** Subscribed to presses ({@code InteractionEventSet.PRESS}) and not disabled. */
     public static boolean pressable(SceneReader s, Tables t, int index) {
         final int r = s.rowOf(t.interaction, index);
         return r >= 0 && !t.interaction.bool(r, NveTables.Interaction.DISABLED)
-                && (t.interaction.u32(r, NveTables.Interaction.EVENT_MASK) & NveTables.Values.EventMask.PRESS) != 0;
+                && (t.interaction.events(r, NveTables.Interaction.EVENTS_WORD)
+                        & NveTables.Values.InteractionEventSet.PRESS) != 0;
     }
 
     /** {@code v} when finite, else {@code fallback} (hostile / corrupt rows never reach the UI as NaN). */
@@ -78,10 +79,14 @@ public final class SceneSemantics {
             Float.intBitsToFloat(NveTables.Typography.FONT_SIZE.extract(TYPO_DEFAULTS[NveTables.Typography.FONT_SIZE.word]));
     public static final int DEFAULT_FONT_WEIGHT =
             NveTables.Typography.FONT_WEIGHT.extract(TYPO_DEFAULTS[NveTables.Typography.FONT_WEIGHT.word]);
-    private static final int STYLE_FIELDS = NveTables.Values.TypographySet.COLOR | NveTables.Values.TypographySet.FONT_SIZE
-            | NveTables.Values.TypographySet.FONT_WEIGHT | NveTables.Values.TypographySet.FONT_STYLE | NveTables.Values.TypographySet.TEXT_ALIGN;
+    private static final int COLOR_BIT = NveTables.Typography.COLOR.explicitMask();
+    private static final int FONT_SIZE_BIT = NveTables.Typography.FONT_SIZE.explicitMask();
+    private static final int FONT_WEIGHT_BIT = NveTables.Typography.FONT_WEIGHT.explicitMask();
+    private static final int FONT_STYLE_BIT = NveTables.Typography.FONT_STYLE.explicitMask();
+    private static final int TEXT_ALIGN_BIT = NveTables.Typography.TEXT_ALIGN.explicitMask();
+    private static final int STYLE_FIELDS = COLOR_BIT | FONT_SIZE_BIT | FONT_WEIGHT_BIT | FONT_STYLE_BIT | TEXT_ALIGN_BIT;
 
-    /** Inherited text style: explicit fields (by {@code SET_*} bit) win, ancestors fill the rest. */
+    /** Inherited text style: explicit fields (hidden word 0 mask) win, ancestors fill the rest. */
     public static final class TextStyle {
         public int color;
         public float fontSize;
@@ -104,17 +109,17 @@ public final class SceneSemantics {
             for (int i = index, steps = 0; ty != null && i > 0 && pending != 0 && steps < s.nodeCapacity(); steps++) {
                 final int r = s.rowOf(ty, i);
                 if (r >= 0) {
-                    final int set = ty.u32(r, NveTables.Typography.SET) & pending;
-                    if ((set & NveTables.Values.TypographySet.COLOR) != 0) color = ty.color(r, NveTables.Typography.COLOR);
-                    if ((set & NveTables.Values.TypographySet.FONT_SIZE) != 0) {
+                    final int set = ty.explicitMask(r) & pending;
+                    if ((set & COLOR_BIT) != 0) color = ty.color(r, NveTables.Typography.COLOR);
+                    if ((set & FONT_SIZE_BIT) != 0) {
                         final float size = ty.f32(r, NveTables.Typography.FONT_SIZE);
                         fontSize = size > 0f && Float.isFinite(size) ? size : DEFAULT_FONT_SIZE;
                     }
-                    if ((set & NveTables.Values.TypographySet.FONT_WEIGHT) != 0) fontWeight = ty.u32(r, NveTables.Typography.FONT_WEIGHT);
-                    if ((set & NveTables.Values.TypographySet.FONT_STYLE) != 0) {
+                    if ((set & FONT_WEIGHT_BIT) != 0) fontWeight = ty.u32(r, NveTables.Typography.FONT_WEIGHT);
+                    if ((set & FONT_STYLE_BIT) != 0) {
                         italic = ty.u32(r, NveTables.Typography.FONT_STYLE) == NveTables.Values.FontStyle.ITALIC;
                     }
-                    if ((set & NveTables.Values.TypographySet.TEXT_ALIGN) != 0) align = ty.u32(r, NveTables.Typography.TEXT_ALIGN);
+                    if ((set & TEXT_ALIGN_BIT) != 0) align = ty.u32(r, NveTables.Typography.TEXT_ALIGN);
                     pending &= ~set;
                 }
                 final int parent = s.parent(i);

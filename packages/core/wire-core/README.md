@@ -9,10 +9,11 @@ Sans-I/O binary wire framing (`NveWireFrame` v2), Bearer-token handshake, compac
 - `uri`, `NveCommandBatch`
 
 ```rust
+use nve_abi::NodeId;
 use nve_wire_core::NveNodePatchDeltaBuilder;
 
 let mut builder = NveNodePatchDeltaBuilder::new();
-builder.set_text(1, "hello");
+builder.set_text(NodeId::ROOT, "hello");
 let bytes = builder.encode().unwrap();
 ```
 

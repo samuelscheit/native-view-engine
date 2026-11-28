@@ -1,7 +1,8 @@
 //! End to end on a real `DioxusSurface`: lowered Tier-1 messages must leave the store exactly as
 //! a fresh render of the edited source does, touching only the targeted node.
 
-use nve_components::tables::{DebugId, Layout, TextContent, Typography, Visual};
+use nve_abi::{FrameId, SurfaceId};
+use nve_tables::tables::{DebugId, Layout, TextContent, Typography, Visual};
 use nve_dioxus::prelude::*;
 use nve_store::{NodeId, NodeStore};
 
@@ -93,7 +94,7 @@ fn snapshot(store: &NodeStore, tid: &str) -> String {
     });
     let font = store
         .try_row::<Typography>(id)
-        .map(|t| (t.font_size(), t.set()));
+        .map(|t| (t.font_size(), t.explicit_mask()));
     let mut texts = Vec::new();
     let mut stack = vec![id];
     while let Some(n) = stack.pop() {
@@ -115,16 +116,16 @@ fn lowered_patches_match_a_fresh_render_and_touch_only_the_target() {
     assert_eq!(patch.text_changes.len(), 1);
     assert_eq!(messages.len(), 2);
 
-    let mut patched = DioxusSurface::new(1, app_before);
-    patched.reconcile(1);
+    let mut patched = DioxusSurface::new(SurfaceId::ROOT, app_before);
+    patched.reconcile(FrameId(1));
     let sibling_before = snapshot(patched.store(), "sibling");
     for msg in &messages {
         assert!(patched.apply_hot_patch(msg));
     }
-    patched.reconcile(2);
+    patched.reconcile(FrameId(2));
 
-    let mut fresh = DioxusSurface::new(1, app_after);
-    fresh.reconcile(1);
+    let mut fresh = DioxusSurface::new(SurfaceId::ROOT, app_after);
+    fresh.reconcile(FrameId(1));
 
     assert_eq!(
         snapshot(patched.store(), "target"),

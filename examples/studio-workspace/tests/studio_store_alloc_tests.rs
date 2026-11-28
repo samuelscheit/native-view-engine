@@ -8,6 +8,7 @@ use std::cell::Cell;
 use std::hint::black_box;
 use std::sync::{Arc, Mutex};
 
+use nve_abi::{FrameId, SurfaceId};
 use nve_studio_workspace::theme::{
     LayoutMetrics, XRayPalette, author_tone, studio_theme, task_status_tone,
 };
@@ -88,8 +89,8 @@ fn channel_keystroke(messages: usize) -> (usize, DomainMask) {
             ..seed.clone()
         })
         .collect();
-    let mut surface = create_surface_with_store(1, Arc::new(Mutex::new(state)));
-    surface.reconcile(1);
+    let mut surface = create_surface_with_store(SurfaceId::ROOT, Arc::new(Mutex::new(state)));
+    surface.reconcile(FrameId(1));
     let store = surface
         .in_root_scope(StudioStore::from_root)
         .expect("mounted Studio store");

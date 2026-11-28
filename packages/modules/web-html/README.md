@@ -4,7 +4,7 @@ Pure-spec capability crate defining semantic HTML5 word tables (`HtmlTag`, `Html
 
 ## Role & API
 
-- Provides typed `#[derive(NveTable)]` tables for native HTML5 semantics (`<dialog>`, `<details>`, `<form>`, `popover`, `commandfor`, `data-*` attributes) without polluting core `nve-components`.
+- Provides typed `#[derive(NveTable)]` tables for native HTML5 semantics (`<dialog>`, `<details>`, `<form>`, `popover`, `commandfor`, `data-*` attributes) without polluting core `nve-tables`.
 - Web leaf adapter lives in `web/`.
 
 ## Invariants

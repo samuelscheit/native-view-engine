@@ -7,7 +7,6 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:nve_host/nve_host.dart';
-import 'package:nve_host/nve_host_ffi.dart';
 
 import 'canvas_semantics.dart';
 import 'nve_canvas_controller.dart';
@@ -194,7 +193,7 @@ class RenderNveCanvas extends RenderBox {
         final g = _gestures[pointer] = _Gesture(c.hitTest(p), c.scrollableAt(p), p);
         if (g.target case final target?) {
           c.dispatch([
-            RuntimeEvent.pointer(NveEventKind.pointerDown, target, p.dx, p.dy,
+            RuntimeEvent.pointer(NveInteractionEvent.pointerDown, target, p.dx, p.dy,
                 button: _button(buttons), timestampUs: ts)
           ]);
         }
@@ -209,7 +208,7 @@ class RenderNveCanvas extends RenderBox {
         if (g.dragging) {
           c.scrollBy(g.scroller!, -delta);
         } else if (g.target case final target?) {
-          c.dispatch([RuntimeEvent.pointer(NveEventKind.pointerMove, target, p.dx, p.dy, timestampUs: ts)]);
+          c.dispatch([RuntimeEvent.pointer(NveInteractionEvent.pointerMove, target, p.dx, p.dy, timestampUs: ts)]);
         }
       case PointerUpEvent(:final pointer):
         final g = _gestures.remove(pointer);
@@ -218,13 +217,13 @@ class RenderNveCanvas extends RenderBox {
           return;
         }
         c.dispatch([
-          RuntimeEvent.pointer(NveEventKind.pointerUp, target, p.dx, p.dy, timestampUs: ts),
+          RuntimeEvent.pointer(NveInteractionEvent.pointerUp, target, p.dx, p.dy, timestampUs: ts),
           if (!g.dragging && c.hitTest(p) == target) RuntimeEvent.press(target, p.dx, p.dy, timestampUs: ts),
         ]);
       case PointerCancelEvent(:final pointer):
         final g = _gestures.remove(pointer);
         if (g?.target case final target?) {
-          c.dispatch([RuntimeEvent.pointer(NveEventKind.pointerUp, target, p.dx, p.dy, timestampUs: ts)]);
+          c.dispatch([RuntimeEvent.pointer(NveInteractionEvent.pointerUp, target, p.dx, p.dy, timestampUs: ts)]);
         }
       default:
     }

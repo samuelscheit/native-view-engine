@@ -53,13 +53,8 @@ std::vector<NveMapEntry> map_entries_from_dictionary(NSDictionary<NSString *, id
                                                      uint32_t depth = 0u);
 
 /// Event name (`"press"`, `"textChange"`, custom name, …) and payload dictionary of an outbound
-/// app event.
-NSString *_Nonnull event_name(const NveDirectEvent &ev);
-NSDictionary<NSString *, id> *_Nonnull payload_dictionary_from_event(const NveDirectEvent &ev);
-
-/// Inbound host events; string payloads borrow `arena`.
-NveDirectEvent make_point_event(uint32_t surface, uint32_t node, uint8_t kind, float x, float y);
-NveDirectEvent make_text_event(uint32_t surface, uint32_t node, uint8_t kind, std::string_view text, ValueArena &arena);
-NveDirectEvent make_scroll_event(uint32_t surface, uint32_t node, float x, float y, float content_w, float content_h);
+/// app event inside `batch`.
+NSString *_Nonnull event_name(const NveEvent &ev, NveEventBatch batch);
+NSDictionary<NSString *, id> *_Nonnull payload_dictionary_from_event(const NveEvent &ev, NveEventBatch batch);
 
 }  // namespace nve::apple

@@ -7,10 +7,10 @@
 use std::ffi::c_void;
 
 use nve_abi::{
-    DecodeError, FrameId, NativeEvent, NodeId, NveBufferSlice, NveComponentApi, NveDevApi,
-    NveDirectEvent, NveEventBatch, NveEventBatchRef, NveGestureDisposition, NveHostApi,
-    NveHostCallbacks, NveIntrinsicSize, NveLayoutApi, NveMapEntry, NvePropsRef,
-    NveSizeConstraints, NveSurfaceApi, NveValue, SurfaceId, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
+    DecodeError, EventBatchBuf, FrameId, InterfaceId, NodeId, NveBufferSlice, NveComponentApi,
+    NveDevApi, NveEventBatch, NveGestureDisposition, NveHostApi, NveHostCallbacks,
+    NveIntrinsicSize, NveLayoutApi, NveMapEntry, NvePropsRef, NveSizeConstraints, NveSurfaceApi,
+    NveValue, SurfaceId, TimestampUs, ValidatedEvents, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
     NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 use nve_engine::{
@@ -71,7 +71,7 @@ fn hot_patch_msg_roundtrip_all_variants_and_wire_tags() {
     ];
 
     for (msg, expected_tag) in cases {
-        let bytes = msg.to_bytes();
+        let bytes = msg.to_bytes().unwrap();
         assert_eq!(&bytes[..4], b"NVP1");
         assert_eq!(bytes[4], expected_tag, "variant tag");
         let decoded = HotPatchMsg::from_bytes(&bytes).expect("roundtrip decode");
@@ -102,7 +102,7 @@ struct RoutingTestApp {
     patches_received: Vec<HotPatchMsg>,
     state: Vec<u8>,
     frame_buf: Vec<u8>,
-    emitted: Vec<NveDirectEvent>,
+    emitted: EventBatchBuf,
 }
 
 impl NveApp for RoutingTestApp {
@@ -113,6 +113,8 @@ impl NveApp for RoutingTestApp {
         let mut encoder = nve_store::wire::WireEncoder::default();
         let mut frame_buf = Vec::new();
         encoder.encode(&store, &changes, &mut frame_buf);
+        let mut emitted = EventBatchBuf::new();
+        emitted.push_press(surface_id, NodeId::new(2, 0), TimestampUs(10), 1.0, 2.0);
         Self {
             store,
             changes,
@@ -120,7 +122,7 @@ impl NveApp for RoutingTestApp {
             patches_received: Vec::new(),
             state: b"initial".to_vec(),
             frame_buf,
-            emitted: vec![NveDirectEvent::press(surface_id, 2, 10, 1.0, 2.0)],
+            emitted,
         }
     }
 
@@ -131,18 +133,18 @@ impl NveApp for RoutingTestApp {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
         events
             .iter()
-            .any(|ev| ev.name() == "onPing" && ev.value().get("ok").and_then(|v| v.as_bool()) == Some(true))
+            .any(|ev| ev.is_custom() && ev.custom_name() == "onPing" && ev.custom_data() == b"ok")
     }
 
     fn set_props(&mut self, props: NvePropsRef<'_>) -> bool {
         props.get("count").and_then(|v| v.as_i64()).is_some()
     }
 
-    fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
-        &self.emitted
+    fn drain_emitted_events(&mut self) -> ValidatedEvents<'_> {
+        self.emitted.as_validated()
     }
 
     fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> bool {
@@ -167,7 +169,7 @@ impl NveApp for RoutingTestApp {
 nve_engine::export_nve_app!(RoutingTestApp, symbol = nve_engine_test_get_interface);
 
 unsafe extern "C" {
-    fn nve_engine_test_get_interface(interface_id: u32) -> *const c_void;
+    fn nve_engine_test_get_interface(interface_id: InterfaceId) -> *const c_void;
 }
 
 #[test]
@@ -176,8 +178,8 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
     // valid stack-backed FFI slices, and balanced create/destroy lifecycle.
     unsafe {
         // Unknown interface IDs return NULL.
-        assert!(nve_engine_test_get_interface(0).is_null());
-        assert!(nve_engine_test_get_interface(999).is_null());
+        assert!(nve_engine_test_get_interface(InterfaceId(0)).is_null());
+        assert!(nve_engine_test_get_interface(InterfaceId(999)).is_null());
 
         let surface = *(nve_engine_test_get_interface(NVE_IFACE_SURFACE) as *const NveSurfaceApi);
         let layout = *(nve_engine_test_get_interface(NVE_IFACE_LAYOUT) as *const NveLayoutApi);
@@ -188,7 +190,7 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
         // Null handle guards across every exported C ABI function must never dereference or panic.
         let null = std::ptr::null_mut();
         (surface.destroy)(null);
-        assert_eq!((surface.render)(null, 1).len, 0);
+        assert_eq!((surface.render)(null, FrameId(1)).len, 0);
         assert_eq!((surface.dispatch_events)(null, NveEventBatch::EMPTY), 0);
         assert_eq!(
             (layout.measure)(null, NveSizeConstraints::loose(100.0, 200.0)),
@@ -196,26 +198,26 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
         );
         assert_eq!((layout.hit_test)(null, 10.0, 20.0, 1), 2);
         assert_eq!((component.set_props)(null, std::ptr::null(), 0), 0);
-        assert_eq!((component.drain_emitted_events)(null).len, 0);
+        assert_eq!((component.drain_emitted_events)(null).event_count, 0);
         assert_eq!((dev.apply_hot_patch)(null, NveBufferSlice::EMPTY), 0);
         assert_eq!((dev.snapshot_state)(null).len, 0);
         (dev.restore_state)(null, NveBufferSlice::EMPTY);
 
-        let handle = (surface.create)(7);
+        let handle = (surface.create)(SurfaceId::new(7, 0));
         assert!(!handle.is_null());
 
         // Direct zero-copy event dispatch & props update via C ABI
-        let payload_entries = [NveMapEntry::new("ok", NveValue::bool(true))];
-        let direct_events = [NveDirectEvent::custom(
-            7,
-            42,
-            1234,
+        let mut ev_buf = EventBatchBuf::new();
+        ev_buf.push_custom(
+            SurfaceId::new(7, 0),
+            NodeId::new(42, 0),
+            TimestampUs(1234),
             "onPing",
-            NveValue::map(&payload_entries),
-        )];
+            b"ok",
+        );
         let prop_entries = [NveMapEntry::new("count", NveValue::i64(99))];
         assert_eq!(
-            (surface.dispatch_events)(handle, NveEventBatch::from_slice(&direct_events)),
+            (surface.dispatch_events)(handle, ev_buf.as_raw_batch()),
             1
         );
         assert_eq!(
@@ -223,7 +225,7 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
             1
         );
         let emitted = (component.drain_emitted_events)(handle);
-        assert_eq!(emitted.len, 1);
+        assert_eq!(emitted.event_count, 1);
 
         // Default NveApp::measure handles finite and infinite constraints properly.
         let finite_size = (layout.measure)(
@@ -274,7 +276,8 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
             node_path: vec![],
             text_replacements: vec![],
         }
-        .to_bytes();
+        .to_bytes()
+        .unwrap();
         assert_eq!(
             (dev.apply_hot_patch)(handle, NveBufferSlice::from_slice(&valid_patch)),
             1
@@ -285,7 +288,8 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
             message: "ping".into(),
             latency_ms: 1,
         }
-        .to_bytes();
+        .to_bytes()
+        .unwrap();
         assert_eq!(
             (dev.apply_hot_patch)(handle, NveBufferSlice::from_slice(&status_patch)),
             0
@@ -330,24 +334,24 @@ fn profiler_empty_capacity_eviction_and_percentiles() {
     // Capacity 0 clamps safely to 1.
     let mut cap_zero = FrameProfiler::new(0);
     cap_zero.record(FrameTiming {
-        frame_id: 1,
+        frame_id: FrameId(1),
         reconcile_us: 10,
         ..Default::default()
     });
     cap_zero.record(FrameTiming {
-        frame_id: 2,
+        frame_id: FrameId(2),
         reconcile_us: 25,
         ..Default::default()
     });
     assert_eq!(cap_zero.frames().len(), 1);
-    assert_eq!(cap_zero.frames()[0].frame_id, 2);
+    assert_eq!(cap_zero.frames()[0].frame_id, FrameId(2));
 
     // Ring buffer evicts oldest frames FIFO and computes accurate p50/p99 on unsorted totals.
     let mut profiler = FrameProfiler::new(5);
     let totals = [100u64, 500, 10, 40, 20, 30, 1000];
     for (i, total) in totals.iter().enumerate() {
         profiler.record(FrameTiming {
-            frame_id: (i + 1) as u64,
+            frame_id: FrameId((i + 1) as u64),
             op_count: 5,
             mutation_count: 2,
             reconcile_us: *total,
@@ -355,8 +359,8 @@ fn profiler_empty_capacity_eviction_and_percentiles() {
         });
     }
     assert_eq!(profiler.frames().len(), 5);
-    assert_eq!(profiler.frames()[0].frame_id, 3);
-    assert_eq!(profiler.frames()[4].frame_id, 7);
+    assert_eq!(profiler.frames()[0].frame_id, FrameId(3));
+    assert_eq!(profiler.frames()[4].frame_id, FrameId(7));
     assert_eq!(profiler.p50_total_us(), 30);
     assert_eq!(profiler.p99_total_us(), 1000);
 }
@@ -365,7 +369,7 @@ fn profiler_empty_capacity_eviction_and_percentiles() {
 fn profiler_chrome_trace_json_emits_valid_spans_and_monotonic_timestamps() {
     let mut profiler = FrameProfiler::new(16);
     let f1 = FrameTiming {
-        frame_id: 1,
+        frame_id: FrameId(1),
         op_count: 10,
         mutation_count: 4,
         reconcile_us: 15,
@@ -377,7 +381,7 @@ fn profiler_chrome_trace_json_emits_valid_spans_and_monotonic_timestamps() {
     };
     assert_eq!(f1.total_us(), 87);
     let f2 = FrameTiming {
-        frame_id: 2,
+        frame_id: FrameId(2),
         op_count: 2,
         mutation_count: 1,
         ..Default::default()
@@ -455,9 +459,7 @@ impl StoreBackend for StubBackend {
         })
     }
 
-    fn drain_events(&mut self) -> Vec<NativeEvent> {
-        Vec::new()
-    }
+    fn drain_events(&mut self, _out: &mut EventBatchBuf) {}
 
     fn layout_of(&self, _node_id: NodeId) -> Option<LayoutRect> {
         None
@@ -474,19 +476,19 @@ fn surface_runner_sequences_frames_records_profiler_and_propagates_errors() {
         scale_factor: 2.0,
     };
     let mut runner = SurfaceRunner::new(
-        9,
+        SurfaceId::new(9, 0),
         vp,
         StubBackend {
             viewport: Viewport::default(),
             fail_next: false,
         },
     );
-    assert_eq!(runner.surface_id(), 9);
+    assert_eq!(runner.surface_id(), SurfaceId::new(9, 0));
     assert_eq!(runner.backend().viewport, vp);
 
     let f1 = runner.next_frame_id();
     let f2 = runner.next_frame_id();
-    assert_eq!((f1, f2), (1, 2));
+    assert_eq!((f1, f2), (FrameId(1), FrameId(2)));
 
     let mut store = NodeStore::new();
     let mut changes = ChangeSet::default();
@@ -542,7 +544,7 @@ impl NveApp for HostCapableApp {
         &self.state_buf
     }
 
-    fn dispatch_events(&mut self, _events: NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, _events: ValidatedEvents<'_>) -> bool {
         false
     }
 
@@ -563,7 +565,7 @@ impl NveApp for HostCapableApp {
 nve_engine::export_nve_app!(HostCapableApp, symbol = nve_engine_host_test_get_interface);
 
 unsafe extern "C" {
-    fn nve_engine_host_test_get_interface(interface_id: u32) -> *const c_void;
+    fn nve_engine_host_test_get_interface(interface_id: InterfaceId) -> *const c_void;
 }
 
 #[test]
@@ -575,7 +577,7 @@ fn export_nve_app_host_interface_bind_unbind_and_dispatch() {
         let host =
             *(nve_engine_host_test_get_interface(NVE_IFACE_HOST) as *const NveHostApi);
 
-        let handle = (surface.create)(1);
+        let handle = (surface.create)(SurfaceId::ROOT);
         assert!(!handle.is_null());
 
         let cb = NveHostCallbacks {
@@ -596,14 +598,14 @@ fn export_nve_app_host_interface_bind_unbind_and_dispatch() {
             (host.dispatch_host_events)(handle, NveBufferSlice::from_slice(b"bad")),
             0
         );
-        let rendered = (surface.render)(handle, 1).as_slice().to_vec();
+        let rendered = (surface.render)(handle, FrameId(1)).as_slice().to_vec();
         assert_eq!(
             rendered,
             format!("ctx={};batches=2", 0x1234usize).into_bytes()
         );
 
         (host.bind_host)(handle, std::ptr::null());
-        let rendered2 = (surface.render)(handle, 2).as_slice().to_vec();
+        let rendered2 = (surface.render)(handle, FrameId(2)).as_slice().to_vec();
         assert_eq!(rendered2, b"ctx=0;batches=2");
 
         (surface.destroy)(handle);

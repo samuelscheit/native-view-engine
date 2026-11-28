@@ -307,18 +307,18 @@ fn use_as_type_alias_sdk_alias_and_cross_crate_same_name_mirror() {
 
     // Reproduces exact `snapshot.rs` <-> `apply.rs` cross-crate `FlexDirection` mirror.
     let snapshot_rs = r#"
-        pub fn layout_snapshot_of(dir: nve_components::tables::FlexDirection) -> nve_abi::FlexDirection {
+        pub fn layout_snapshot_of(dir: nve_tables::tables::FlexDirection) -> nve_abi::FlexDirection {
             match dir {
-                nve_components::tables::FlexDirection::Column => nve_abi::FlexDirection::Column,
-                nve_components::tables::FlexDirection::Row => nve_abi::FlexDirection::Row,
-                nve_components::tables::FlexDirection::ColumnReverse => nve_abi::FlexDirection::ColumnReverse,
-                nve_components::tables::FlexDirection::RowReverse => nve_abi::FlexDirection::RowReverse,
+                nve_tables::tables::FlexDirection::Column => nve_abi::FlexDirection::Column,
+                nve_tables::tables::FlexDirection::Row => nve_abi::FlexDirection::Row,
+                nve_tables::tables::FlexDirection::ColumnReverse => nve_abi::FlexDirection::ColumnReverse,
+                nve_tables::tables::FlexDirection::RowReverse => nve_abi::FlexDirection::RowReverse,
             }
         }
     "#;
     let apply_rs = r#"
         use nve_abi::FlexDirection;
-        use nve_components::tables::FlexDirection as TableFlexDir;
+        use nve_tables::tables::FlexDirection as TableFlexDir;
         pub fn apply_dir(dir: FlexDirection) -> TableFlexDir {
             match dir {
                 FlexDirection::Column => TableFlexDir::Column,

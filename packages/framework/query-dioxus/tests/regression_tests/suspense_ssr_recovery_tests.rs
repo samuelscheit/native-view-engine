@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use dioxus_core::{ScopeId, VirtualDom};
+use nve_abi::{EventBatchBuf, SurfaceId, TimestampUs};
 use nve_backend_web::WebBackend;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
@@ -210,7 +211,7 @@ fn query_suspense_error_boundary_retry_invalidates_and_recovers() {
     let mut frame = 0u64;
     let mut web = WebBackend::new();
     let waker = Waker::from(Arc::new(NoopFlagWaker(AtomicBool::new(false))));
-    let mut surface = DioxusSurface::new(1, RetryApp).with_context(client);
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, RetryApp).with_context(client);
 
     let _ = render_once(&mut surface, &mut web, &mut frame);
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
@@ -224,14 +225,9 @@ fn query_suspense_error_boundary_retry_invalidates_and_recovers() {
     // Press Retry -> QuerySuspense's ErrorBoundary on_reset invalidates boundary handles and
     // triggers a clean retry that recovers!
     let retry_node = find_by_test_id(surface.store(), "retry-btn");
-    let press_ev = nve_abi::NativeEvent {
-        surface_id: 1,
-        node_id: retry_node,
-        timestamp_us: 0,
-        kind: nve_abi::NativeEventKind::Press,
-        payload: nve_abi::EventPayload::Point { x: 1.0, y: 1.0 },
-    };
-    assert!(surface.dispatch_events(&[press_ev]));
+    let mut press_ev = EventBatchBuf::new();
+    press_ev.push_press(SurfaceId::ROOT, retry_node, TimestampUs::ZERO, 1.0, 1.0);
+    assert!(surface.dispatch_events(press_ev.as_validated()));
     let _ = render_once(&mut surface, &mut web, &mut frame);
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
 

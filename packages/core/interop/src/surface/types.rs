@@ -184,6 +184,21 @@ impl SafeAreaInsets {
             left,
         }
     }
+
+    #[inline]
+    pub(crate) fn validate(self) -> Result<(), crate::error::InteropError> {
+        if self.top.is_finite()
+            && self.right.is_finite()
+            && self.bottom.is_finite()
+            && self.left.is_finite()
+        {
+            Ok(())
+        } else {
+            Err(crate::error::InteropError::InvalidEnvironment(
+                "safe_area insets must be finite".into(),
+            ))
+        }
+    }
 }
 
 /// Inherited environment context propagated across framework boundaries.
@@ -207,6 +222,24 @@ impl Default for SurfaceEnvironment {
             locale: "en-US".to_owned(),
             reduced_motion: false,
         }
+    }
+}
+
+impl SurfaceEnvironment {
+    /// Rejects non-finite numeric fields (`NaN`/`±Inf`) at ingress so equality pruning stays sound.
+    #[inline]
+    pub(crate) fn validate(&self) -> Result<(), crate::error::InteropError> {
+        if !self.scale_factor.is_finite() {
+            return Err(crate::error::InteropError::InvalidEnvironment(
+                "scale_factor must be finite".into(),
+            ));
+        }
+        if !self.text_scale_factor.is_finite() {
+            return Err(crate::error::InteropError::InvalidEnvironment(
+                "text_scale_factor must be finite".into(),
+            ));
+        }
+        self.safe_area.validate()
     }
 }
 
@@ -286,14 +319,123 @@ pub struct EnvironmentOverrides {
     pub theme: Option<ThemeContext>,
     pub safe_area: Option<SafeAreaInsets>,
     pub scale_factor: Option<f32>,
+    #[serde(default)]
+    pub text_scale_factor: Option<f32>,
     pub locale: Option<String>,
+    #[serde(default)]
+    pub reduced_motion: Option<bool>,
+}
+
+impl EnvironmentOverrides {
+    /// Rejects non-finite override values (`NaN`/`±Inf`) at ingress.
+    #[inline]
+    pub(crate) fn validate(&self) -> Result<(), crate::error::InteropError> {
+        if let Some(scale) = self.scale_factor
+            && !scale.is_finite()
+        {
+            return Err(crate::error::InteropError::InvalidEnvironment(
+                "override scale_factor must be finite".into(),
+            ));
+        }
+        if let Some(ts) = self.text_scale_factor
+            && !ts.is_finite()
+        {
+            return Err(crate::error::InteropError::InvalidEnvironment(
+                "override text_scale_factor must be finite".into(),
+            ));
+        }
+        if let Some(sa) = self.safe_area {
+            sa.validate()?;
+        }
+        Ok(())
+    }
+
+    /// Applies any explicitly set override fields onto `env`.
+    pub(crate) fn apply_to(&self, env: &mut SurfaceEnvironment) {
+        if let Some(theme) = &self.theme {
+            env.theme = theme.clone();
+        }
+        if let Some(safe_area) = self.safe_area {
+            env.safe_area = safe_area;
+        }
+        if let Some(scale) = self.scale_factor {
+            env.scale_factor = scale;
+        }
+        if let Some(text_scale) = self.text_scale_factor {
+            env.text_scale_factor = text_scale;
+        }
+        if let Some(locale) = &self.locale {
+            env.locale = locale.clone();
+        }
+        if let Some(reduced_motion) = self.reduced_motion {
+            env.reduced_motion = reduced_motion;
+        }
+    }
+
+    /// Zero-allocation comparison checking whether `child_env == self.apply(parent_env)`.
+    #[inline]
+    pub(crate) fn matches_resolved(
+        &self,
+        child_env: &SurfaceEnvironment,
+        parent_env: &SurfaceEnvironment,
+    ) -> bool {
+        let exp_theme = self.theme.as_ref().unwrap_or(&parent_env.theme);
+        let exp_safe = self.safe_area.unwrap_or(parent_env.safe_area);
+        let exp_scale = self.scale_factor.unwrap_or(parent_env.scale_factor);
+        let exp_text_scale = self.text_scale_factor.unwrap_or(parent_env.text_scale_factor);
+        let exp_locale = self.locale.as_deref().unwrap_or(parent_env.locale.as_str());
+        let exp_reduced = self.reduced_motion.unwrap_or(parent_env.reduced_motion);
+        child_env.theme == *exp_theme
+            && child_env.safe_area == exp_safe
+            && child_env.scale_factor == exp_scale
+            && child_env.text_scale_factor == exp_text_scale
+            && child_env.locale == exp_locale
+            && child_env.reduced_motion == exp_reduced
+    }
+
+    /// Seals `self.apply(parent_env) == target_env` by recording overrides for any field that
+    /// differs from `parent_env` (while keeping already-pinned fields updated to `target_env`
+    /// without cloning equal `ThemeContext`/`String` values).
+    pub(crate) fn seal_against_parent(
+        &mut self,
+        target_env: &SurfaceEnvironment,
+        parent_env: &SurfaceEnvironment,
+    ) {
+        if self.theme.as_ref() != Some(&target_env.theme)
+            && (self.theme.is_some() || target_env.theme != parent_env.theme)
+        {
+            self.theme = Some(target_env.theme.clone());
+        }
+        if self.safe_area.is_some() || target_env.safe_area != parent_env.safe_area {
+            self.safe_area = Some(target_env.safe_area);
+        }
+        if self.scale_factor.is_some() || target_env.scale_factor != parent_env.scale_factor {
+            self.scale_factor = Some(target_env.scale_factor);
+        }
+        if self.text_scale_factor.is_some()
+            || target_env.text_scale_factor != parent_env.text_scale_factor
+        {
+            self.text_scale_factor = Some(target_env.text_scale_factor);
+        }
+        if self.locale.as_deref() != Some(target_env.locale.as_str())
+            && (self.locale.is_some() || target_env.locale != parent_env.locale)
+        {
+            self.locale = Some(target_env.locale.clone());
+        }
+        if self.reduced_motion.is_some()
+            || target_env.reduced_motion != parent_env.reduced_motion
+        {
+            self.reduced_motion = Some(target_env.reduced_motion);
+        }
+    }
 }
 
 /// Registration parameters for a new surface in [`super::SurfaceOrchestrator`].
+///
+/// Surface IDs are allocated exclusively by [`super::SurfaceOrchestrator`]'s generational slab
+/// allocator (`index:24 | generation:8`) so stale handles can never be resurrected.
 #[derive(Debug, Clone)]
 pub struct SurfaceDescriptor {
-    /// Optional explicit surface ID. When `None`, the orchestrator allocates a monotonic ID.
-    pub id: Option<SurfaceId>,
     pub parent: Option<SurfaceId>,
     pub framework: FrameworkKind,
     pub component_name: String,
@@ -308,7 +450,6 @@ pub struct SurfaceDescriptor {
 impl SurfaceDescriptor {
     pub fn new(framework: FrameworkKind, component_name: impl Into<String>) -> Self {
         Self {
-            id: None,
             parent: None,
             framework,
             component_name: component_name.into(),
@@ -319,11 +460,6 @@ impl SurfaceDescriptor {
             #[cfg(feature = "window")]
             presentation: SurfacePresentation::Embedded,
         }
-    }
-
-    pub fn with_id(mut self, id: SurfaceId) -> Self {
-        self.id = Some(id);
-        self
     }
 
     pub fn with_parent(mut self, parent: SurfaceId) -> Self {

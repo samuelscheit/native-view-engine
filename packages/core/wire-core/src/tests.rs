@@ -1,3 +1,5 @@
+use nve_abi::{DurationMs, NodeId};
+
 use crate::{
     constant_time_eq, format_cert_hash_hex, format_wire_uri, parse_cert_hash_hex, parse_wire_uri,
     NveNodePatchDeltaBuilder, NveNodePatchDeltaView, NveWireChannel, NveWireClientSession,
@@ -66,14 +68,14 @@ fn realistic_eight_node_live_score_patch_encodes_under_512_bytes() {
     // well under Apple's 4 KB APNs push budget (< 512 B total wire frame including header + XXH64).
     let mut builder = NveNodePatchDeltaBuilder::with_capacity(8, 64);
     builder
-        .set_text(101, "LAL 108")
-        .set_text(102, "BOS 104")
-        .set_text(103, "Q4 01:42")
-        .set_text(104, "3PT MADE")
-        .set_bg_rgba(105, 0x16A34AFF)
-        .set_text_rgba(106, 0xF8FAFCFF)
-        .set_opacity(107, 0.95, 180)
-        .set_rect_width(108, 284.5, 240);
+        .set_text(NodeId::new(101, 0), "LAL 108")
+        .set_text(NodeId::new(102, 0), "BOS 104")
+        .set_text(NodeId::new(103, 0), "Q4 01:42")
+        .set_text(NodeId::new(104, 0), "3PT MADE")
+        .set_bg_rgba(NodeId::new(105, 0), 0x16A34AFF)
+        .set_text_rgba(NodeId::new(106, 0), 0xF8FAFCFF)
+        .set_opacity(NodeId::new(107, 0), 0.95, DurationMs(180))
+        .set_rect_width(NodeId::new(108, 0), 284.5, DurationMs(240));
 
     let patch_payload = builder.encode().expect("encode 8-node patch");
     let wire_frame = NveWireFrame::new(NveWireKind::NodePatchDelta, 7, patch_payload)
@@ -99,7 +101,7 @@ fn realistic_eight_node_live_score_patch_encodes_under_512_bytes() {
     assert_eq!(view.patches()[4].value_lo, 0x16A34AFF);
     assert_eq!(view.patches()[6].as_f32(), 0.95);
     assert_eq!(view.patches()[7].as_f32(), 284.5);
-    assert_eq!(view.patches()[7].transition_ms, 240);
+    assert_eq!(view.patches()[7].transition_ms, DurationMs(240));
 }
 
 #[test]
@@ -188,6 +190,26 @@ fn handshake_slot_chunk_uri_and_session_roundtrip() {
             ..
         }
     ));
+
+    // Non-zero reserved bytes in Reject and HelloAck must be strictly rejected.
+    let mut bad_reject = NveWireRejectReason::ServerBusy.encode("busy");
+    bad_reject[1] = 0x7F;
+    assert_eq!(
+        NveWireRejectReason::decode(&bad_reject),
+        Err(NveWireError::NonZeroReserved(0x7F))
+    );
+
+    let mut bad_ack = NveWireHelloAck {
+        session_id: 9,
+        schema_version: 2,
+        server_capabilities: 0x0F,
+    }
+    .encode();
+    bad_ack[6] = 0x01;
+    assert_eq!(
+        NveWireHelloAck::decode(&bad_ack),
+        Err(NveWireError::NonZeroReserved(0x01))
+    );
 }
 
 #[test]

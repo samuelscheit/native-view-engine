@@ -2,7 +2,7 @@
 //! ([`RUNTIME_CALLBACK_TYPEDEFS`], [`RUNTIME_API_SLOTS`]) and their compile-time slot locks.
 
 use core::ffi::c_void;
-use core::mem::{offset_of, size_of};
+use core::mem::{align_of, offset_of, size_of};
 
 use nve_hash::Xxh64Hasher;
 
@@ -10,8 +10,10 @@ use super::{
     NveRuntimeConfig, NveRuntimeHandle, NveRuntimeMeasureTextFn, NveRuntimeMetrics,
     NveSceneView, NveRuntimeWakeFn,
 };
+use crate::event::NveEventBatch;
 use crate::ffi::{NveBufferSlice, NveGetInterfaceFn};
-use crate::value::{NveEventBatch, NveMapEntry, NveStrSlice};
+use crate::id::NodeId;
+use crate::value::{NveMapEntry, NveStrSlice};
 
 /// C spelling of one runtime ABI function-pointer signature.
 ///
@@ -163,11 +165,11 @@ pub struct NveRuntimeApi {
         handle: NveRuntimeHandle,
         x: f32,
         y: f32,
-        out_node_id: *mut u32,
+        out_node_id: *mut NodeId,
     ) -> i32,
     pub scroll_by: unsafe extern "C" fn(
         handle: NveRuntimeHandle,
-        node_id: u32,
+        node_id: NodeId,
         dx: f32,
         dy: f32,
         out_x: *mut f32,
@@ -278,3 +280,39 @@ lock_runtime_api_slots!(
     pair_is_connected,
     last_error,
 );
+
+const _: () = {
+    const P: usize = size_of::<usize>();
+    assert!(align_of::<NveRuntimeApi>() == align_of::<u64>());
+    assert!(offset_of!(NveRuntimeApi, abi_version) == 0);
+    assert!(offset_of!(NveRuntimeApi, struct_size) == 4);
+    assert!(offset_of!(NveRuntimeApi, schema_hash) == 8);
+    assert!(offset_of!(NveRuntimeApi, create) == 16);
+    assert!(offset_of!(NveRuntimeApi, destroy) == 16 + P);
+    assert!(offset_of!(NveRuntimeApi, set_wake_callback) == 16 + 2 * P);
+    assert!(offset_of!(NveRuntimeApi, set_viewport) == 16 + 3 * P);
+    assert!(offset_of!(NveRuntimeApi, set_text_measurer) == 16 + 4 * P);
+    assert!(offset_of!(NveRuntimeApi, attach_app_interface) == 16 + 5 * P);
+    assert!(offset_of!(NveRuntimeApi, load_app_module) == 16 + 6 * P);
+    assert!(offset_of!(NveRuntimeApi, set_props) == 16 + 7 * P);
+    assert!(offset_of!(NveRuntimeApi, drain_emitted_events) == 16 + 8 * P);
+    assert!(offset_of!(NveRuntimeApi, snapshot_state) == 16 + 9 * P);
+    assert!(offset_of!(NveRuntimeApi, restore_state) == 16 + 10 * P);
+    assert!(offset_of!(NveRuntimeApi, save_state_file) == 16 + 11 * P);
+    assert!(offset_of!(NveRuntimeApi, restore_state_file) == 16 + 12 * P);
+    assert!(offset_of!(NveRuntimeApi, clear_state_file) == 16 + 13 * P);
+    assert!(offset_of!(NveRuntimeApi, apply_hot_patch) == 16 + 14 * P);
+    assert!(offset_of!(NveRuntimeApi, submit_nve2) == 16 + 15 * P);
+    assert!(offset_of!(NveRuntimeApi, tick) == 16 + 16 * P);
+    assert!(offset_of!(NveRuntimeApi, dispatch_events) == 16 + 17 * P);
+    assert!(offset_of!(NveRuntimeApi, hit_test) == 16 + 18 * P);
+    assert!(offset_of!(NveRuntimeApi, scroll_by) == 16 + 19 * P);
+    assert!(offset_of!(NveRuntimeApi, scene_acquire) == 16 + 20 * P);
+    assert!(offset_of!(NveRuntimeApi, scene_release) == 16 + 21 * P);
+    assert!(offset_of!(NveRuntimeApi, resource_payload) == 16 + 22 * P);
+    assert!(offset_of!(NveRuntimeApi, get_metrics) == 16 + 23 * P);
+    assert!(offset_of!(NveRuntimeApi, pair_connect) == 16 + 24 * P);
+    assert!(offset_of!(NveRuntimeApi, pair_disconnect) == 16 + 25 * P);
+    assert!(offset_of!(NveRuntimeApi, pair_is_connected) == 16 + 26 * P);
+    assert!(offset_of!(NveRuntimeApi, last_error) == 16 + 27 * P);
+};

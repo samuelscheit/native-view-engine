@@ -10,9 +10,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use libloading::Library;
 use nve_abi::{
-    NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent, NveEventBatch,
-    NveGestureDisposition, NveGetInterfaceFn, NveHostApi, NveHostCallbacks, NveIntrinsicSize,
-    NveLayoutApi, NveMapEntry, NveSizeConstraints, NveSurfaceApi, SurfaceId, NVE_IFACE_COMPONENT,
+    NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveGestureDisposition,
+    NveGetInterfaceFn, NveHostApi, NveHostCallbacks, NveIntrinsicSize, NveLayoutApi, NveMapEntry,
+    NveSizeConstraints, NveSurfaceApi, SurfaceId, ValidatedEvents, NVE_IFACE_COMPONENT,
     NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 
@@ -381,16 +381,15 @@ impl HotAppInstance {
     /// app module's internal frame buffer (zero heap allocation / zero `.to_vec()` copy per frame).
     ///
     /// The borrowed slice remains valid until the next `&mut self` call on this [`HotAppInstance`].
-    pub fn render(&mut self, frame_id: u64) -> &[u8] {
+    pub fn render(&mut self, frame_id: nve_abi::FrameId) -> &[u8] {
         // SAFETY: `self.handle` is live while `self` owns it; returned buffer stays valid until next `&mut self` call.
         unsafe { (self.surface.render)(self.handle, frame_id).as_slice() }
     }
 
-    pub fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
-        // SAFETY: `self.handle` is live and `events` slice stays valid for the duration of the FFI call.
-        unsafe {
-            (self.surface.dispatch_events)(self.handle, NveEventBatch::from_slice(events)) != 0
-        }
+    /// Forwards a validated zero-copy event batch directly across the C FFI boundary.
+    pub fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
+        // SAFETY: `self.handle` is live and `events` stays valid for the synchronous FFI call.
+        unsafe { (self.surface.dispatch_events)(self.handle, events.as_raw_batch()) != 0 }
     }
 
     pub fn measure(&mut self, constraints: NveSizeConstraints) -> Option<NveIntrinsicSize> {
@@ -426,12 +425,14 @@ impl HotAppInstance {
         }
     }
 
-    /// Drains outbound component events as a direct borrowed `NveDirectEvent` slice without copying.
-    pub fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
+    /// Drains outbound component events as an ingress-validated zero-copy [`ValidatedEvents`].
+    pub fn drain_emitted_events(&mut self) -> ValidatedEvents<'_> {
         match self.component {
-            // SAFETY: `self.handle` is live; returned slice borrows from the module's buffer until next `&mut self` call.
-            Some(api) => unsafe { (api.drain_emitted_events)(self.handle).as_slice() },
-            None => &[],
+            // SAFETY: `self.handle` is live; returned batch borrows from the module's buffer until next `&mut self` call.
+            Some(api) => unsafe {
+                ValidatedEvents::from_raw((api.drain_emitted_events)(self.handle))
+            },
+            None => ValidatedEvents::EMPTY,
         }
     }
 

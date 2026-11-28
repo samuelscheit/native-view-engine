@@ -1,20 +1,19 @@
 //! Hit-test geometry forwarding to [`nve_layout::LaidOutScene`].
 
-use nve_abi::NodeId;
-use nve_components::transform::Transform2D;
+use nve_tables::transform::Transform2D;
 use nve_layout::StoreLayoutEngine;
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::{NodeId, NodeStore};
 
 use crate::HeadlessBackend;
 
 impl<L: StoreLayoutEngine> HeadlessBackend<L> {
     #[inline]
-    pub fn compute_sticky_delta(&self, store: &NodeStore, id: StoreNodeId) -> (f32, f32) {
+    pub fn compute_sticky_delta(&self, store: &NodeStore, id: NodeId) -> (f32, f32) {
         self.scene.compute_sticky_delta(store, id)
     }
 
     #[inline]
-    pub fn effective_transform(&self, store: &NodeStore, id: StoreNodeId) -> Option<Transform2D> {
+    pub fn effective_transform(&self, store: &NodeStore, id: NodeId) -> Option<Transform2D> {
         self.scene.effective_transform(store, id)
     }
 

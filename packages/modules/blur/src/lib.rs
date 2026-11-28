@@ -2,22 +2,23 @@
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
-use nve_store::{word_enum, NveTable, Rgba};
+use nve_store::{NveTable, Rgba, WordEnum};
 
-word_enum! {
-    /// Platform-native backdrop blur material style (AppKit `NSVisualEffectView`,
-    /// UIKit `UIBlurEffect`, WinUI Acrylic/Mica, Flutter `BackdropFilter`, CSS `backdrop-filter`).
-    ///
-    /// Wire discriminants `0..=5` match `nve::blur::apple::BlurMaterial`,
-    /// `nve::blur::win::BlurMaterial`, and Dart `NveBlurMaterial`.
-    pub enum BlurMaterial: 3 {
-        UltraThin = 0,
-        Thin = 1,
-        Regular = 2,
-        Thick = 3,
-        Chrome = 4,
-        SystemMaterial = 5,
-    }
+/// Platform-native backdrop blur material style (AppKit `NSVisualEffectView`,
+/// UIKit `UIBlurEffect`, WinUI Acrylic/Mica, Flutter `BackdropFilter`, CSS `backdrop-filter`).
+///
+/// Wire discriminants `0..=5` match `nve::blur::apple::BlurMaterial`,
+/// `nve::blur::win::BlurMaterial`, and Dart `NveBlurMaterial`.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, WordEnum)]
+pub enum BlurMaterial {
+    #[default]
+    UltraThin = 0,
+    Thin = 1,
+    Regular = 2,
+    Thick = 3,
+    Chrome = 4,
+    SystemMaterial = 5,
 }
 
 impl BlurMaterial {
@@ -40,17 +41,13 @@ impl BlurMaterial {
 #[nve_table(name = "nve.blur_surface", storage = "sparse", flags = "publish")]
 pub struct BlurSurface {
     #[effect(realize, paint)]
-    #[bits(3)]
     #[default(BlurMaterial::Regular)]
     pub material: BlurMaterial,
-    #[effect(paint)]
-    #[bits(1)]
-    pub tint_enabled: bool,
     #[effect(paint)]
     #[default(1.0)]
     pub intensity: f32,
     #[effect(paint)]
-    pub tint: Rgba,
+    pub tint: Option<Rgba>,
 }
 
 #[cfg(test)]
@@ -79,19 +76,18 @@ mod tests {
         tx.edit::<BlurSurface>(n)
             .material(BlurMaterial::UltraThin)
             .intensity(0.8)
-            .tint_enabled(true)
-            .tint(Rgba::new(255, 255, 255, 48));
+            .tint(Some(Rgba::new(255, 255, 255, 48)));
         let mut changes = ChangeSet::default();
         tx.commit_into(&mut changes);
 
         let def_row = store.try_row::<BlurSurface>(def_n).unwrap();
         assert_eq!(def_row.material(), BlurMaterial::Regular);
         assert_eq!(def_row.intensity(), 1.0);
+        assert_eq!(def_row.tint(), None);
 
         let row = store.try_row::<BlurSurface>(n).unwrap();
         assert_eq!(row.material(), BlurMaterial::UltraThin);
         assert_eq!(row.intensity(), 0.8);
-        assert!(row.tint_enabled());
-        assert_eq!(row.tint(), Rgba::new(255, 255, 255, 48));
+        assert_eq!(row.tint(), Some(Rgba::new(255, 255, 255, 48)));
     }
 }

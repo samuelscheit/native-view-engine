@@ -15,7 +15,7 @@ mod native {
 
     use criterion::{criterion_group, Criterion};
     use nve_backend_headless::HeadlessBackend;
-    use nve_components::tables::{Layout, TextContent, Visual};
+    use nve_tables::tables::{Layout, TextContent, Visual};
     use nve_engine::{StoreBackend, Viewport};
     use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 
@@ -46,7 +46,7 @@ mod native {
 
         let mut backend = HeadlessBackend::new();
         backend.set_viewport(
-            1,
+            nve_abi::SurfaceId::ROOT,
             Viewport {
                 width: 1280.0,
                 height: 720.0,

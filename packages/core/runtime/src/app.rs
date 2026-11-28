@@ -2,8 +2,8 @@
 //! framework-agnostic [`RuntimeApp`] contract defined in `nve-engine`.
 
 use nve_abi::{
-    FrameId, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent,
-    NveEventBatch, NveEventBatchRef, NveGetInterfaceFn, NvePropsRef, NveSurfaceApi, SurfaceId,
+    FrameId, InterfaceId, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi,
+    NveGetInterfaceFn, NvePropsRef, NveSurfaceApi, SurfaceId, ValidatedEvents,
     NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_SURFACE,
 };
 #[cfg(not(target_arch = "wasm32"))]
@@ -49,7 +49,7 @@ impl<A: NveApp> RuntimeApp for NveAppAdapter<A> {
         }
     }
 
-    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
         self.app.dispatch_events(events)
     }
 
@@ -61,7 +61,7 @@ impl<A: NveApp> RuntimeApp for NveAppAdapter<A> {
         Ok(self.app.set_props(props))
     }
 
-    fn drain_emitted_events(&mut self) -> Result<&[NveDirectEvent], CapabilityUnsupported> {
+    fn drain_emitted_events(&mut self) -> Result<ValidatedEvents<'_>, CapabilityUnsupported> {
         Ok(self.app.drain_emitted_events())
     }
 
@@ -101,7 +101,7 @@ pub struct CAbiAppAdapter {
 /// # Safety
 /// `get_iface` follows the NVE modular C ABI: a non-null result points to a static `T`, and `T`
 /// consists solely of function pointers.
-unsafe fn query_interface<T: Copy>(get_iface: NveGetInterfaceFn, id: u32) -> Option<T> {
+unsafe fn query_interface<T: Copy>(get_iface: NveGetInterfaceFn, id: InterfaceId) -> Option<T> {
     const PTR: usize = core::mem::size_of::<*const ()>();
     const { assert!(core::mem::size_of::<T>().is_multiple_of(PTR)) };
     // SAFETY: Caller guarantees the `nve_get_interface` contract for `id`.
@@ -201,16 +201,15 @@ impl RuntimeApp for CAbiAppAdapter {
         }
     }
 
-    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
-        let raw_slice: &[NveDirectEvent] = events.as_slice();
-        let batch = NveEventBatch::from_slice(raw_slice);
-        // SAFETY: `self.handle` is live and `batch` borrows `raw_slice` for the duration of the call.
-        unsafe { (self.surface_api.dispatch_events)(self.handle, batch) != 0 }
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
+        // SAFETY: `self.handle` is live and the raw batch borrows `events` for the synchronous call.
+        unsafe { (self.surface_api.dispatch_events)(self.handle, events.as_raw_batch()) != 0 }
     }
 
     fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> Result<bool, CapabilityUnsupported> {
         let dev = self.dev_api.ok_or(CapabilityUnsupported)?;
-        self.patch_scratch = patch.to_bytes();
+        // A patch over the `NVP1` wire limits cannot cross the C ABI at all.
+        self.patch_scratch = patch.to_bytes().map_err(|_| CapabilityUnsupported)?;
         let slice = NveBufferSlice::from_slice(&self.patch_scratch);
         // SAFETY: `self.handle` is live and `slice` points into `self.patch_scratch`.
         Ok(unsafe { (dev.apply_hot_patch)(self.handle, slice) != 0 })
@@ -229,13 +228,14 @@ impl RuntimeApp for CAbiAppAdapter {
         Ok(unsafe { (component.set_props)(self.handle, ptr, count) != 0 })
     }
 
-    fn drain_emitted_events(&mut self) -> Result<&[NveDirectEvent], CapabilityUnsupported> {
+    fn drain_emitted_events(&mut self) -> Result<ValidatedEvents<'_>, CapabilityUnsupported> {
         let component = self.component_api.ok_or(CapabilityUnsupported)?;
         // SAFETY: `self.handle` is live; the batch stays valid until the next call on it, which
-        // the `&mut self` borrow of the returned slice rules out.
+        // the `&mut self` borrow of the returned view rules out.
         let batch = unsafe { (component.drain_emitted_events)(self.handle) };
-        // SAFETY: A structurally valid batch points to `len` initialized `NveDirectEvent`s.
-        Ok(unsafe { batch.try_as_slice() }.unwrap_or(&[]))
+        // SAFETY: The module's batch points to `event_count` events and `bytes_len` bytes; a
+        // malformed batch (bad span, UTF-8 or pointers) validates to an empty view.
+        Ok(unsafe { ValidatedEvents::from_raw(batch) })
     }
 
     fn supports_state(&self) -> bool {

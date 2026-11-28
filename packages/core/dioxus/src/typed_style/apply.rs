@@ -1,24 +1,25 @@
 //! Direct `TypedStyle` application and diff-clearing onto `NodeStore` word tables.
 
-use nve_abi::{Dimension, FlexAlign, FlexDirection, FlexJustify};
-use nve_components::interaction::CursorKind;
-use nve_components::layout_ext::{LayoutDirection, PositionMode};
-use nve_components::style_patch::Display;
-use nve_components::tables::{
-    self, AlignItems, BackgroundFillRes, BoxShadows, Direction, Display as TableDisplay,
-    FlexDirection as TableFlexDir, GridItem, GridLayout, GridLine as TableGridLine, GridTracks,
-    Image, ImageFit, Interaction, JustifyContent, Layout, Motion, Overflow, Position, Responsive,
-    ResponsiveRules, StateRules, TextAlign, Transform, Transitions, Typography, Visual,
-};
-use nve_store::{Length, NodeId, Rgba, Transaction};
+use std::sync::Arc;
 
-use super::{pack_media_query, TypedStyle};
+use nve_abi::Dimension;
+use nve_tables::interaction::{CursorKind, StateStyleRule};
+use nve_tables::layout_ext::{LayoutDirection, PositionMode};
+use nve_tables::media::ResponsiveRule;
+use nve_tables::tables::{
+    BackgroundFillRes, BoxShadows, Direction, Display, GridItem, GridLayout,
+    GridLine as TableGridLine, GridTracks, Image, ImageFit, Interaction, Layout, Overflow,
+    Position, Responsive, ResponsiveRules, StateRules, TextAlign, Transform, Typography, Visual,
+};
+use nve_store::{Length, NodeId, Rgba, RowPatch, TempResources, Transaction};
+
+use super::{pack_media_query, PendingStylePatch, TypedStyle};
 
 impl TypedStyle {
     /// Writes only the `{Layout, Visual, Typography}` tables selected by `layers` into `node`
     /// without touching unselected style tables or unrelated tables (`Transform`, `Motion`, etc.).
     pub fn apply_style_layers_to_tx(&self, tx: &mut Transaction<'_>, node: NodeId, layers: u8) {
-        if layers & nve_components::STYLE_LAYER_LAYOUT != 0 {
+        if layers & nve_tables::STYLE_LAYER_LAYOUT != 0 {
             if self.has_layout {
                 let l = &self.layout;
                 tx.edit::<Layout>(node)
@@ -28,27 +29,9 @@ impl TypedStyle {
                     .min_height(dim_to_length(l.min_height))
                     .max_width(dim_to_length(l.max_width))
                     .max_height(dim_to_length(l.max_height))
-                    .flex_direction(match l.flex_direction {
-                        FlexDirection::Column => TableFlexDir::Column,
-                        FlexDirection::Row => TableFlexDir::Row,
-                        FlexDirection::ColumnReverse => TableFlexDir::ColumnReverse,
-                        FlexDirection::RowReverse => TableFlexDir::RowReverse,
-                    })
-                    .justify_content(match l.justify_content {
-                        FlexJustify::FlexStart => JustifyContent::FlexStart,
-                        FlexJustify::Center => JustifyContent::Center,
-                        FlexJustify::FlexEnd => JustifyContent::FlexEnd,
-                        FlexJustify::SpaceBetween => JustifyContent::SpaceBetween,
-                        FlexJustify::SpaceAround => JustifyContent::SpaceAround,
-                        FlexJustify::SpaceEvenly => JustifyContent::SpaceEvenly,
-                    })
-                    .align_items(match l.align_items {
-                        FlexAlign::Stretch => AlignItems::Stretch,
-                        FlexAlign::FlexStart => AlignItems::FlexStart,
-                        FlexAlign::Center => AlignItems::Center,
-                        FlexAlign::FlexEnd => AlignItems::FlexEnd,
-                        FlexAlign::Baseline => AlignItems::Baseline,
-                    })
+                    .flex_direction(l.flex_direction.into())
+                    .justify_content(l.justify_content.into())
+                    .align_items(l.align_items.into())
                     .align_self(l.align_self)
                     .flex_grow(l.flex_grow)
                     .flex_shrink(l.flex_shrink)
@@ -66,11 +49,7 @@ impl TypedStyle {
             if let Some(ref ext) = self.layout_ext {
                 let mut row = tx
                     .edit::<Layout>(node)
-                    .display(match ext.display {
-                        Display::Flex => TableDisplay::Flex,
-                        Display::Grid => TableDisplay::Grid,
-                        Display::None => TableDisplay::None,
-                    })
+                    .display(ext.display)
                     .position(match ext.position {
                         PositionMode::Relative => Position::Relative,
                         PositionMode::Absolute => Position::Absolute,
@@ -82,7 +61,7 @@ impl TypedStyle {
                     .inset_bottom(dim_to_length(ext.insets.bottom))
                     .inset_left(dim_to_length(ext.insets.left));
                 if let Some(ar) = ext.aspect_ratio {
-                    row = row.aspect_ratio(ar);
+                    row = row.aspect_ratio(Some(ar));
                 }
                 if let Some(dir) = ext.direction {
                     row = row.direction(match dir {
@@ -120,7 +99,7 @@ impl TypedStyle {
             }
         }
 
-        if layers & nve_components::STYLE_LAYER_VISUAL != 0 {
+        if layers & nve_tables::STYLE_LAYER_VISUAL != 0 {
             if self.has_style {
                 let s = &self.style;
                 tx.edit::<Visual>(node)
@@ -131,14 +110,9 @@ impl TypedStyle {
                     .opacity(s.opacity)
                     .z_index(s.z_index);
             }
-            if let Some(ref bs) = self.box_shadow {
-                let parsed = tables::parse_box_shadow(bs);
-                if parsed.is_empty() {
-                    tx.edit::<Visual>(node).box_shadows(None);
-                } else {
-                    tx.edit::<Visual>(node)
-                        .box_shadows(Some(BoxShadows(parsed.into())));
-                }
+            if let Some(ref shadows) = self.box_shadows {
+                tx.edit::<Visual>(node)
+                    .box_shadows((!shadows.is_empty()).then(|| BoxShadows(Arc::clone(shadows))));
             }
             if let Some(ref ov) = self.overflow {
                 let mode = match ov.trim() {
@@ -155,34 +129,22 @@ impl TypedStyle {
             }
         }
 
-        if layers & nve_components::STYLE_LAYER_TYPOGRAPHY != 0 {
+        if layers & nve_tables::STYLE_LAYER_TYPOGRAPHY != 0 {
             if self.has_style {
                 let s = &self.style;
                 if s.text_color.a > 0 || s.font_size > 0.0 {
-                    let mut cur_set = tx
-                        .store()
-                        .try_row::<Typography>(node)
-                        .map_or(0, |t| t.set());
                     let mut typo = tx.edit::<Typography>(node);
                     if s.text_color.a > 0 {
-                        cur_set |= Typography::SET_COLOR;
                         typo = typo.color(Rgba(s.text_color.to_u32()));
                     }
                     if s.font_size > 0.0 {
-                        cur_set |= Typography::SET_FONT_SIZE;
-                        typo = typo.font_size(s.font_size);
+                        typo.font_size(s.font_size);
                     }
-                    let _ = typo.set(cur_set);
                 }
             }
             if let Some(ref fw) = self.font_weight {
-                let w = nve_components::parse_font_weight(fw);
-                let cur_set = tx
-                    .store()
-                    .try_row::<Typography>(node)
-                    .map_or(0, |t| t.set())
-                    | Typography::SET_FONT_WEIGHT;
-                tx.edit::<Typography>(node).font_weight(w).set(cur_set);
+                let w = nve_tables::parse_font_weight(fw);
+                tx.edit::<Typography>(node).font_weight(w);
             }
             if let Some(ref ta) = self.text_align {
                 let align = match ta.trim() {
@@ -199,7 +161,7 @@ impl TypedStyle {
     /// Writes this [`TypedStyle`] directly into `node`'s `NodeStore` word tables with zero CSS
     /// string parsing.
     pub fn apply_to_tx(&self, tx: &mut Transaction<'_>, node: NodeId) {
-        self.apply_style_layers_to_tx(tx, node, nve_components::STYLE_LAYER_ALL);
+        self.apply_style_layers_to_tx(tx, node, nve_tables::STYLE_LAYER_ALL);
 
         if let Some(ref ext) = self.layout_ext {
             if let Some(ref g) = ext.grid {
@@ -244,31 +206,64 @@ impl TypedStyle {
         }
 
         if self.cursor.is_some() || !self.state_rules.is_empty() {
-            let mut inter = tx.edit::<Interaction>(node);
             if let Some(c) = self.cursor {
-                inter = inter.cursor(c);
+                tx.edit::<Interaction>(node).cursor(c);
             }
             if !self.state_rules.is_empty() {
-                inter = inter.state_rules(Some(StateRules(self.state_rules.clone().into())));
+                if self.state_rules.iter().any(|r| r.patch.has_pending_resources()) {
+                    tx.with_temp_resources(|scope| {
+                        let rules: Arc<[StateStyleRule]> = self
+                            .state_rules
+                            .iter()
+                            .map(|r| StateStyleRule::new(r.state, lower_pending_patch(&r.patch, scope)))
+                            .collect();
+                        scope
+                            .tx()
+                            .edit::<Interaction>(node)
+                            .state_rules(Some(StateRules(rules)));
+                    });
+                } else {
+                    let rules: Arc<[StateStyleRule]> = self
+                        .state_rules
+                        .iter()
+                        .map(|r| StateStyleRule::new(r.state, r.patch.patch.clone()))
+                        .collect();
+                    tx.edit::<Interaction>(node)
+                        .state_rules(Some(StateRules(rules)));
+                }
             }
-            let _ = inter;
         }
 
         if self.show_on.is_some() || !self.responsive.is_empty() {
-            let mut resp = tx.edit::<Responsive>(node);
             if let Some(q) = self.show_on {
                 let (w, env) = pack_media_query(q);
-                resp = resp.show_on_widths(w).show_on_env(env);
+                tx.edit::<Responsive>(node)
+                    .show_on_widths(w)
+                    .show_on_env(env);
             }
             if !self.responsive.is_empty() {
-                resp = resp.rules(Some(ResponsiveRules(self.responsive.clone().into())));
+                if self.responsive.iter().any(|r| r.patch.has_pending_resources()) {
+                    tx.with_temp_resources(|scope| {
+                        let rules: Arc<[ResponsiveRule]> = self
+                            .responsive
+                            .iter()
+                            .map(|r| ResponsiveRule::new(r.query, lower_pending_patch(&r.patch, scope)))
+                            .collect();
+                        scope
+                            .tx()
+                            .edit::<Responsive>(node)
+                            .rules(Some(ResponsiveRules(rules)));
+                    });
+                } else {
+                    let rules: Arc<[ResponsiveRule]> = self
+                        .responsive
+                        .iter()
+                        .map(|r| ResponsiveRule::new(r.query, r.patch.patch.clone()))
+                        .collect();
+                    tx.edit::<Responsive>(node)
+                        .rules(Some(ResponsiveRules(rules)));
+                }
             }
-            let _ = resp;
-        }
-
-        if !self.transitions.is_empty() {
-            tx.edit::<Motion>(node)
-                .transitions(Some(Transitions(self.transitions.clone().into())));
         }
     }
 
@@ -288,14 +283,14 @@ impl TypedStyle {
             tx.detach::<GridItem>(node);
             if next.is_some_and(|n| n.has_layout) {
                 tx.edit::<Layout>(node)
-                    .display(TableDisplay::Flex)
+                    .display(Display::Flex)
                     .position(Position::Relative)
                     .flex_basis(Length::AUTO)
                     .inset_top(Length::AUTO)
                     .inset_right(Length::AUTO)
                     .inset_bottom(Length::AUTO)
                     .inset_left(Length::AUTO)
-                    .aspect_ratio(0.0)
+                    .aspect_ratio(None)
                     .direction(Direction::Inherit)
                     .padding_inline_logical(false)
                     .margin_inline_logical(false);
@@ -312,41 +307,29 @@ impl TypedStyle {
             let clear_size =
                 self.style.font_size > 0.0 && next.is_none_or(|n| n.style.font_size <= 0.0);
             if (clear_color || clear_size) && tx.store().has::<Typography>(node) {
-                let mut cur_set = tx
-                    .store()
-                    .try_row::<Typography>(node)
-                    .map_or(0, |t| t.set());
                 let mut typo = tx.edit::<Typography>(node);
                 if clear_color {
-                    cur_set &= !Typography::SET_COLOR;
-                    typo = typo.color(Rgba::BLACK);
+                    typo = typo.clear_color();
                 }
                 if clear_size {
-                    cur_set &= !Typography::SET_FONT_SIZE;
-                    typo = typo.font_size(16.0);
+                    typo.clear_font_size();
                 }
-                let _ = typo.set(cur_set);
             }
         }
         if self.font_weight.is_some()
             && next.is_none_or(|n| n.font_weight.is_none())
             && tx.store().has::<Typography>(node)
         {
-            let cur_set = tx
-                .store()
-                .try_row::<Typography>(node)
-                .map_or(0, |t| t.set())
-                & !Typography::SET_FONT_WEIGHT;
-            tx.edit::<Typography>(node).font_weight(400).set(cur_set);
+            tx.edit::<Typography>(node).clear_font_weight();
         }
         if self.text_align.is_some()
             && next.is_none_or(|n| n.text_align.is_none())
             && tx.store().has::<Typography>(node)
         {
-            tx.edit::<Typography>(node).text_align(TextAlign::Start);
+            tx.edit::<Typography>(node).clear_text_align();
         }
-        if self.box_shadow.is_some()
-            && next.is_none_or(|n| n.box_shadow.is_none())
+        if self.box_shadows.is_some()
+            && next.is_none_or(|n| n.box_shadows.is_none())
             && tx.store().has::<Visual>(node)
         {
             tx.edit::<Visual>(node).box_shadows(None);
@@ -394,10 +377,24 @@ impl TypedStyle {
         {
             tx.edit::<Responsive>(node).rules(None);
         }
-        if !self.transitions.is_empty() && next.is_none_or(|n| n.transitions.is_empty()) {
-            tx.detach::<Motion>(node);
-        }
     }
+}
+
+fn lower_pending_patch(pending: &PendingStylePatch, scope: &mut TempResources<'_>) -> RowPatch {
+    let mut patch = pending.patch.clone();
+    if let Some(ref fill) = pending.background_fill {
+        let id = scope.intern(&BackgroundFillRes(fill.clone()));
+        patch.set_res_id(Visual::BACKGROUND_FILL, id);
+    }
+    if let Some(ref cols) = pending.grid_template_columns {
+        let id = scope.intern(&GridTracks(cols.clone()));
+        patch.set_res_id(GridLayout::TEMPLATE_COLUMNS, id);
+    }
+    if let Some(ref rows) = pending.grid_template_rows {
+        let id = scope.intern(&GridTracks(rows.clone()));
+        patch.set_res_id(GridLayout::TEMPLATE_ROWS, id);
+    }
+    patch
 }
 
 #[inline]
@@ -410,10 +407,10 @@ fn dim_to_length(dim: Dimension) -> Length {
 }
 
 #[inline]
-fn to_table_grid_line(line: nve_components::layout_ext::GridLine) -> TableGridLine {
+fn to_table_grid_line(line: nve_tables::layout_ext::GridLine) -> TableGridLine {
     match line {
-        nve_components::layout_ext::GridLine::Auto => TableGridLine::Auto,
-        nve_components::layout_ext::GridLine::Line(n) => TableGridLine::Line(n),
-        nve_components::layout_ext::GridLine::Span(s) => TableGridLine::Span(s),
+        nve_tables::layout_ext::GridLine::Auto => TableGridLine::Auto,
+        nve_tables::layout_ext::GridLine::Line(n) => TableGridLine::Line(n),
+        nve_tables::layout_ext::GridLine::Span(s) => TableGridLine::Span(s),
     }
 }

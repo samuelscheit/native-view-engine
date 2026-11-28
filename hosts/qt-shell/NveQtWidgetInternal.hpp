@@ -33,7 +33,7 @@ inline constexpr const char* kNodeIdProperty = "nveNodeId";
 inline constexpr const char* kScrollOwnerProperty = "nveScrollOwner";
 
 // --- Hooks the node widgets call (NveQtWidgetReconciler.cpp) -----------------------------------
-void view_hover(QtNodeView* view, NveEventKind kind, QPointF pos);
+void view_hover(QtNodeView* view, NveInteractionEvent kind, QPointF pos);
 void view_focus(QtNodeView* view, bool focused);
 /// Press / link activation (node-local point); may destroy the view: touch nothing afterwards.
 void view_activate(QtNodeView* view, QPointF pos);
@@ -158,7 +158,7 @@ struct QtNodeView {
   bool visible = true;
   NodeSemantics sem;
   std::string href;
-  uint32_t event_mask = 0u;
+  uint32_t interaction_events = 0u;
   bool wants_press = false;
   bool hovered = false;
   BoxVisual visual;

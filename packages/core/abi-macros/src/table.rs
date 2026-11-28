@@ -1,26 +1,22 @@
 //! `#[derive(NveTable)]`: word-table schema → zero-cost typed rows for `nve-store`.
 //!
-//! ```ignore
-//! #[derive(NveTable)]
-//! #[nve_table(name = "nve.visual", storage = "dense")]
-//! pub struct Visual {
-//!     #[effect(paint)] pub background: Rgba,
-//!     #[effect(composite)] #[default(1.0)] pub opacity: f32,
-//!     #[effect(paint)] #[bits(2)] pub border_style: BorderStyle,
-//!     #[effect(semantics)] pub label: Str,
-//!     #[effect(paint)] pub shadows: Res<BoxShadows>,
-//! }
-//! ```
-//! Fields without `#[bits]` take whole words; `#[bits(n)]` fields pack consecutively into shared
-//! words of one effect class; `Str` takes two words. Emits `const DESC`, `Prop` constants
-//! (`Visual::OPACITY`), `VisualRef<'a>` getters and fluent `VisualMut<'a>` setters.
+//! Uses compile-time `nve_abi::table::pack_table` first-fit bin-packing over effect-matched
+//! words, supporting narrow scalars (`WordValue`), narrow `Option<T: OptWord>`, wide
+//! `Option<f32|u32|i32|Rgba>`, 64-bit scalars, `Str`, and `Res<R>`.
 
-use proc_macro::{Delimiter, TokenStream, TokenTree};
+use proc_macro::TokenStream;
 
-use crate::emit::quote_str;
-use crate::parse::{
-    expect_ident, is_delim, is_punct, parse_string_literal, parse_usize_literal, skip_vis,
+use crate::parse::{parse_string_literal, parse_usize_literal};
+use crate::tok::{
+    expect_ident, from_stream, is_ident, is_punct, paren_inner, render_tokens, skip_vis, Delim, Tok,
 };
+
+#[path = "table_emit.rs"]
+mod table_emit;
+
+#[cfg(test)]
+#[path = "table_tests.rs"]
+mod tests;
 
 const S: &str = "::nve_store";
 
@@ -34,16 +30,16 @@ struct Field {
     name: String,
     ty: String,
     short_ty: String,
+    /// Full Rust path inside `Option<...>` (e.g. `crate::tables::Direction`), if optional.
+    inner_opt_full: Option<String>,
+    /// Last path segment inside `Option<...>` (e.g. `Direction`, `f32`, `u8`), if optional.
+    inner_opt_short: Option<String>,
     class: Class,
     effects: u8,
-    default: Option<String>,
+    default_toks: Option<Vec<Tok>>,
     bits: Option<u32>,
-    /// `#[values(PATH)]`: a `ValueSetDesc` const naming a plain integer field's bits.
-    values: Option<String>,
+    no_inherit: bool,
     doc: Vec<String>,
-    word: u32,
-    shift: u32,
-    width: u32,
 }
 
 struct Table {
@@ -52,13 +48,19 @@ struct Table {
     name: String,
     dense: bool,
     flags: u8,
+    inherited: bool,
+    events_ty: Option<String>,
     fields: Vec<Field>,
 }
 
 pub(crate) fn derive(input: TokenStream) -> Result<String, String> {
-    let mut t = parse(input)?;
-    layout(&mut t)?;
-    Ok(emit(&t))
+    let tokens = from_stream(input);
+    derive_tokens(&tokens)
+}
+
+pub(crate) fn derive_tokens(tokens: &[Tok]) -> Result<String, String> {
+    let t = parse(tokens)?;
+    Ok(table_emit::emit(&t))
 }
 
 fn effect_bit(name: &str) -> Result<u8, String> {
@@ -70,151 +72,476 @@ fn effect_bit(name: &str) -> Result<u8, String> {
         "semantics" => 16,
         "realize" => 32,
         "events" => 64,
-        other => return Err(format!("unknown effect `{other}` (layout|measure|paint|composite|semantics|realize|events)")),
+        other => {
+            return Err(format!(
+                "unknown effect `{other}` (layout|measure|paint|composite|semantics|realize|events)"
+            ))
+        }
     })
 }
 
-fn group_inner(rest: &[TokenTree]) -> Option<Vec<TokenTree>> {
-    match rest.first() {
-        Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => {
-            Some(g.stream().into_iter().collect())
+fn parse_effects_list(tokens: &[Tok]) -> Result<u8, String> {
+    if tokens.is_empty() {
+        return Err("#[effect(...)] requires at least one effect name".into());
+    }
+    let mut i = 0usize;
+    let mut mask = 0u8;
+    while i < tokens.len() {
+        let name = expect_ident(tokens, &mut i, "effect name in #[effect(...)]")?;
+        mask |= effect_bit(&name)?;
+        if i < tokens.len() {
+            if !is_punct(tokens, i, ',') {
+                return Err(format!(
+                    "expected `,` between effect names in #[effect(...)], found `{:?}`",
+                    tokens[i]
+                ));
+            }
+            i += 1;
         }
+    }
+    Ok(mask)
+}
+
+fn natural_int_bits(short_ty: &str, full_ty: &str) -> Option<u32> {
+    if full_ty.contains('<') {
+        return None;
+    }
+    match short_ty {
+        "u8" | "i8" => Some(8),
+        "u16" | "i16" => Some(16),
+        "u32" | "i32" => Some(32),
         _ => None,
     }
 }
 
-fn parse(input: TokenStream) -> Result<Table, String> {
-    let tokens: Vec<TokenTree> = input.into_iter().collect();
+fn strip_outer_parens(mut toks: &[Tok]) -> &[Tok] {
+    while let [Tok::Group(Delim::Paren | Delim::None, inner)] = toks {
+        toks = inner.as_slice();
+    }
+    toks
+}
+
+fn flatten_none_groups<'a>(toks: &'a [Tok], out: &mut Vec<&'a Tok>) {
+    for t in toks {
+        if let Tok::Group(Delim::None, inner) = t {
+            flatten_none_groups(inner, out);
+        } else {
+            out.push(t);
+        }
+    }
+}
+
+fn trailing_two_path_idents(mut toks: &[Tok]) -> Option<(&str, &str)> {
+    toks = strip_outer_parens(toks);
+    let mut negated = false;
+    while is_punct(toks, 0, '-') {
+        negated = true;
+        toks = strip_outer_parens(&toks[1..]);
+    }
+    let mut flat = Vec::with_capacity(toks.len());
+    flatten_none_groups(toks, &mut flat);
+    let mut segs: Vec<&str> = Vec::new();
+    let mut i = 0;
+    if matches!(flat.first(), Some(Tok::Punct(':', _)))
+        && matches!(flat.get(1), Some(Tok::Punct(':', _)))
+    {
+        i = 2;
+    }
+    while i < flat.len() {
+        let Tok::Ident(id) = flat[i] else {
+            return None;
+        };
+        segs.push(id.as_str());
+        i += 1;
+        if i == flat.len() {
+            break;
+        }
+        if matches!(flat.get(i), Some(Tok::Punct(':', _)))
+            && matches!(flat.get(i + 1), Some(Tok::Punct(':', _)))
+        {
+            i += 2;
+        } else {
+            return None;
+        }
+    }
+    if segs.len() < 2 {
+        return None;
+    }
+    let ty = segs[segs.len() - 2];
+    let item = segs[segs.len() - 1];
+    if negated
+        && !matches!(
+            (ty, item),
+            ("f32" | "f64", "NAN" | "INFINITY" | "NEG_INFINITY")
+        )
+    {
+        return None;
+    }
+    Some((ty, item))
+}
+
+fn check_no_magic_sentinel(field_name: &str, toks: &[Tok]) -> Result<(), String> {
+    if let Some((ty, item)) = trailing_two_path_idents(toks) {
+        let banned = matches!(
+            (ty, item),
+            ("f32" | "f64", "NAN" | "INFINITY" | "NEG_INFINITY")
+                | ("u8" | "u16" | "u32" | "u64", "MAX")
+                | ("i8" | "i16" | "i32" | "i64", "MIN")
+        );
+        if banned {
+            return Err(format!(
+                "field `{field_name}`: magic sentinel default `{}` is forbidden; use `Option<T>` instead",
+                render_tokens(toks)
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn check_no_split_bool_pairs(fields: &[Field]) -> Result<(), String> {
+    for f in fields {
+        if f.short_ty != "bool" || f.inner_opt_short.is_some() {
+            continue;
+        }
+        let candidates = [
+            f.name.strip_suffix("_enabled"),
+            f.name.strip_suffix("_set"),
+            f.name.strip_suffix("_present"),
+            f.name.strip_suffix("_specified"),
+            f.name.strip_prefix("has_"),
+        ];
+        for base in candidates.into_iter().flatten() {
+            if !base.is_empty() && fields.iter().any(|other| other.name == base) {
+                return Err(format!(
+                    "field `{}`: split-bool sentinel pair with `{base}` is forbidden; use `Option<T>` or `#[nve_table(inherited)]` instead",
+                    f.name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_no_method_collisions(
+    inherited: bool,
+    has_events: bool,
+    fields: &[Field],
+) -> Result<(), String> {
+    for f in fields {
+        if f.name == "get" {
+            return Err("field `get` collides with generated `*Mut::get()` method".into());
+        }
+        if inherited && f.name == "explicit_mask" {
+            return Err(
+                "field `explicit_mask` collides with generated `*Ref::explicit_mask()` method on inherited table"
+                    .into(),
+            );
+        }
+        if has_events && matches!(f.name.as_str(), "listeners" | "listen" | "unlisten") {
+            return Err(format!(
+                "field `{}` collides with generated `{}()` method on event-bearing table",
+                f.name, f.name
+            ));
+        }
+    }
+    if inherited {
+        for f in fields {
+            let clear_name = format!("clear_{}", f.name);
+            if fields.iter().any(|other| other.name == clear_name) {
+                return Err(format!(
+                    "field `{clear_name}` collides with generated `clear_{}()` method on inherited table",
+                    f.name
+                ));
+            }
+            let explicit_name = format!("is_{}_explicit", f.name);
+            if fields.iter().any(|other| other.name == explicit_name) {
+                return Err(format!(
+                    "field `{explicit_name}` collides with generated `is_{}_explicit()` method on inherited table",
+                    f.name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn parse(tokens: &[Tok]) -> Result<Table, String> {
     let mut pos = 0;
-    let (mut name, mut dense, mut flags) = (None, true, 0u8);
-    while is_punct(&tokens, pos, '#') {
-        if let Some(TokenTree::Group(g)) = tokens.get(pos + 1) {
-            let inner: Vec<_> = g.stream().into_iter().collect();
-            if matches!(inner.first(), Some(TokenTree::Ident(i)) if i.to_string() == "nve_table") {
-                let kv = group_inner(&inner[1..]).ok_or("expected `#[nve_table(...)]`")?;
-                let mut i = 0;
-                while i < kv.len() {
-                    let TokenTree::Ident(k) = &kv[i] else {
-                        return Err(format!("expected key identifier in #[nve_table], found `{}`", kv[i]));
-                    };
-                    if !is_punct(&kv, i + 1, '=') {
-                        return Err(format!("expected `=` after #[nve_table] key `{k}`"));
-                    }
-                    let TokenTree::Literal(v) = kv.get(i + 2).ok_or("expected value in #[nve_table]")? else {
-                        return Err(format!("expected string literal for #[nve_table] key `{k}`"));
-                    };
-                    let v = parse_string_literal(&v.to_string())?;
-                    match k.to_string().as_str() {
-                        "name" => name = Some(v),
-                        "storage" => {
-                            dense = match v.as_str() {
-                                "dense" => true,
-                                "sparse" => false,
-                                o => return Err(format!("storage must be dense|sparse, got `{o}`")),
-                            }
+    let (mut name, mut dense, mut flags, mut inherited, mut events_ty) =
+        (None, true, 0u8, false, None::<String>);
+    while is_punct(tokens, pos, '#') {
+        if let Some(Tok::Group(Delim::Bracket, inner)) = tokens.get(pos + 1)
+            && matches!(inner.first(), Some(Tok::Ident(i)) if i == "nve_table")
+        {
+            let kv = paren_inner(&inner[1..]).ok_or("expected `#[nve_table(...)]`")?;
+            let mut i = 0;
+            while i < kv.len() {
+                let Tok::Ident(k) = &kv[i] else {
+                    return Err(format!(
+                        "expected key identifier in #[nve_table], found `{:?}`",
+                        kv[i]
+                    ));
+                };
+                match k.as_str() {
+                    "inherited" => {
+                        if is_punct(kv, i + 1, '=') {
+                            return Err(
+                                "#[nve_table]: `inherited` is a bare flag, not `key = value`"
+                                    .into(),
+                            );
                         }
-                        "flags" => {
-                            for f in v.split('|').map(str::trim).filter(|f| !f.is_empty()) {
-                                flags |= match f {
-                                    "host" => 1,
-                                    "publish" => 2,
-                                    "layout" => 4,
-                                    o => return Err(format!("unknown table flag `{o}` (host|publish|layout)")),
-                                };
-                            }
+                        if inherited {
+                            return Err("#[nve_table]: duplicate `inherited` flag".into());
                         }
-                        o => return Err(format!("unknown #[nve_table] key `{o}`")),
-                    }
-                    i += 3;
-                    if i < kv.len() {
-                        if !is_punct(&kv, i, ',') {
-                            return Err(format!("expected `,` in #[nve_table], found `{}`", kv[i]));
-                        }
+                        inherited = true;
                         i += 1;
                     }
+                    "events" => {
+                        if !is_punct(kv, i + 1, '=') {
+                            return Err("expected `=` after #[nve_table] key `events`".into());
+                        }
+                        i += 2;
+                        let start = i;
+                        let mut depth = 0i32;
+                        while i < kv.len() {
+                            match &kv[i] {
+                                Tok::Punct('<', _) => depth += 1,
+                                Tok::Punct('>', _) => depth -= 1,
+                                Tok::Punct(',', _) if depth == 0 => break,
+                                _ => {}
+                            }
+                            i += 1;
+                        }
+                        if i == start {
+                            return Err(
+                                "#[nve_table]: `events = <EnumType>` requires an event enum type"
+                                    .into(),
+                            );
+                        }
+                        events_ty = Some(render_tokens(&kv[start..i]));
+                    }
+                    key => {
+                        if !is_punct(kv, i + 1, '=') {
+                            return Err(format!("expected `=` after #[nve_table] key `{key}`"));
+                        }
+                        let Tok::Literal(v) =
+                            kv.get(i + 2).ok_or("expected value in #[nve_table]")?
+                        else {
+                            return Err(format!(
+                                "expected string literal for #[nve_table] key `{key}`"
+                            ));
+                        };
+                        let v = parse_string_literal(v)?;
+                        match key {
+                            "name" => name = Some(v),
+                            "storage" => {
+                                dense = match v.as_str() {
+                                    "dense" => true,
+                                    "sparse" => false,
+                                    o => {
+                                        return Err(format!(
+                                            "storage must be dense|sparse, got `{o}`"
+                                        ))
+                                    }
+                                }
+                            }
+                            "flags" => {
+                                for f in v.split('|').map(str::trim).filter(|f| !f.is_empty()) {
+                                    flags |= match f {
+                                        "host" => 1,
+                                        "publish" => 2,
+                                        "layout" => 4,
+                                        o => {
+                                            return Err(format!(
+                                                "unknown table flag `{o}` (host|publish|layout)"
+                                            ))
+                                        }
+                                    };
+                                }
+                            }
+                            o => return Err(format!("unknown #[nve_table] key `{o}`")),
+                        }
+                        i += 3;
+                    }
+                }
+                if i < kv.len() {
+                    if !is_punct(kv, i, ',') {
+                        return Err(format!(
+                            "expected `,` in #[nve_table], found `{:?}`",
+                            kv[i]
+                        ));
+                    }
+                    i += 1;
                 }
             }
         }
         pos += 2;
     }
+
+    if inherited && events_ty.is_some() {
+        return Err("#[nve_table]: cannot combine `inherited` and `events`".into());
+    }
+    if events_ty.is_some() {
+        // Set `table_flags::HAS_EVENTS` (1 << 4) so wire `DeclareTables` carries events_word = 0.
+        flags |= 1 << 4;
+    }
+
     let vis_start = pos;
-    skip_vis(&tokens, &mut pos);
-    let vis: String = tokens[vis_start..pos]
-        .iter()
-        .cloned()
-        .collect::<TokenStream>()
-        .to_string();
-    let kw = expect_ident(&tokens, &mut pos, "struct")?;
+    skip_vis(tokens, &mut pos);
+    let vis = render_tokens(&tokens[vis_start..pos]);
+    let kw = expect_ident(tokens, &mut pos, "struct")?;
     if kw != "struct" {
         return Err("#[derive(NveTable)] only supports structs".into());
     }
-    let ident = expect_ident(&tokens, &mut pos, "struct name")?;
-    let Some(TokenTree::Group(body)) = tokens.get(pos).filter(|t| is_delim(t, Delimiter::Brace)) else {
-        return Err(format!("#[derive(NveTable)] requires named fields on `{ident}`"));
+    let ident = expect_ident(tokens, &mut pos, "struct name")?;
+    if is_punct(tokens, pos, '<') || is_ident(tokens, pos, "where") {
+        return Err(format!(
+            "#[derive(NveTable)] does not support generics on `{ident}`"
+        ));
+    }
+    let Some(Tok::Group(Delim::Brace, body)) = tokens.get(pos) else {
+        return Err(format!(
+            "#[derive(NveTable)] requires named fields on `{ident}`"
+        ));
     };
     let name = name.ok_or_else(|| format!("`{ident}` needs #[nve_table(name = \"...\")]"))?;
-    Ok(Table { vis, ident, name, dense, flags, fields: parse_fields(body.stream())? })
+    let fields = parse_fields(body)?;
+    if fields.is_empty() && events_ty.is_none() {
+        return Err(format!("table `{ident}` must declare at least 1 field"));
+    }
+    if inherited {
+        // Set `table_flags::INHERITED` (1 << 3) so wire `DeclareTables` carries inherited state.
+        flags |= 1 << 3;
+        if fields.len() > 32 {
+            return Err(format!(
+                "#[nve_table(inherited)] table `{ident}` supports at most 32 fields (u32 explicit mask), got {}",
+                fields.len()
+            ));
+        }
+    } else if let Some(f) = fields.iter().find(|f| f.no_inherit) {
+        return Err(format!(
+            "field `{}`: `#[no_inherit]` is only valid on `#[nve_table(inherited)]` tables",
+            f.name
+        ));
+    }
+    check_no_split_bool_pairs(&fields)?;
+    check_no_method_collisions(inherited, events_ty.is_some(), &fields)?;
+    Ok(Table {
+        vis,
+        ident,
+        name,
+        dense,
+        flags,
+        inherited,
+        events_ty,
+        fields,
+    })
 }
 
-fn parse_fields(body: TokenStream) -> Result<Vec<Field>, String> {
-    let tokens: Vec<TokenTree> = body.into_iter().collect();
+fn parse_fields(tokens: &[Tok]) -> Result<Vec<Field>, String> {
     let (mut pos, mut out) = (0, Vec::new());
     while pos < tokens.len() {
-        let (mut effects, mut default, mut bits, mut values, mut doc) = (0u8, None, None, None, Vec::new());
-        while is_punct(&tokens, pos, '#') {
-            let Some(TokenTree::Group(g)) = tokens.get(pos + 1) else { return Err("bad attribute".into()) };
-            let inner: Vec<_> = g.stream().into_iter().collect();
-            let attr = match inner.first() { Some(TokenTree::Ident(i)) => i.to_string(), _ => String::new() };
-            match attr.as_str() {
+        let (mut effects, mut default_toks, mut bits, mut no_inherit, mut doc) =
+            (0u8, None, None, false, Vec::new());
+        while is_punct(tokens, pos, '#') {
+            let Some(Tok::Group(Delim::Bracket, inner)) = tokens.get(pos + 1) else {
+                return Err("bad attribute".into());
+            };
+            let attr = match inner.first() {
+                Some(Tok::Ident(i)) => i.as_str(),
+                _ => "",
+            };
+            match attr {
                 "effect" => {
-                    for t in group_inner(&inner[1..]).ok_or("expected `#[effect(...)]`")? {
-                        if let TokenTree::Ident(e) = t {
-                            effects |= effect_bit(&e.to_string())?;
-                        }
-                    }
+                    let g = paren_inner(&inner[1..]).ok_or("expected `#[effect(...)]`")?;
+                    effects |= parse_effects_list(g)?;
                 }
                 "default" => {
-                    let g = group_inner(&inner[1..]).ok_or("expected `#[default(expr)]`")?;
-                    default = Some(g.into_iter().collect::<TokenStream>().to_string());
+                    let g = paren_inner(&inner[1..]).ok_or("expected `#[default(expr)]`")?;
+                    if g.is_empty() {
+                        return Err("#[default(...)] requires a constant expression".into());
+                    }
+                    default_toks = Some(g.to_vec());
                 }
                 "bits" => {
-                    let g = group_inner(&inner[1..]).ok_or("expected `#[bits(n)]`")?;
-                    let [TokenTree::Literal(l)] = g.as_slice() else { return Err("expected integer in #[bits]".into()) };
-                    bits = Some(parse_usize_literal(&l.to_string())? as u32);
+                    let g = paren_inner(&inner[1..]).ok_or("expected `#[bits(n)]`")?;
+                    let [Tok::Literal(l)] = g else {
+                        return Err("expected integer in #[bits]".into());
+                    };
+                    let raw = parse_usize_literal(l)?;
+                    if raw == 0 || raw >= 32 {
+                        return Err(format!(
+                            "#[bits({raw})] is only valid for strictly narrowing integer primitives (`1..natural_bits`)"
+                        ));
+                    }
+                    bits = Some(raw as u32);
                 }
-                "values" => {
-                    let g = group_inner(&inner[1..]).ok_or("expected `#[values(PATH)]`")?;
-                    values = Some(g.into_iter().collect::<TokenStream>().to_string());
+                "no_inherit" => {
+                    if inner.len() > 1 {
+                        return Err("#[no_inherit] takes no arguments".into());
+                    }
+                    if no_inherit {
+                        return Err("duplicate #[no_inherit] attribute".into());
+                    }
+                    no_inherit = true;
                 }
-                "doc" => if let Some(TokenTree::Literal(l)) = inner.get(2) {
-                    doc.push(parse_string_literal(&l.to_string())?);
-                },
+                "doc" => {
+                    if let Some(Tok::Literal(l)) = inner.get(2) {
+                        doc.push(parse_string_literal(l)?);
+                    }
+                }
                 _ => {}
             }
             pos += 2;
         }
-        if pos >= tokens.len() { break; }
-        skip_vis(&tokens, &mut pos);
-        let name = expect_ident(&tokens, &mut pos, "field name")?;
-        if !is_punct(&tokens, pos, ':') { return Err(format!("expected `:` after `{name}`")); }
+        if pos >= tokens.len() {
+            break;
+        }
+        skip_vis(tokens, &mut pos);
+        let name = expect_ident(tokens, &mut pos, "field name")?;
+        if !is_punct(tokens, pos, ':') {
+            return Err(format!("expected `:` after `{name}`"));
+        }
         pos += 1;
         let start = pos;
         let mut depth = 0i32;
         while pos < tokens.len() {
             match &tokens[pos] {
-                TokenTree::Punct(p) if p.as_char() == '<' => depth += 1,
-                TokenTree::Punct(p) if p.as_char() == '>' => depth -= 1,
-                TokenTree::Punct(p) if p.as_char() == ',' && depth == 0 => break,
+                Tok::Punct('<', _) => depth += 1,
+                Tok::Punct('>', _) => depth -= 1,
+                Tok::Punct(',', _) if depth == 0 => break,
                 _ => {}
             }
             pos += 1;
         }
-        let ty_tokens: TokenStream = tokens[start..pos].iter().cloned().collect();
-        let ty = ty_tokens.to_string();
-        pos += 1;
+        let ty = render_tokens(&tokens[start..pos]);
+        if is_punct(tokens, pos, ',') {
+            pos += 1;
+        }
         let compact: String = ty.chars().filter(|c| !c.is_whitespace()).collect();
         let outer_head = compact.split('<').next().unwrap_or(&compact);
         let outer_last = outer_head.rsplit("::").next().unwrap_or(outer_head).to_owned();
+        let (inner_opt_full, inner_opt_short) = if outer_last == "Option"
+            && let Some(lt) = compact.find('<')
+            && compact.ends_with('>')
+        {
+            let inner = &compact[lt + 1..compact.len() - 1];
+            let inner_head = inner.split('<').next().unwrap_or(inner);
+            let head_short = inner_head.rsplit("::").next().unwrap_or(inner_head);
+            let short = if head_short == "NonZero"
+                && let Some(nz_lt) = inner.find('<')
+                && inner.ends_with('>')
+            {
+                let arg = &inner[nz_lt + 1..inner.len() - 1];
+                let arg_short = arg.rsplit("::").next().unwrap_or(arg);
+                format!("NonZero<{arg_short}>")
+            } else {
+                head_short.to_owned()
+            };
+            (Some(inner.to_owned()), Some(short))
+        } else {
+            (None, None)
+        };
         let class = if outer_last == "Str" && !compact.contains('<') {
             Class::Str
         } else if outer_last == "Res"
@@ -229,192 +556,49 @@ fn parse_fields(body: TokenStream) -> Result<Vec<Field>, String> {
         } else {
             Class::Scalar
         };
-        if effects == 0 { return Err(format!("field `{name}` needs #[effect(...)]")); }
-        if !matches!(class, Class::Scalar) && (default.is_some() || bits.is_some() || values.is_some()) {
-            return Err(format!("`{name}`: Str/Res fields take no #[default]/#[bits]/#[values]"));
+        if effects == 0 {
+            return Err(format!("field `{name}` needs #[effect(...)]"));
         }
-        out.push(Field { name, ty, short_ty: outer_last, class, effects, default, bits, values, doc, word: 0, shift: 0, width: 32 });
+        if !matches!(class, Class::Scalar) && (default_toks.is_some() || bits.is_some()) {
+            return Err(format!(
+                "`{name}`: Str/Res fields take no #[default]/#[bits]"
+            ));
+        }
+        if let Some(ref toks) = default_toks {
+            check_no_magic_sentinel(&name, toks)?;
+        }
+        if let Some(n) = bits {
+            match natural_int_bits(&outer_last, &compact) {
+                Some(natural) if n < natural => {}
+                Some(natural) => {
+                    return Err(format!(
+                        "`{name}`: #[bits({n})] is redundant or wider than `{outer_last}` ({natural} bits); remove #[bits] or narrow strictly (`1..{natural}`)"
+                    ));
+                }
+                None => {
+                    return Err(format!(
+                        "`{name}`: #[bits({n})] is only permitted for narrowing integer primitives (`u8|i8|u16|i16|u32|i32`), not `{ty}`"
+                    ));
+                }
+            }
+        }
+        out.push(Field {
+            name,
+            ty,
+            short_ty: outer_last,
+            inner_opt_full,
+            inner_opt_short,
+            class,
+            effects,
+            default_toks,
+            bits,
+            no_inherit,
+            doc,
+        });
     }
     Ok(out)
 }
 
-fn layout(t: &mut Table) -> Result<(), String> {
-    let mut next = 0u32;
-    // Open packed word: (word, used bits, effects).
-    let mut open: Option<(u32, u32, u8)> = None;
-    for f in &mut t.fields {
-        match (&f.class, f.bits) {
-            (Class::Scalar, Some(b)) => {
-                if b == 0 || b > 32 { return Err(format!("`{}`: #[bits] must be 1..=32", f.name)); }
-                match open {
-                    Some((w, used, fx)) if used + b <= 32 && fx == f.effects => {
-                        f.word = w; f.shift = used; f.width = b;
-                        open = Some((w, used + b, fx));
-                    }
-                    _ => {
-                        f.word = next; f.shift = 0; f.width = b;
-                        open = Some((next, b, f.effects));
-                        next += 1;
-                    }
-                }
-            }
-            (Class::Str, _) => { f.word = next; next += 2; }
-            _ => { f.word = next; next += 1; }
-        }
-    }
-    if next == 0 || next > 32 {
-        return Err(format!("table `{}` has {next} words (must be 1..=32); split it", t.ident));
-    }
-    Ok(())
-}
-
 fn upper(s: &str) -> String {
     s.to_ascii_uppercase()
-}
-
-fn mask(f: &Field) -> String {
-    if f.width >= 32 { "0xFFFF_FFFFu32".into() } else { format!("0x{:X}u32", ((1u64 << f.width) - 1) << f.shift) }
-}
-
-fn default_bits(f: &Field) -> Option<String> {
-    let e = f.default.as_ref()?;
-    Some(match f.short_ty.as_str() {
-        "f32" => format!("f32::to_bits({e})"),
-        "u32" | "u16" | "u8" | "i32" | "bool" => format!("(({e}) as u32)"),
-        "i16" => format!("((({e}) as i16) as u16 as u32)"),
-        "NodeId" => format!("(({e}).0)"),
-        _ => format!("(({e}).to_word())"),
-    })
-}
-
-fn docs(f: &Field) -> String {
-    f.doc.iter().map(|d| format!("#[doc = {}]", quote_str(d))).collect()
-}
-
-fn emit(t: &Table) -> String {
-    let id = &t.ident;
-    let vis = &t.vis;
-    let words = t.fields.iter().map(|f| f.word + if matches!(f.class, Class::Str) { 2 } else { 1 }).max().unwrap_or(0) as usize;
-    let mut defaults = vec![String::from("0u32"); words];
-    let mut fx = vec![0u8; words];
-    let (mut str_words, mut res_words) = (0u32, 0u32);
-    let (mut fields, mut props, mut getters, mut setters, mut regs, mut asserts) =
-        (String::new(), String::new(), String::new(), String::new(), String::new(), String::new());
-    for f in &t.fields {
-        let (w, sh, m, ty, name) = (f.word, f.shift, mask(f), &f.ty, &f.name);
-        let d = docs(f);
-        fx[w as usize] |= f.effects;
-        fields.push_str(&format!(
-            "{S}::FieldDesc {{ name: {}, kind: <{ty} as {S}::TableField>::KIND, word: {w}, shift: {sh}, bits: {}, effects: {}, values: {} }},",
-            quote_str(name), if matches!(f.class, Class::Str) { 64 } else { f.width }, f.effects,
-            f.values.as_ref().map_or_else(|| format!("<{ty} as {S}::TableField>::VALUES"), |p| format!("Some(&{p})"))));
-        regs.push_str(&format!("<{ty} as {S}::TableField>::register();"));
-        let cname = upper(name);
-        match &f.class {
-            Class::Scalar => {
-                if let Some(b) = default_bits(f) {
-                    defaults[w as usize].push_str(&format!(" | (({b} << {sh}) & {m})"));
-                }
-                if let Some(b) = f.bits {
-                    asserts.push_str(&format!("const _: () = assert!((<{ty} as {S}::WordValue>::BITS as u32) <= {b}, \"#[bits] narrower than the field type\");"));
-                }
-                props.push_str(&format!("{d} pub const {cname}: {S}::Prop<{id}, {ty}> = unsafe {{ {S}::Prop::new({w}, {sh}, {}) }};", f.width));
-                let read = if f.width >= 32 { format!("self.0.word({w})") } else { format!("(self.0.word({w}) & {m}) >> {sh}") };
-                getters.push_str(&format!("{d} #[inline(always)] pub fn {name}(&self) -> {ty} {{ <{ty} as {S}::WordValue>::from_bits({read}) }}"));
-                setters.push_str(&format!("{d} #[inline(always)] pub fn {name}(mut self, v: {ty}) -> Self {{ self.0.put({w}, {sh}, {m}, <{ty} as {S}::WordValue>::to_bits(v)); self }}"));
-            }
-            Class::Str => {
-                str_words |= 1 << w;
-                fx[w as usize + 1] |= f.effects;
-                props.push_str(&format!("{d} pub const {cname}: {S}::StrProp<{id}> = unsafe {{ {S}::StrProp::new({w}) }};"));
-                getters.push_str(&format!(
-                    "{d} #[inline(always)] pub fn {name}(&self) -> &'a str {{ self.0.str_at({w}) }} \
-                     #[doc = \"Raw `(off, len)` span into the store text slab.\"] #[inline(always)] pub fn {name}_span(&self) -> {S}::StrSpan {{ self.0.str_span_at({w}) }}"
-                ));
-                setters.push_str(&format!("{d} #[inline] pub fn {name}(mut self, v: &str) -> Self {{ self.0.put_str({w}, v); self }}"));
-            }
-            Class::Res(r) => {
-                res_words |= 1 << w;
-                props.push_str(&format!("{d} pub const {cname}: {S}::ResProp<{id}, {r}> = unsafe {{ {S}::ResProp::new({w}) }};"));
-                getters.push_str(&format!("{d} #[inline(always)] pub fn {name}(&self) -> {S}::ResourceId {{ {S}::ResourceId(self.0.word({w})) }}"));
-                setters.push_str(&format!(
-                    "{d} #[inline] pub fn {name}(mut self, v: ::core::option::Option<{r}>) -> Self {{ self.0.put_resource({w}, v); self }} \
-                     #[doc = \"Ephemeral (in-place, non-deduplicated) write; for per-frame blobs.\"] #[inline] pub fn {name}_ephemeral(mut self, v: {r}) -> Self {{ self.0.put_resource_ephemeral({w}, v); self }}"));
-            }
-        }
-    }
-    let mut flags = t.flags;
-    if fx.iter().any(|&e| e & 3 != 0) { flags |= 4; }
-    let storage = if t.dense { "Dense" } else { "Sparse" };
-    let defaults = defaults.join(", ");
-    let fx = fx.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", ");
-    let name = quote_str(&t.name);
-    format!(r#"
-const _: () = {{
-    const DEFAULTS: &[{S}::Word] = &[{defaults}];
-    const WORD_EFFECTS: &[u8] = &[{fx}];
-    const FIELDS: &[{S}::FieldDesc] = &[{fields}];
-    unsafe impl {S}::NveTable for {id} {{
-        const DESC: {S}::TableDesc = {S}::TableDesc {{
-            key: {S}::__private::Key64::of({name}),
-            name: {name},
-            schema_hash: {S}::__private::compute_table_schema_hash(
-                {name},
-                {S}::Storage::{storage},
-                {flags},
-                DEFAULTS,
-                WORD_EFFECTS,
-                {str_words},
-                {res_words},
-                FIELDS,
-            ),
-            storage: {S}::Storage::{storage},
-            flags: {flags},
-            defaults: DEFAULTS,
-            word_effects: WORD_EFFECTS,
-            str_words: {str_words},
-            resource_words: {res_words},
-            fields: FIELDS,
-        }};
-        type Ref<'a> = {id}Ref<'a>;
-        type Mut<'a> = {id}Mut<'a>;
-        #[inline(always)]
-        fn from_row_ref<'a>(row: {S}::RowRef<'a>) -> Self::Ref<'a> {{ {id}Ref(row) }}
-        #[inline(always)]
-        fn from_row_writer<'a>(writer: {S}::RowWriter<'a>) -> Self::Mut<'a> {{ {id}Mut(writer) }}
-        #[inline(always)]
-        fn slot() -> {S}::TableSlot {{
-            static CELL: ::core::sync::atomic::AtomicU8 = ::core::sync::atomic::AtomicU8::new(u8::MAX);
-            static DESC: {S}::TableDesc = <{id} as {S}::NveTable>::DESC;
-            let s = CELL.load(::core::sync::atomic::Ordering::Acquire);
-            if s != u8::MAX {{ {S}::TableSlot(s) }} else {{
-                {S}::__private::register_static(&DESC, &CELL, || {{ {regs} }})
-            }}
-        }}
-    }}
-    {asserts}
-}};
-
-impl {id} {{
-    /// Stable table key (`xxh64` of the table name).
-    pub const KEY: {S}::TableKey = <{id} as {S}::NveTable>::DESC.key;
-    {props}
-}}
-
-/// Zero-copy typed reader of one `{id}` row.
-#[derive(Clone, Copy)]
-{vis} struct {id}Ref<'a>({S}::RowRef<'a>);
-
-impl<'a> {id}Ref<'a> {{ {getters} }}
-
-/// Fluent typed writer of one `{id}` row.
-{vis} struct {id}Mut<'a>({S}::RowWriter<'a>);
-
-impl<'a> {id}Mut<'a> {{
-    /// Current row values.
-    #[inline(always)]
-    pub fn get(&self) -> {id}Ref<'_> {{ {id}Ref(self.0.as_row_ref()) }}
-    {setters}
-}}
-"#)
 }

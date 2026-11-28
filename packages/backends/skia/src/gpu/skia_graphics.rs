@@ -2,7 +2,7 @@
 //! for `--features skia`.
 
 use nve_abi::ColorRgba;
-use nve_components::paint::{normalize_stops, stops_are_normalized, BackgroundFill, GradientStop};
+use nve_tables::paint::{normalize_stops, stops_are_normalized, BackgroundFill, GradientStop};
 use nve_engine::LayoutRect;
 use skia_safe::gradient::{
     self, interpolation::InPremul, Colors as GradientColors, Gradient, Interpolation,

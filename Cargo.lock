@@ -2455,6 +2455,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "nve-abi-macros",
+ "nve-codec",
  "nve-hash",
  "rustc-hash",
  "serde",
@@ -2470,9 +2471,9 @@ version = "0.1.0"
 dependencies = [
  "guppy",
  "nve-abi",
- "nve-components",
  "nve-hash",
  "nve-store",
+ "nve-tables",
  "proc-macro2",
  "syn 2.0.119",
 ]
@@ -2483,10 +2484,10 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "nve-abi",
- "nve-components",
  "nve-engine",
  "nve-layout",
  "nve-store",
+ "nve-tables",
 ]
 
 [[package]]
@@ -2500,10 +2501,10 @@ dependencies = [
  "flate2",
  "nve-abi",
  "nve-backend-headless",
- "nve-components",
  "nve-engine",
  "nve-layout",
  "nve-store",
+ "nve-tables",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
@@ -2523,10 +2524,12 @@ dependencies = [
  "base64",
  "criterion",
  "nve-abi",
- "nve-components",
+ "nve-codec",
  "nve-engine",
+ "nve-interop",
  "nve-rpc",
  "nve-store",
+ "nve-tables",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -2542,14 +2545,15 @@ dependencies = [
  "nve-backend-headless",
  "nve-backend-skia",
  "nve-backend-web",
- "nve-components",
  "nve-dioxus",
  "nve-engine",
  "nve-hash",
  "nve-interop",
  "nve-layout",
  "nve-layout-yoga",
+ "nve-motion",
  "nve-store",
+ "nve-tables",
  "serde",
  "serde_json",
 ]
@@ -2576,6 +2580,7 @@ name = "nve-camera"
 version = "0.1.0"
 dependencies = [
  "nve-abi",
+ "nve-codec",
  "nve-store",
  "serde",
 ]
@@ -2595,6 +2600,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "nve-abi",
+ "nve-codec",
  "nve-hash",
  "nve-store",
 ]
@@ -2617,8 +2623,8 @@ dependencies = [
  "nve-abi",
  "nve-backend-web",
  "nve-canvas",
- "nve-components",
  "nve-store",
+ "nve-tables",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -2638,8 +2644,8 @@ dependencies = [
  "nve-backend-skia",
  "nve-backend-web",
  "nve-canvas",
+ "nve-canvas-web",
  "nve-codegen",
- "nve-components",
  "nve-dioxus",
  "nve-docs",
  "nve-docs-site",
@@ -2650,7 +2656,9 @@ dependencies = [
  "nve-mdx",
  "nve-store",
  "nve-studio-workspace",
+ "nve-tables",
  "nve-ui",
+ "nve-web-html-web",
  "nve-wire",
  "serde_json",
  "tungstenite",
@@ -2665,28 +2673,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "nve-codec"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "nve-abi-macros",
+]
+
+[[package]]
 name = "nve-codegen"
 version = "0.1.0"
 dependencies = [
  "askama",
  "criterion",
  "nve-abi",
- "nve-components",
  "nve-hash",
+ "nve-tables",
  "proc-macro2",
  "serde",
  "serde_json",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "nve-components"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "nve-abi",
- "nve-hash",
- "nve-store",
 ]
 
 [[package]]
@@ -2698,11 +2704,12 @@ dependencies = [
  "dioxus-core-macro",
  "dioxus-signals",
  "nve-abi",
- "nve-components",
+ "nve-codec",
  "nve-engine",
  "nve-interop",
  "nve-runtime",
  "nve-store",
+ "nve-tables",
 ]
 
 [[package]]
@@ -2716,7 +2723,6 @@ dependencies = [
  "nve-backend-headless",
  "nve-backend-web",
  "nve-clipboard",
- "nve-components",
  "nve-dioxus",
  "nve-host-services",
  "nve-interop",
@@ -2724,6 +2730,7 @@ dependencies = [
  "nve-router",
  "nve-store",
  "nve-system-env",
+ "nve-tables",
  "nve-ui",
  "nve-web-html",
  "nve-web-html-web",
@@ -2744,7 +2751,6 @@ dependencies = [
  "nve-canvas-skia",
  "nve-canvas-web",
  "nve-clipboard",
- "nve-components",
  "nve-dioxus",
  "nve-docs",
  "nve-engine",
@@ -2754,6 +2760,7 @@ dependencies = [
  "nve-router",
  "nve-store",
  "nve-system-env",
+ "nve-tables",
  "nve-ui",
  "nve-web-html",
  "nve-web-html-web",
@@ -2769,8 +2776,9 @@ dependencies = [
  "libc",
  "libloading 0.9.1",
  "nve-abi",
- "nve-components",
+ "nve-codec",
  "nve-store",
+ "nve-tables",
  "serde",
  "serde_json",
 ]
@@ -2812,9 +2820,9 @@ dependencies = [
  "hyper",
  "hyper-util",
  "minicbor",
+ "nve-abi",
  "nve-backend-web",
  "nve-canvas",
- "nve-components",
  "nve-dioxus",
  "nve-engine",
  "nve-example-issues-api",
@@ -2826,6 +2834,7 @@ dependencies = [
  "nve-server",
  "nve-ssr",
  "nve-store",
+ "nve-tables",
  "nve-ui",
  "nve-web-html",
  "nve-web-shell",
@@ -2847,13 +2856,14 @@ dependencies = [
  "nve-canvas",
  "nve-canvas-skia",
  "nve-canvas-web",
- "nve-components",
  "nve-dioxus",
  "nve-engine",
  "nve-i18n",
  "nve-interop",
+ "nve-motion",
  "nve-store",
  "nve-system-env",
+ "nve-tables",
  "nve-ui",
  "nve-web-html-web",
 ]
@@ -2887,9 +2897,9 @@ version = "0.1.0"
 dependencies = [
  "nve-abi",
  "nve-canvas",
- "nve-components",
  "nve-engine",
  "nve-store",
+ "nve-tables",
 ]
 
 [[package]]
@@ -2898,6 +2908,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "nve-abi",
+ "nve-codec",
  "nve-interop",
 ]
 
@@ -2943,9 +2954,10 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "nve-abi",
- "nve-components",
+ "nve-codec",
  "nve-engine",
  "nve-store",
+ "nve-tables",
  "serde",
 ]
 
@@ -2955,9 +2967,9 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "nve-abi",
- "nve-components",
  "nve-engine",
  "nve-store",
+ "nve-tables",
  "taffy",
 ]
 
@@ -2969,11 +2981,11 @@ dependencies = [
  "criterion",
  "nve-abi",
  "nve-backend-headless",
- "nve-components",
  "nve-engine",
  "nve-example-kitchen-sink",
  "nve-layout",
  "nve-store",
+ "nve-tables",
 ]
 
 [[package]]
@@ -2988,7 +3000,42 @@ dependencies = [
 name = "nve-mdx"
 version = "0.1.0"
 dependencies = [
+ "nve-codec",
  "nve-hash",
+]
+
+[[package]]
+name = "nve-motion"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "nve-abi",
+ "nve-store",
+ "nve-tables",
+]
+
+[[package]]
+name = "nve-motion-skia"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "nve-abi",
+ "nve-backend-skia",
+ "nve-engine",
+ "nve-motion",
+ "nve-store",
+ "nve-tables",
+]
+
+[[package]]
+name = "nve-motion-web"
+version = "0.1.0"
+dependencies = [
+ "nve-abi",
+ "nve-backend-web",
+ "nve-engine",
+ "nve-motion",
+ "nve-store",
 ]
 
 [[package]]
@@ -2998,6 +3045,7 @@ dependencies = [
  "bytes",
  "criterion",
  "minicbor",
+ "nve-codec",
  "nve-hash",
  "nve-rpc",
 ]
@@ -3013,11 +3061,11 @@ dependencies = [
  "minicbor",
  "nve-abi",
  "nve-backend-web",
- "nve-components",
  "nve-dioxus",
  "nve-query",
  "nve-rpc",
  "nve-store",
+ "nve-tables",
  "nve-ui",
  "nve-web-html-web",
 ]
@@ -3031,10 +3079,11 @@ dependencies = [
  "dioxus-signals",
  "nve-abi",
  "nve-backend-headless",
- "nve-components",
+ "nve-codec",
  "nve-dioxus",
  "nve-interop",
  "nve-store",
+ "nve-tables",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -3057,10 +3106,10 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "nve-abi",
- "nve-components",
  "nve-engine",
  "nve-layout",
  "nve-store",
+ "nve-tables",
  "nve-wire",
 ]
 
@@ -3093,7 +3142,6 @@ dependencies = [
  "nve-canvas",
  "nve-canvas-skia",
  "nve-clipboard",
- "nve-components",
  "nve-dioxus",
  "nve-engine",
  "nve-filesystem",
@@ -3103,10 +3151,12 @@ dependencies = [
  "nve-layout",
  "nve-layout-yoga",
  "nve-linking",
+ "nve-motion-skia",
  "nve-secure-store",
  "nve-store",
  "nve-svg-skia",
  "nve-system-env",
+ "nve-tables",
  "nve-wire",
  "softbuffer",
  "tungstenite",
@@ -3129,7 +3179,6 @@ dependencies = [
  "minicbor",
  "nve-abi",
  "nve-backend-web",
- "nve-components",
  "nve-dioxus",
  "nve-http-hyper",
  "nve-query",
@@ -3137,6 +3186,7 @@ dependencies = [
  "nve-rpc",
  "nve-server",
  "nve-store",
+ "nve-tables",
  "nve-web-html",
  "nve-web-html-web",
  "tokio",
@@ -3159,6 +3209,7 @@ dependencies = [
  "nve-abi-macros",
  "nve-hash",
  "rustc-hash",
+ "trybuild",
 ]
 
 [[package]]
@@ -3177,7 +3228,6 @@ dependencies = [
  "nve-canvas-skia",
  "nve-canvas-web",
  "nve-clipboard",
- "nve-components",
  "nve-dioxus",
  "nve-engine",
  "nve-host-services",
@@ -3187,6 +3237,7 @@ dependencies = [
  "nve-router",
  "nve-store",
  "nve-system-env",
+ "nve-tables",
  "nve-ui",
  "nve-web-html",
  "nve-web-html-web",
@@ -3233,6 +3284,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nve-tables"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "nve-abi",
+ "nve-codec",
+ "nve-store",
+]
+
+[[package]]
 name = "nve-tv"
 version = "0.1.0"
 dependencies = [
@@ -3265,13 +3326,15 @@ dependencies = [
  "nve-abi",
  "nve-backend-headless",
  "nve-backend-web",
- "nve-components",
+ "nve-codec",
  "nve-dioxus",
  "nve-engine",
  "nve-i18n",
  "nve-interop",
+ "nve-motion",
  "nve-rpc",
  "nve-store",
+ "nve-tables",
  "nve-tv",
  "nve-web-html",
  "nve-web-html-web",
@@ -3283,6 +3346,7 @@ name = "nve-video"
 version = "0.1.0"
 dependencies = [
  "nve-abi",
+ "nve-codec",
  "nve-store",
 ]
 
@@ -3300,6 +3364,7 @@ name = "nve-web-element"
 version = "0.1.0"
 dependencies = [
  "nve-abi",
+ "nve-codec",
  "nve-store",
 ]
 
@@ -3317,6 +3382,7 @@ name = "nve-web-html"
 version = "0.1.0"
 dependencies = [
  "nve-abi",
+ "nve-codec",
  "nve-store",
 ]
 
@@ -3325,9 +3391,9 @@ name = "nve-web-html-web"
 version = "0.1.0"
 dependencies = [
  "nve-backend-web",
- "nve-components",
  "nve-engine",
  "nve-store",
+ "nve-tables",
  "nve-web-html",
  "wasm-bindgen",
  "web-sys",
@@ -3345,7 +3411,6 @@ dependencies = [
  "nve-backend-web",
  "nve-canvas",
  "nve-canvas-web",
- "nve-components",
  "nve-dioxus",
  "nve-engine",
  "nve-example-issues-api",
@@ -3353,12 +3418,14 @@ dependencies = [
  "nve-example-kitchen-sink",
  "nve-http-web",
  "nve-interop",
+ "nve-motion-web",
  "nve-query",
  "nve-query-dioxus",
  "nve-rpc",
  "nve-store",
  "nve-studio-workspace",
  "nve-system-env",
+ "nve-tables",
  "nve-tv-web",
  "nve-ui",
  "nve-web-html",
@@ -3383,6 +3450,7 @@ dependencies = [
 name = "nve-webview-web"
 version = "0.1.0"
 dependencies = [
+ "nve-abi",
  "nve-backend-web",
  "nve-store",
  "nve-webview",
@@ -3399,8 +3467,8 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "nve-abi",
- "nve-components",
  "nve-store",
+ "nve-tables",
  "nve-wire-core",
  "quinn",
  "rcgen",
@@ -3419,6 +3487,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "nve-abi",
+ "nve-codec",
 ]
 
 [[package]]
@@ -4997,6 +5066,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "target-tuple"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "876fef147edbcbddc8ac5cbbba92c7b86519e314e86638596c09673b2ed01e7f"
+
+[[package]]
+name = "termcolor"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
+dependencies = [
+ "winapi-util",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5331,6 +5415,21 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "trybuild"
+version = "1.0.125"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9838b494ee14d28f1eeea490e8f4f10248fa6dd371d4bc874b635de499408245"
+dependencies = [
+ "glob",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "target-tuple",
+ "termcolor",
+ "toml",
+]
 
 [[package]]
 name = "ttf-parser"

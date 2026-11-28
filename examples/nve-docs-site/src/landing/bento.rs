@@ -29,7 +29,7 @@ pub fn BentoArchitectureGrid() -> Element {
     drop(snap);
 
     let mobile_col = TypedStyle::new()
-        .at(MediaQuery::max_width(959), ResponsiveStylePatch::new().flex_col());
+        .at(MediaQuery::max_width(959), RowPatch::new().flex_col());
     let bench_href = config.resolve_href("/docs/reference/benchmarks");
 
     rsx! {
@@ -242,7 +242,7 @@ pub fn LiveExamplesStrip() -> Element {
     drop(snap);
 
     let mobile_col = TypedStyle::new()
-        .at(MediaQuery::max_width(959), ResponsiveStylePatch::new().flex_col());
+        .at(MediaQuery::max_width(959), RowPatch::new().flex_col());
     let examples_href = config.resolve_href("/examples");
     let studio_href = resolve_example_app_href(&config.base_path, "/examples/studio");
     let kitchen_sink_href = resolve_example_app_href(&config.base_path, "/examples/kitchen-sink");

@@ -184,7 +184,7 @@ pub(super) fn parse_trait(t: &syn::ItemTrait) -> Result<TraitSpec, CodegenError>
     let name = args
         .string("name")?
         .unwrap_or_else(|| strip_spec_suffix(&trait_name));
-    let explicit_interface_id = args.u32("interface_id")?;
+    let explicit_interface_id = args.u32("interface_id")?.map(nve_abi::InterfaceId);
     let doc = attrs::docs(&t.attrs);
     // This trait kind's member attributes, and the other kind's with the message naming the mix-up.
     const PROP_EVENT: &str =

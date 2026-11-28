@@ -173,7 +173,7 @@ fn enum_paths_and_theme_tokens() {
         enum_v(Some("FlexDirection"), "Column"),
     );
     ok(
-        "nve_components::tables::FlexDirection::Column",
+        "nve_tables::tables::FlexDirection::Column",
         enum_v(Some("FlexDirection"), "Column"),
     );
     ok("Display::None", enum_v(Some("Display"), "None"));

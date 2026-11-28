@@ -11,11 +11,12 @@ mod native {
 
     use criterion::{criterion_group, Criterion};
     use nve_backend_headless::HeadlessBackend;
-    use nve_components::tables::{
+    use nve_tables::tables::{
         core_realization_order, core_tables_schema_hash, FlexDirection, Interaction, Layout,
         TextContent, Typography, Visual,
     };
     use nve_engine::{Frame0File, Frame0Meta, StoreBackend, StoreWireReplica, Viewport};
+    use nve_abi::{EventSet, InteractionEvent, SurfaceId};
     use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 
     /// Builds a realistic 1,000-node multi-section workspace tree (root + shell + sidebar +
@@ -51,7 +52,7 @@ mod native {
                 .font_size(14.0)
                 .color(Rgba::rgb(241, 245, 249));
             nav.edit::<TextContent>().text("Workspace");
-            nav.edit::<Interaction>().event_mask(1);
+            nav.edit::<Interaction>().listeners(EventSet::one(InteractionEvent::Press));
             nav_items.push(nav.id());
         }
         tx.set_children(sidebar, &nav_items);
@@ -105,7 +106,7 @@ mod native {
                 .background(Rgba::rgb(51, 65, 85))
                 .border_radius(6.0)
                 .opacity(1.0);
-            tx.edit::<Interaction>(action).event_mask(1);
+            tx.edit::<Interaction>(action).listeners(EventSet::one(InteractionEvent::Press));
             tx.edit::<TextContent>(action).text("Edit");
 
             tx.set_children(row, &[title, badge, action]);
@@ -143,7 +144,7 @@ mod native {
             let mut scratch = Vec::with_capacity(raw_bytes.len() + 64);
             b.iter(|| {
                 let mut backend = HeadlessBackend::new().with_mutation_tracking(false);
-                backend.set_viewport(1, vp);
+                backend.set_viewport(SurfaceId::ROOT, vp);
                 let mut replica = StoreWireReplica::new(backend, core_realization_order());
                 let (footer, _) = Frame0File::boot_into_replica_with_buf(
                     black_box(&path),
@@ -154,7 +155,7 @@ mod native {
                 .expect("bench frame0 boot");
                 black_box((
                     footer.node_count,
-                    replica.backend().layout_of(NodeId::ROOT.raw()),
+                    replica.backend().layout_of(NodeId::ROOT),
                 ))
             });
         });
@@ -162,7 +163,7 @@ mod native {
         c.bench_function("frame0_boot_bytes_1k", |b| {
             b.iter(|| {
                 let mut backend = HeadlessBackend::new().with_mutation_tracking(false);
-                backend.set_viewport(1, vp);
+                backend.set_viewport(SurfaceId::ROOT, vp);
                 let mut replica = StoreWireReplica::new(backend, core_realization_order());
                 let (footer, _) = Frame0File::boot_bytes_into_replica(
                     black_box(&raw_bytes),
@@ -172,7 +173,7 @@ mod native {
                 .expect("bench frame0 bytes boot");
                 black_box((
                     footer.node_count,
-                    replica.backend().layout_of(NodeId::ROOT.raw()),
+                    replica.backend().layout_of(NodeId::ROOT),
                 ))
             });
         });

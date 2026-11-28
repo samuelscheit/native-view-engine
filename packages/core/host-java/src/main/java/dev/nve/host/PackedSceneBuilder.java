@@ -49,11 +49,42 @@ public final class PackedSceneBuilder {
             return rows.computeIfAbsent(index, i -> new int[words]);
         }
 
-        /** Writes raw {@code bits} into field {@code f} of node {@code index}. */
-        public Table set(int index, FieldSpec f, int bits) {
+        /** Writes {@code value} into field {@code f} of node {@code index} (applies {@link OptEncoding} and explicit bit). */
+        public Table set(int index, FieldSpec f, int value) {
             final int[] row = row(index);
             final int mask = f.bits >= 32 ? -1 : (1 << f.bits) - 1;
-            row[f.word] = (row[f.word] & ~(mask << f.shift)) | ((bits & mask) << f.shift);
+            switch (f.optEncoding) {
+                case REQUIRED:
+                case ZERO_NICHE:
+                    row[f.word] = (row[f.word] & ~(mask << f.shift)) | ((value & mask) << f.shift);
+                    break;
+                case BIT0_PRESENT:
+                    row[f.word] = (row[f.word] & ~(mask << f.shift)) | ((((value << 1) | 1) & mask) << f.shift);
+                    break;
+                case PLUS_ONE:
+                    row[f.word] = (row[f.word] & ~(mask << f.shift)) | (((value + 1) & mask) << f.shift);
+                    break;
+                case TAG_XOR:
+                    row[f.word] = (row[f.word] & ~(mask << f.shift)) | (((value ^ f.tagNicheMask()) & mask) << f.shift);
+                    break;
+                case WIDE_BIT:
+                    row[f.word] |= 1 << f.shift;
+                    row[f.valWord] = value;
+                    break;
+                default:
+                    throw new AssertionError(f.optEncoding);
+            }
+            if (f.hasExplicitBit()) row[0] |= f.explicitMask();
+            return this;
+        }
+
+        /** Sets optional field {@code f} of node {@code index} to {@code None} (and marks explicit bit if inherited). */
+        public Table setNone(int index, FieldSpec f) {
+            final int[] row = row(index);
+            final int mask = f.bits >= 32 ? -1 : (1 << f.bits) - 1;
+            row[f.word] &= ~(mask << f.shift);
+            if (f.optEncoding == OptEncoding.WIDE_BIT) row[f.valWord] = 0;
+            if (f.hasExplicitBit()) row[0] |= f.explicitMask();
             return this;
         }
 
@@ -65,6 +96,22 @@ public final class PackedSceneBuilder {
             return set(index, f, value ? 1 : 0);
         }
 
+        /** Writes a 64-bit field ({@code U64}, {@code I64}, {@code F64}) of node {@code index}. */
+        public Table set(int index, FieldSpec f, long value) {
+            if (f.kind != FieldKind.U64 && f.kind != FieldKind.I64 && f.kind != FieldKind.F64) {
+                throw new IllegalArgumentException(f.kind + " is not 64-bit");
+            }
+            final int[] row = row(index);
+            row[f.word] = (int) value;
+            row[f.word + 1] = (int) (value >>> 32);
+            if (f.hasExplicitBit()) row[0] |= f.explicitMask();
+            return this;
+        }
+
+        public Table set(int index, FieldSpec f, double value) {
+            return set(index, f, Double.doubleToRawLongBits(value));
+        }
+
         /** Appends {@code value} to the text slab and points {@code STR} field {@code f} at it. */
         public Table set(int index, FieldSpec f, String value) {
             if (f.kind != FieldKind.STR) throw new IllegalArgumentException(f.kind + " is not STR");
@@ -72,7 +119,14 @@ public final class PackedSceneBuilder {
             final int[] row = row(index);
             row[f.word] = text.size();
             row[f.word + 1] = bytes.length;
+            if (f.hasExplicitBit()) row[0] |= f.explicitMask();
             text.write(bytes, 0, bytes.length);
+            return this;
+        }
+
+        /** Sets the {@code EventSet} listener bitmask at {@code eventsWord} for node {@code index}. */
+        public Table setEvents(int index, int eventsWord, int eventMask) {
+            row(index)[eventsWord] = eventMask;
             return this;
         }
 

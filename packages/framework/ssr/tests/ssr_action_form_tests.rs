@@ -9,6 +9,7 @@
 mod support;
 
 use minicbor::{Decode, Encode};
+use nve_abi::SurfaceId;
 use nve_backend_web::{StreamingError, WebBackend};
 use nve_dioxus::DioxusSurface;
 use nve_dioxus::prelude::*;
@@ -80,7 +81,7 @@ async fn render(
             // Bare `NveStreamSlot`s stay pending until the deadline by contract.
             StreamPlan::default().with_total_deadline(core::time::Duration::from_millis(50)),
             erased_ssr_query_client(transport),
-            move |c| DioxusSurface::new(1, app).with_context(c),
+            move |c| DioxusSurface::new(SurfaceId::ROOT, app).with_context(c),
         )
         .await?;
     Ok(collect_all_html(resp.into_body()).await)

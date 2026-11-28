@@ -15,7 +15,19 @@ use std::hint::black_box;
 
 use criterion::{criterion_group, BatchSize, Criterion};
 use nve_store::wire::{WireDecoder, WireEncoder};
-use nve_store::{ChangeSet, Length, NodeId, NodeStore, NveTable, Rgba, Str};
+use nve_store::{
+    ChangeSet, FlatResource, GridLine, InheritedTable, Length, NodeId, NodeStore, NveTable, Res,
+    ResolvedRow, Rgba, RowPatch, RowPatchView, Str, ValidatedWords, WordEnum,
+};
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, WordEnum)]
+enum BenchAlign {
+    #[default]
+    Start = 0,
+    Center = 1,
+    End = 2,
+}
 
 #[allow(dead_code)]
 #[derive(NveTable)]
@@ -30,6 +42,34 @@ struct BenchBox {
     #[effect(composite)]
     #[default(1.0)]
     opacity: f32,
+    #[effect(layout)]
+    grid_col: GridLine,
+    #[effect(layout)]
+    opt_align: Option<BenchAlign>,
+    #[effect(paint)]
+    opt_tint: Option<Rgba>,
+    #[effect(layout)]
+    opt_ratio: Option<f32>,
+    #[effect(paint)]
+    stamp: u64,
+}
+
+#[derive(Debug, Clone)]
+struct BenchBlob;
+
+impl FlatResource for BenchBlob {
+    const KIND: nve_abi::Key64 = nve_abi::Key64::of("bench.store_blob");
+    type View<'a> = &'a [u32];
+    fn write_words(&self, out: &mut Vec<u32>) -> bool {
+        out.push(1);
+        true
+    }
+    fn validate(words: &[u32]) -> bool {
+        !words.is_empty()
+    }
+    fn view(words: ValidatedWords<'_, Self>) -> &[u32] {
+        words.as_slice()
+    }
 }
 
 #[allow(dead_code)]
@@ -38,6 +78,28 @@ struct BenchBox {
 struct BenchLabel {
     #[effect(measure, paint)]
     text: Str,
+    #[effect(paint)]
+    blob: Res<BenchBlob>,
+}
+
+#[allow(dead_code)]
+#[derive(NveTable)]
+#[nve_table(name = "bench.typo", storage = "sparse", flags = "publish", inherited)]
+struct BenchTypo {
+    #[effect(paint)]
+    #[default(Rgba::BLACK)]
+    color: Rgba,
+    #[effect(measure)]
+    #[default(16.0)]
+    font_size: f32,
+    #[effect(measure)]
+    #[default(400u16)]
+    font_weight: u16,
+    #[effect(measure)]
+    font_family: Str,
+    #[effect(measure)]
+    #[no_inherit]
+    max_lines: Option<u32>,
 }
 
 fn bench_str_arena_read(c: &mut Criterion) {
@@ -112,6 +174,55 @@ fn bench_row_write_and_commit(c: &mut Criterion) {
                 sum += nr.children().len() as f32;
             }
             black_box(sum)
+        });
+    });
+
+    c.bench_function("opt_wide_64_grid_write_1000_nodes", |b| {
+        b.iter(|| {
+            tick = tick.wrapping_add(1);
+            let mut tx = store.tx();
+            let toggle = tick & 1 == 0;
+            for &n in &nodes {
+                tx.edit::<BenchBox>(n)
+                    .grid_col(if toggle { GridLine::Span(2) } else { GridLine::Line(3) })
+                    .opt_align(if toggle { Some(BenchAlign::Center) } else { None })
+                    .opt_tint(if toggle { Some(Rgba::rgb(12, 34, 56)) } else { None })
+                    .opt_ratio(if toggle { Some(1.777) } else { None })
+                    .stamp(u64::from(tick) << 32 | u64::from(tick));
+            }
+            tx.commit_into(&mut changes);
+            black_box(changes.touched.len())
+        });
+    });
+
+    // Populate non-default OptWord/WideOpt/Wide64/GridLine values once so the read benchmark
+    // works standalone when filtered out without mutating inside the benchmark closure.
+    {
+        let mut tx = store.tx();
+        for (i, &n) in nodes.iter().enumerate() {
+            tx.edit::<BenchBox>(n)
+                .grid_col(if i & 1 == 0 { GridLine::Span(2) } else { GridLine::Line(3) })
+                .opt_align(if i & 1 == 0 { Some(BenchAlign::Center) } else { None })
+                .opt_tint(if i & 1 == 0 { Some(Rgba::rgb(12, 34, 56)) } else { None })
+                .opt_ratio(Some(1.777))
+                .stamp((i as u64) << 32 | i as u64);
+        }
+        tx.commit_into(&mut changes);
+    }
+
+    c.bench_function("opt_wide_64_grid_read_1000_nodes", |b| {
+        b.iter(|| {
+            let mut acc = 0u64;
+            for &n in &nodes {
+                let r = store.row::<BenchBox>(n);
+                acc = acc
+                    .wrapping_add(u64::from(r.grid_col().to_word()))
+                    .wrapping_add(u64::from(r.opt_align().map_or(0, |a| a as u32)))
+                    .wrapping_add(u64::from(r.opt_tint().map_or(0, |c| c.0)))
+                    .wrapping_add(u64::from(r.opt_ratio().map_or(0, f32::to_bits)))
+                    .wrapping_add(r.stamp());
+            }
+            black_box(acc)
         });
     });
 
@@ -258,12 +369,192 @@ fn bench_nve2_roundtrip(c: &mut Criterion) {
     let _ = &mut reversed;
 }
 
+fn bench_inherited_resolve(c: &mut Criterion) {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let (parent, nodes): (NodeId, Vec<NodeId>) = {
+        let mut tx = store.tx();
+        let p = tx.create();
+        tx.edit::<BenchTypo>(p)
+            .color(Rgba::WHITE)
+            .font_size(20.0)
+            .font_weight(700)
+            .font_family("Inter")
+            .max_lines(Some(2));
+        let ids: Vec<NodeId> = (0..1000)
+            .map(|i| {
+                let n = tx.create();
+                if i % 3 == 0 {
+                    tx.edit::<BenchTypo>(n).color(Rgba::rgb(i as u8, 128, 255));
+                }
+                n
+            })
+            .collect();
+        tx.set_children(NodeId::ROOT, &[p]);
+        tx.set_children(p, &ids);
+        tx.commit_into(&mut changes);
+        (p, ids)
+    };
+
+    c.bench_function("inherited_resolved_row_1000_nodes", |b| {
+        b.iter(|| {
+            let root_r = ResolvedRow::<BenchTypo>::root(&store);
+            let p_r = ResolvedRow::<BenchTypo>::resolve(&store, black_box(parent), &root_r);
+            let mut acc = 0u64;
+            for &n in &nodes {
+                let r = ResolvedRow::<BenchTypo>::resolve(&store, black_box(n), &p_r);
+                let t = r.get();
+                acc = acc
+                    .wrapping_add(u64::from(t.color().0))
+                    .wrapping_add(u64::from(t.font_size().to_bits()))
+                    .wrapping_add(u64::from(t.font_weight()));
+            }
+            black_box(acc)
+        });
+    });
+
+    let p_words = ResolvedRow::<BenchTypo>::resolve(&store, parent, &ResolvedRow::root(&store))
+        .into_words();
+    let c_words = ResolvedRow::<BenchTypo>::resolve(&store, nodes[0], &ResolvedRow::root(&store))
+        .into_words();
+    c.bench_function("inherited_resolve_arrays_branchless", |b| {
+        b.iter(|| {
+            black_box(BenchTypo::resolve_inherited_arrays(
+                black_box(&c_words),
+                black_box(&p_words),
+            ))
+        });
+    });
+}
+
+fn bench_flat_resources_and_row_patch(c: &mut Criterion) {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let (n_dedup, n_eph) = {
+        let mut tx = store.tx();
+        let a = tx.create();
+        let b = tx.create();
+        tx.edit::<BenchLabel>(a).blob_with(|out| {
+            out.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+            true
+        });
+        tx.edit::<BenchLabel>(b).blob_ephemeral_with(|out| {
+            out.extend_from_slice(&[10, 20, 30, 40]);
+            true
+        });
+        tx.commit_into(&mut changes);
+        (a, b)
+    };
+
+    c.bench_function("flat_resource_dedup_hit_with", |b| {
+        b.iter(|| {
+            let mut tx = store.tx();
+            tx.edit::<BenchLabel>(n_dedup).blob_with(|out| {
+                out.extend_from_slice(black_box(&[1, 2, 3, 4, 5, 6, 7, 8]));
+                true
+            });
+            tx.commit_into(&mut changes);
+            black_box(store.row::<BenchLabel>(n_dedup).blob())
+        });
+    });
+
+    let mut tick = 0u32;
+    c.bench_function("flat_resource_ephemeral_in_place", |b| {
+        b.iter(|| {
+            tick = tick.wrapping_add(1);
+            let mut tx = store.tx();
+            tx.edit::<BenchLabel>(n_eph).blob_ephemeral_with(|out| {
+                out.extend_from_slice(&[tick, tick + 1, tick + 2, tick + 3]);
+                true
+            });
+            tx.commit_into(&mut changes);
+            black_box(
+                store
+                    .resource::<BenchBlob>(store.row::<BenchLabel>(n_eph).blob())
+                    .expect("ephemeral blob")[0],
+            )
+        });
+    });
+
+    let mut patch_words = Vec::new();
+    let mut rp = RowPatch::new();
+    rp.set(BenchBox::OPACITY, 0.4)
+        .set(BenchBox::BG, Rgba::rgb(12, 34, 56))
+        .set(BenchBox::OPT_ALIGN, Some(BenchAlign::End))
+        .set(BenchBox::OPT_TINT, Some(Rgba::rgb(9, 8, 7)))
+        .set(BenchBox::STAMP, 0xDEAD_BEEF_1234_5678u64);
+    assert!(rp.write_words(&mut patch_words));
+
+    let pv = RowPatchView::from_words(&patch_words).expect("valid bench patch");
+    let n = BenchBox::DESC.words();
+    let mut base = [0u32; 16];
+    base[..n].copy_from_slice(BenchBox::DESC.defaults);
+    c.bench_function("row_patch_view_apply_table", |b| {
+        b.iter(|| {
+            let mut dst = base;
+            pv.apply_table::<BenchBox>(black_box(&mut dst[..n]));
+            black_box(dst[0])
+        });
+    });
+
+    // Wire-origin `ResourceStore::get` after initial `OnceLock` cache seal.
+    let mut enc = WireEncoder::default();
+    let mut dec = WireDecoder::default();
+    let mut wire = Vec::new();
+    enc.encode_full(&store, &mut wire);
+    let mut replica = NodeStore::replica();
+    {
+        let mut rtx = replica.tx();
+        dec.apply(&mut rtx, &wire).expect("decode replica");
+        rtx.commit_into(&mut changes);
+    }
+    let wire_rid = replica.row::<BenchLabel>(n_dedup).blob();
+    assert!(replica.resource::<BenchBlob>(wire_rid).is_some());
+    c.bench_function("flat_resource_wire_origin_get_cached", |b| {
+        b.iter(|| black_box(replica.resource::<BenchBlob>(black_box(wire_rid)).expect("cached")[0]));
+    });
+
+    // `tx.apply_row_patch` hot path.
+    let target = {
+        let mut tx = store.tx();
+        let id = tx.create();
+        tx.edit::<BenchBox>(id).opacity(1.0);
+        tx.commit_into(&mut changes);
+        id
+    };
+    c.bench_function("tx_apply_row_patch", |b| {
+        b.iter(|| {
+            let mut tx = store.tx();
+            tx.apply_row_patch(target, black_box(pv));
+            tx.commit_into(&mut changes);
+            black_box(store.row::<BenchBox>(target).opacity())
+        });
+    });
+
+    // `TempResources` scoped intern + drop.
+    c.bench_function("temp_resources_scoped_intern", |b| {
+        b.iter(|| {
+            let mut tx = store.tx();
+            let rid = tx.with_temp_resources(|scope| {
+                scope.intern_with::<BenchBlob>(|out| {
+                    out.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+                    true
+                })
+            });
+            tx.commit_into(&mut changes);
+            black_box(rid)
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_str_arena_read,
     bench_row_write_and_commit,
     bench_subtree_remove,
-    bench_nve2_roundtrip
+    bench_nve2_roundtrip,
+    bench_inherited_resolve,
+    bench_flat_resources_and_row_patch
 );
 }
 

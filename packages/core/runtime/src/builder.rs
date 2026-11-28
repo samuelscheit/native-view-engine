@@ -7,9 +7,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use nve_abi::{
-    NveRuntimeMetrics, NveSceneView, NveRuntimeStatus, SurfaceId, NVE_RUNTIME_SCHEMA_HASH,
+    FrameId, NveRuntimeMetrics, NveSceneView, NveRuntimeStatus, SurfaceId, NVE_RUNTIME_SCHEMA_HASH,
 };
-use nve_components::tables::{core_realization_order, register_core_tables};
+use nve_tables::tables::{core_realization_order, register_core_tables};
 use nve_engine::Viewport;
 use nve_layout::{DynLayoutEngine, LaidOutScene, TaffyStoreLayout, TextMeasurer};
 use nve_store::wire::WireDecoder;
@@ -125,7 +125,7 @@ impl Default for RuntimeBuilder {
 impl RuntimeBuilder {
     pub fn new() -> Self {
         Self {
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             viewport: Viewport::default(),
             layout: None,
             text_measurer: None,
@@ -207,7 +207,7 @@ impl RuntimeBuilder {
                 pair: None,
                 replica_store,
                 state: SurfaceState {
-                    frame_id: 0,
+                    frame_id: FrameId::ZERO,
                     scene_epoch: 0,
                     layout_engine_name,
                     realization_order,

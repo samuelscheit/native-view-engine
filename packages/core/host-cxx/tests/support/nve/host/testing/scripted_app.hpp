@@ -1,8 +1,8 @@
 // Test support shared by the native host suites (GTK, Qt, Windows): a C ABI app (`nve_get_interface`)
 // that a test scripts directly. Ops written to `w` are flushed as one `NVE2` frame on the runtime's
-// next render; dispatched events are recorded (text payloads copied) and handed to `on_event`, which
-// may write more ops (e.g. echo a controlled input's value). Like any C ABI app it is rendered only
-// after it accepts an event: tests push ops written outside `on_event` by dispatching
+// next render; dispatched events are recorded (companion arena bytes copied) and handed to `on_event`,
+// which may write more ops (e.g. echo a controlled input's value). Like any C ABI app it is rendered
+// only after it accepts an event: tests push ops written outside `on_event` by dispatching
 // `flush_event()` (not recorded).
 //
 //   ScriptedApp app;                   // must outlive the attached runtime surface
@@ -14,16 +14,27 @@
 #include <functional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
-#include <nve/host/nve2_writer.hpp>
 #include <nve/generated/nve_abi.generated.h>
+#include <nve/host/nve2_writer.hpp>
+#include <nve/host/owned_events.hpp>
 
 namespace nve::host::testing {
 
 struct RecordedEvent {
-  NveDirectEvent ev{};
-  std::string text;  // owned copy of `ev.text`
+  NveEvent ev{};
+  std::vector<uint8_t> bytes;  // owned copy of `event_bytes(ev, batch)`
+  std::string text;            // owned copy of `event_text(ev, batch)`
+
+  [[nodiscard]] NveEventBatch single_batch() const noexcept {
+    return NveEventBatch{&ev, bytes.empty() ? nullptr : bytes.data(), 1u, static_cast<uint32_t>(bytes.size())};
+  }
+  [[nodiscard]] std::string_view key() const noexcept { return event_key(ev, single_batch()); }
+  [[nodiscard]] std::string_view code() const noexcept { return event_code(ev, single_batch()); }
+  [[nodiscard]] std::string_view custom_name() const noexcept { return event_custom_name(ev, single_batch()); }
+  [[nodiscard]] std::span<const uint8_t> custom_data() const noexcept { return event_custom_data(ev, single_batch()); }
 };
 
 class ScriptedApp {
@@ -52,12 +63,11 @@ class ScriptedApp {
   /// Node id of the unrecorded "render my pending ops" event.
   static constexpr uint32_t kFlushNode = 0x00FFFFFFu;
 
-  [[nodiscard]] static NveDirectEvent flush_event(uint32_t surface_id = 1u) {
-    NveDirectEvent ev{};
-    ev.surface_id = surface_id;
-    ev.node_id = kFlushNode;
-    ev.kind = NVE_EVENT_CUSTOM;
-    ev.payload_tag = NVE_EVENT_PAYLOAD_EMPTY;
+  [[nodiscard]] static NveEvent flush_event(uint32_t surface_id = 1u) noexcept {
+    NveEvent ev{};
+    ev.table = NVE_TABLE_CUSTOM;
+    ev.surface = surface_id;
+    ev.node = kFlushNode;
     return ev;
   }
 
@@ -68,16 +78,43 @@ class ScriptedApp {
   uint32_t destroys = 0u;
   uint32_t renders = 0u;  // non-empty frames produced
 
-  [[nodiscard]] size_t count(NveEventKind kind, uint32_t node = 0u) const {
+  [[nodiscard]] size_t count(uint64_t table, uint32_t event_id, uint32_t node = 0u) const noexcept {
     size_t n = 0u;
-    for (const RecordedEvent& e : events) n += e.ev.kind == kind && (node == 0u || e.ev.node_id == node) ? 1u : 0u;
+    for (const RecordedEvent& e : events) {
+      n += e.ev.table == table && e.ev.event == event_id && (node == 0u || e.ev.node == node) ? 1u : 0u;
+    }
     return n;
   }
-  [[nodiscard]] const RecordedEvent* last(NveEventKind kind) const {
+  [[nodiscard]] size_t count(NveInteractionEvent kind, uint32_t node = 0u) const noexcept {
+    return count(NVE_TABLE_INTERACTION, static_cast<uint32_t>(kind), node);
+  }
+  [[nodiscard]] size_t count(NveTextInputEvent kind, uint32_t node = 0u) const noexcept {
+    return count(NVE_TABLE_TEXT_INPUT, static_cast<uint32_t>(kind), node);
+  }
+  [[nodiscard]] size_t count(NveScrollEvent kind, uint32_t node = 0u) const noexcept {
+    return count(NVE_TABLE_SCROLL, static_cast<uint32_t>(kind), node);
+  }
+  [[nodiscard]] size_t count(NveLayoutEvent kind, uint32_t node = 0u) const noexcept {
+    return count(NVE_TABLE_LAYOUT, static_cast<uint32_t>(kind), node);
+  }
+
+  [[nodiscard]] const RecordedEvent* last(uint64_t table, uint32_t event_id) const noexcept {
     for (auto it = events.rbegin(); it != events.rend(); ++it) {
-      if (it->ev.kind == kind) return &*it;
+      if (it->ev.table == table && it->ev.event == event_id) return &*it;
     }
     return nullptr;
+  }
+  [[nodiscard]] const RecordedEvent* last(NveInteractionEvent kind) const noexcept {
+    return last(NVE_TABLE_INTERACTION, static_cast<uint32_t>(kind));
+  }
+  [[nodiscard]] const RecordedEvent* last(NveTextInputEvent kind) const noexcept {
+    return last(NVE_TABLE_TEXT_INPUT, static_cast<uint32_t>(kind));
+  }
+  [[nodiscard]] const RecordedEvent* last(NveScrollEvent kind) const noexcept {
+    return last(NVE_TABLE_SCROLL, static_cast<uint32_t>(kind));
+  }
+  [[nodiscard]] const RecordedEvent* last(NveLayoutEvent kind) const noexcept {
+    return last(NVE_TABLE_LAYOUT, static_cast<uint32_t>(kind));
   }
 
  private:
@@ -116,13 +153,16 @@ class ScriptedApp {
   static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     ScriptedApp* self = app_of(h);
     if (self == nullptr) return 0u;
-    for (uint32_t i = 0; batch.ptr != nullptr && i < batch.len; ++i) {
-      if (batch.ptr[i].node_id == kFlushNode) continue;
-      RecordedEvent rec{batch.ptr[i], {}};
-      if (rec.ev.text.ptr != nullptr) rec.text.assign(reinterpret_cast<const char*>(rec.ev.text.ptr), rec.ev.text.len);
-      rec.ev.text = NveStrSlice{nullptr, 0u};  // borrowed for the call only
-      rec.ev.name = NveStrSlice{nullptr, 0u};
-      self->events.push_back(rec);
+    for (uint32_t i = 0u; batch.events != nullptr && i < batch.event_count; ++i) {
+      const NveEvent& raw = batch.events[i];
+      if (raw.node == kFlushNode) continue;
+      const std::span<const uint8_t> b = event_bytes(raw, batch);
+      RecordedEvent rec{};
+      rec.ev = raw;
+      rec.bytes.assign(b.begin(), b.end());
+      rec.ev.bytes = RawEventBytes{0u, static_cast<uint32_t>(rec.bytes.size())};
+      rec.text = std::string(event_text(raw, batch));
+      self->events.push_back(std::move(rec));
       if (self->on_event) self->on_event(*self, self->events.back());
     }
     return self->w.pending() ? 1u : 0u;

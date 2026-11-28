@@ -9,41 +9,24 @@
 //! - Caught host `TextMeasurer` panic leaves `layout_dirty = true` for next-frame retry
 //! - Non-finite / NaN / negative inputs produce finite non-NaN rects
 
+#[path = "support/rect_parity.rs"]
+mod rect_parity;
+#[path = "support/require_yoga.rs"]
+mod require_yoga;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use nve_components::tables::{
+use nve_tables::tables::{
     AlignContent, AlignItems, AlignSelf, BoxSizing, FlexDirection, FlexWrap, Layout, Overflow,
     Scroll, ScrollAxes, TextContent, Typography, Visual,
 };
-use nve_engine::{LayoutRect, Viewport};
+use nve_engine::Viewport;
 use nve_layout::{StoreLayoutEngine, TaffyStoreLayout, TextMeasurer};
 use nve_layout_yoga::YogaLayoutEngine;
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
-
-const TOL: f32 = 1.0;
-
-fn require_yoga_or_skip() -> bool {
-    if YogaLayoutEngine::is_available() {
-        return true;
-    }
-    assert!(
-        std::env::var_os("NVE_REQUIRE_YOGA").is_none(),
-        "NVE_REQUIRE_YOGA is set but real React Native Yoga was not compiled in (set RN_REACT_COMMON_DIR)"
-    );
-    false
-}
-
-fn assert_parity(label: &str, id: NodeId, taffy: LayoutRect, yoga: LayoutRect) {
-    assert!(
-        (taffy.x - yoga.x).abs() <= TOL
-            && (taffy.y - yoga.y).abs() <= TOL
-            && (taffy.width - yoga.width).abs() <= TOL
-            && (taffy.height - yoga.height).abs() <= TOL,
-        "[{label}] node #{} diverged:\n  taffy: {taffy:?}\n  yoga : {yoga:?}",
-        id.raw()
-    );
-}
+use rect_parity::{PARITY_TOLERANCE_PX, assert_rect_parity};
+use require_yoga::require_yoga_or_skip;
 
 fn run_pair(label: &str, vp: Viewport, store: &NodeStore, changes: &ChangeSet, ids: &[NodeId]) {
     let mut taffy = TaffyStoreLayout::new();
@@ -53,7 +36,7 @@ fn run_pair(label: &str, vp: Viewport, store: &NodeStore, changes: &ChangeSet, i
     assert!(taffy.compute_layout(store, NodeId::ROOT, vp));
     assert!(yoga.compute_layout(store, NodeId::ROOT, vp));
     for &id in ids {
-        assert_parity(
+        assert_rect_parity(
             label,
             id,
             taffy.layout_of(id).expect("taffy rect"),
@@ -191,7 +174,7 @@ fn parity_scroll_axes_and_inherited_typography_mutation() {
     assert!(taffy.compute_layout(&store, NodeId::ROOT, vp));
     assert!(yoga.compute_layout(&store, NodeId::ROOT, vp));
     for id in [vscroll, vchild, hscroll, hchild, typo_parent, text_node] {
-        assert_parity("scroll_typo_f1", id, taffy.layout_of(id).unwrap(), yoga.layout_of(id).unwrap());
+        assert_rect_parity("scroll_typo_f1", id, taffy.layout_of(id).unwrap(), yoga.layout_of(id).unwrap());
     }
     assert!(yoga.layout_of(vchild).unwrap().height >= 179.0);
     assert!(yoga.layout_of(hchild).unwrap().width >= 359.0);
@@ -212,7 +195,7 @@ fn parity_scroll_axes_and_inherited_typography_mutation() {
         h24 > h14 + 5.0,
         "inherited font_size 14 -> 24 must increase text height: h14={h14}, h24={h24}"
     );
-    assert_parity("typo_24", text_node, taffy.layout_of(text_node).unwrap(), yoga.layout_of(text_node).unwrap());
+    assert_rect_parity("typo_24", text_node, taffy.layout_of(text_node).unwrap(), yoga.layout_of(text_node).unwrap());
 
     {
         let mut tx = store.tx();
@@ -225,10 +208,10 @@ fn parity_scroll_axes_and_inherited_typography_mutation() {
     let _ = yoga.compute_layout(&store, NodeId::ROOT, vp);
     let h_nan = yoga.layout_of(text_node).unwrap().height;
     assert!(
-        (h_nan - h24).abs() <= TOL,
+        (h_nan - h24).abs() <= PARITY_TOLERANCE_PX,
         "NaN font_size must inherit parent 24px size: h24={h24}, h_nan={h_nan}"
     );
-    assert_parity("typo_nan_fallback", text_node, taffy.layout_of(text_node).unwrap(), yoga.layout_of(text_node).unwrap());
+    assert_rect_parity("typo_nan_fallback", text_node, taffy.layout_of(text_node).unwrap(), yoga.layout_of(text_node).unwrap());
 
     // CSS allows `font-size: 0` (must collapse to 0x0 instead of falling back to parent 24px).
     {
@@ -243,10 +226,10 @@ fn parity_scroll_axes_and_inherited_typography_mutation() {
     let r0_taffy = taffy.layout_of(text_node).unwrap();
     let r0_yoga = yoga.layout_of(text_node).unwrap();
     assert!(
-        r0_taffy.height <= TOL && r0_yoga.height <= TOL,
+        r0_taffy.height <= PARITY_TOLERANCE_PX && r0_yoga.height <= PARITY_TOLERANCE_PX,
         "font_size 0 must measure zero height instead of inheriting parent: taffy={r0_taffy:?} yoga={r0_yoga:?}"
     );
-    assert_parity("typo_zero", text_node, r0_taffy, r0_yoga);
+    assert_rect_parity("typo_zero", text_node, r0_taffy, r0_yoga);
 }
 
 #[test]
@@ -360,7 +343,7 @@ fn yoga_text_reacquires_measure_hook_root_switch_and_panic_retry() {
     }
     yoga.sync_changes(&store, &changes);
     assert!(yoga.compute_layout(&store, NodeId::ROOT, vp));
-    assert_parity("reacquired_measure", text_id, initial_text_rect, yoga.layout_of(text_id).unwrap());
+    assert_rect_parity("reacquired_measure", text_id, initial_text_rect, yoga.layout_of(text_id).unwrap());
 
     // Root switch `ROOT -> panel -> ROOT` must recompute default 16px while `root == panel`,
     // then restore `panel`'s 180x120 size & inherited 20px typography!
@@ -375,7 +358,7 @@ fn yoga_text_reacquires_measure_hook_root_switch_and_panic_retry() {
     assert!(yoga.compute_layout(&store, NodeId::ROOT, vp));
     let restored_panel = yoga.layout_of(panel).unwrap();
     assert_eq!((restored_panel.width, restored_panel.height), (180.0, 120.0));
-    assert_parity("root_switch_text", text_id, initial_text_rect, yoga.layout_of(text_id).unwrap());
+    assert_rect_parity("root_switch_text", text_id, initial_text_rect, yoga.layout_of(text_id).unwrap());
 
     // Caught panic in `TextMeasurer` must keep `layout_dirty = true` so next frame retries cleanly!
     struct PanicOnce(AtomicBool);
@@ -398,7 +381,7 @@ fn yoga_text_reacquires_measure_hook_root_switch_and_panic_retry() {
         yoga.compute_layout(&store, NodeId::ROOT, vp),
         "frame after caught measurer panic must stay dirty and retry"
     );
-    assert_parity("post_panic_retry", text_id, initial_text_rect, yoga.layout_of(text_id).unwrap());
+    assert_rect_parity("post_panic_retry", text_id, initial_text_rect, yoga.layout_of(text_id).unwrap());
 
     // Non-finite viewport dimensions must stay finite and non-NaN.
     let _ = yoga.compute_layout(
@@ -511,9 +494,9 @@ fn scroll_shrink_preservation_negative_and_incremental_flip_cases() {
         "TextContent inside horizontal scroll row must shrink/wrap within container: {:?}",
         yoga.layout_of(htext)
     );
-    assert_parity("vrow_child", vrow_child, taffy.layout_of(vrow_child).unwrap(), yoga.layout_of(vrow_child).unwrap());
-    assert_parity("none_child", none_child, taffy.layout_of(none_child).unwrap(), yoga.layout_of(none_child).unwrap());
-    assert_parity("htext", htext, taffy.layout_of(htext).unwrap(), yoga.layout_of(htext).unwrap());
+    assert_rect_parity("vrow_child", vrow_child, taffy.layout_of(vrow_child).unwrap(), yoga.layout_of(vrow_child).unwrap());
+    assert_rect_parity("none_child", none_child, taffy.layout_of(none_child).unwrap(), yoga.layout_of(none_child).unwrap());
+    assert_rect_parity("htext", htext, taffy.layout_of(htext).unwrap(), yoga.layout_of(htext).unwrap());
 
     // 2. Incremental flip: `ScrollAxes::None` -> `ScrollAxes::Vertical` must expand `dyn_child` to >= 179px.
     {
@@ -530,7 +513,7 @@ fn scroll_shrink_preservation_negative_and_incremental_flip_cases() {
         "enabling ScrollAxes::Vertical incrementally must preserve child intrinsic height: {:?}",
         yoga.layout_of(dyn_child)
     );
-    assert_parity("dyn_scroll_on", dyn_child, taffy.layout_of(dyn_child).unwrap(), yoga.layout_of(dyn_child).unwrap());
+    assert_rect_parity("dyn_scroll_on", dyn_child, taffy.layout_of(dyn_child).unwrap(), yoga.layout_of(dyn_child).unwrap());
 
     // 3. Detach `Scroll` and toggle `Visual::overflow_y(Overflow::Scroll)` incrementally.
     {

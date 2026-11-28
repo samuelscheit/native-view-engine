@@ -9,17 +9,18 @@ Cross-platform 2D/GPU Skia `StoreBackend` (`packages/backends/skia`, **Backend l
 - `gpu::{GaneshPresenter, NativeSwapchain, metal::MetalSwapchain, vulkan::VulkanSwapchain, d3d12::D3D12Swapchain}`, `raster`, `image_cache`
 
 ```rust
+use nve_abi::SurfaceId;
 use nve_backend_skia::SkiaBackend;
 use nve_engine::{StoreBackend, Viewport};
 
 let mut backend = SkiaBackend::new();
-backend.set_viewport(1, Viewport { width: 1280.0, height: 720.0, scale_factor: 2.0 });
+backend.set_viewport(SurfaceId::ROOT, Viewport { width: 1280.0, height: 720.0, scale_factor: 2.0 });
 assert_eq!(backend.viewport().scale_factor, 2.0);
 ```
 
 ## Dependency Invariants
 
-- **Key dependencies**: `nve-abi`, `nve-components`, `nve-engine`, `nve-layout`, `nve-backend-headless`, `cosmic-text`, `unicode-segmentation`, `flate2`, `raw-window-handle`, plus optional `skia-safe` and platform GPU crates (`ash`, `objc2-*`, `windows`).
+- **Key dependencies**: `nve-abi`, `nve-tables`, `nve-engine`, `nve-layout`, `nve-backend-headless`, `cosmic-text`, `unicode-segmentation`, `flate2`, `raw-window-handle`, plus optional `skia-safe` and platform GPU crates (`ash`, `objc2-*`, `windows`).
 - **Must NOT depend on**: `dioxus*`, `web-sys`, `serde_json`, `packages/modules/*`, or `hosts/*`.
 
 ## Verification

@@ -8,6 +8,7 @@ use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use nve_abi::SurfaceId;
 use nve_backend_web::WebBackend;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
@@ -92,7 +93,7 @@ fn MixedIdsApp() -> Element {
 #[test]
 fn server_and_client_assign_identical_disjoint_suspense_ids() {
     let render = |client: ErasedQueryClient, registry: Option<SsrBoundaryRegistry>| {
-        let mut surface = DioxusSurface::new(1, MixedIdsApp).with_context(client);
+        let mut surface = DioxusSurface::new(SurfaceId::ROOT, MixedIdsApp).with_context(client);
         if let Some(reg) = registry {
             surface = surface.with_context(reg);
         }
@@ -159,7 +160,7 @@ fn boundary_attribution_is_reference_counted_across_switches_and_unmounts() {
     let ctl = HookCtl::default();
     let registry = SsrBoundaryRegistry::new();
     let client = erased_ssr_query_client(RegTransport::new("Item"));
-    let mut surface = DioxusSurface::new(1, SharedBoundaryApp)
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, SharedBoundaryApp)
         .with_context(client.clone())
         .with_context(registry.clone())
         .with_context(ctl.clone());
@@ -278,7 +279,7 @@ fn errored_unmount_retry_recovery_and_inline_suspend_result_do_not_leak_boundary
     let ctl = ErrorLifecycleCtl::default();
     let registry = SsrBoundaryRegistry::new();
     let client = erased_query_client(transport.clone());
-    let mut surface = DioxusSurface::new(1, ErrorLifecycleApp)
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, ErrorLifecycleApp)
         .with_context(client.clone())
         .with_context(registry.clone())
         .with_context(ctl.clone());
@@ -388,7 +389,7 @@ fn multi_query_error_boundary_retains_all_live_handles_and_clears_on_reset_unmou
     let ctl = MultiQueryErrorCtl::default();
     let registry = SsrBoundaryRegistry::new();
     let client = erased_query_client(transport);
-    let mut surface = DioxusSurface::new(1, MultiQueryErrorApp)
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, MultiQueryErrorApp)
         .with_context(client.clone())
         .with_context(registry.clone())
         .with_context(ctl.clone());

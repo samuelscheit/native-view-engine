@@ -4,17 +4,24 @@
 use core::fmt::Write as _;
 
 use nve_abi::num::{write_f32, write_i64, write_u64};
-use nve_abi::{ColorRgba, Dimension, EdgeInsets};
-use nve_components::tables::{
+use nve_abi::{Dimension, EdgeInsets};
+use nve_tables::tables::{
     AlignContent, AlignItems, AlignSelf, BoxSizing, Direction, Display, FlexDirection, FlexWrap,
     GridItem, GridLayout, GridLine, GridTracks, JustifyContent, Layout, Position,
 };
 use nve_store::{Length, NodeId, NodeStore};
 
-#[path = "css_paint.rs"]
 mod paint;
+mod values;
+#[cfg(test)]
+mod values_tests;
 
 pub use paint::{write_compositor_css, write_transform_css};
+use values::write_pct;
+pub use values::{
+    write_background_decl, write_box_shadows, write_grid_tracks, write_px, write_transform_decls,
+    BackgroundValue, Keyword, WriteCss,
+};
 
 /// Compact CSS reset injected once into `<style data-nve-base>`.
 ///
@@ -67,7 +74,7 @@ pub fn canonical_f32_bits(v: f32) -> u32 {
 }
 
 /// Formats a deterministic content-addressed class token `<prefix><8hex>` from the XXH64 digest.
-pub(crate) fn format_content_class(prefix: &str, parts: &[&[u8]]) -> String {
+pub fn format_content_class(prefix: &str, parts: &[&[u8]]) -> String {
     let mut h = nve_abi::Xxh64Hasher::new(0);
     for part in parts {
         h.update(part);
@@ -92,63 +99,27 @@ pub(crate) fn write_compact_num(v: f32, out: &mut String) {
     write_f32(out, canonical_f32(v));
 }
 
-#[inline]
-pub(crate) fn write_compact_px(v: f32, out: &mut String) {
-    let v = canonical_f32(v);
-    if v == 0.0 {
-        out.push('0');
-    } else {
-        write_f32(out, v);
-        out.push_str("px");
-    }
-}
 
 #[inline]
 pub(crate) fn write_compact_dim(d: Dimension, out: &mut String) {
     match d {
         Dimension::Auto => out.push_str("auto"),
-        Dimension::Points(v) => write_compact_px(v, out),
-        Dimension::Percent(v) => write_percent(v, out),
+        Dimension::Points(v) => write_px(v, out),
+        Dimension::Percent(v) => write_pct(v, out),
     }
-}
-
-/// Formats a CSS percentage, never unitless: `0%` of an indefinite size resolves like
-/// `auto`/`content`, unlike the length `0`.
-#[inline]
-fn write_percent(v: f32, out: &mut String) {
-    write_f32(out, canonical_f32(v));
-    out.push('%');
 }
 
 #[inline]
 pub(crate) fn write_compact_length(l: Length, out: &mut String) {
     if l.is_points() {
-        write_compact_px(l.value(), out);
+        write_px(l.value(), out);
     } else if l.is_percent() {
-        write_percent(l.value(), out);
+        write_pct(l.value(), out);
     } else {
         out.push_str("auto");
     }
 }
 
-#[inline]
-pub(crate) fn write_compact_color(c: ColorRgba, out: &mut String) {
-    if c.a == 0 {
-        out.push_str("transparent");
-    } else if c.a == 255 {
-        let _ = write!(out, "#{:02x}{:02x}{:02x}", c.r, c.g, c.b);
-    } else {
-        out.push_str("rgba(");
-        write_u64(out, u64::from(c.r));
-        out.push(',');
-        write_u64(out, u64::from(c.g));
-        out.push(',');
-        write_u64(out, u64::from(c.b));
-        out.push(',');
-        write_f32(out, (f32::from(c.a) / 255.0 * 1000.0).round() / 1000.0);
-        out.push(')');
-    }
-}
 
 #[inline]
 pub(crate) fn write_compact_edges(e: EdgeInsets, out: &mut String) {
@@ -157,25 +128,25 @@ pub(crate) fn write_compact_edges(e: EdgeInsets, out: &mut String) {
     let b = canonical_f32(e.bottom);
     let l = canonical_f32(e.left);
     if t == r && r == b && b == l {
-        write_compact_px(t, out);
+        crate::css::write_px(t, out);
     } else if t == b && r == l {
-        write_compact_px(t, out);
+        crate::css::write_px(t, out);
         out.push(' ');
-        write_compact_px(r, out);
+        crate::css::write_px(r, out);
     } else if r == l {
-        write_compact_px(t, out);
+        crate::css::write_px(t, out);
         out.push(' ');
-        write_compact_px(r, out);
+        crate::css::write_px(r, out);
         out.push(' ');
-        write_compact_px(b, out);
+        crate::css::write_px(b, out);
     } else {
-        write_compact_px(t, out);
+        crate::css::write_px(t, out);
         out.push(' ');
-        write_compact_px(r, out);
+        crate::css::write_px(r, out);
         out.push(' ');
-        write_compact_px(b, out);
+        crate::css::write_px(b, out);
         out.push(' ');
-        write_compact_px(l, out);
+        crate::css::write_px(l, out);
     }
 }
 
@@ -200,15 +171,10 @@ pub fn write_store_node_css(
     out: &mut String,
 ) {
     if let Some(l) = store.try_row::<Layout>(id) {
-        match l.display() {
-            Display::Flex => {}
-            Display::None => out.push_str("display:none;"),
-            Display::Grid => out.push_str("display:grid;"),
-            Display::Block => out.push_str("display:block;"),
-            Display::Inline => out.push_str("display:inline;"),
-            Display::InlineBlock => out.push_str("display:inline-block;"),
-            Display::InlineFlex => out.push_str("display:inline-flex;"),
-            Display::Contents => out.push_str("display:contents;"),
+        if l.display() != Display::Flex {
+            out.push_str("display:");
+            out.push_str(l.display().keyword());
+            out.push(';');
         }
         match l.position() {
             Position::Relative => {}
@@ -312,9 +278,9 @@ pub fn write_store_node_css(
             write_compact_length(l.max_height(), out);
             out.push(';');
         }
-        if l.aspect_ratio().is_finite() && l.aspect_ratio() > 0.0 {
+        if let Some(ar) = l.aspect_ratio().filter(|&r| r.is_finite() && r > 0.0) {
             out.push_str("aspect-ratio:");
-            write_compact_num(l.aspect_ratio(), out);
+            write_compact_num(ar, out);
             out.push(';');
         }
         if !l.inset_top().is_auto() {
@@ -357,22 +323,22 @@ pub fn write_store_node_css(
         if l.padding_inline_logical() {
             if pad.top != 0.0 {
                 out.push_str("padding-top:");
-                write_compact_px(pad.top, out);
+                crate::css::write_px(pad.top, out);
                 out.push(';');
             }
             if pad.bottom != 0.0 {
                 out.push_str("padding-bottom:");
-                write_compact_px(pad.bottom, out);
+                crate::css::write_px(pad.bottom, out);
                 out.push(';');
             }
             if pad.left != 0.0 {
                 out.push_str("padding-inline-start:");
-                write_compact_px(pad.left, out);
+                crate::css::write_px(pad.left, out);
                 out.push(';');
             }
             if pad.right != 0.0 {
                 out.push_str("padding-inline-end:");
-                write_compact_px(pad.right, out);
+                crate::css::write_px(pad.right, out);
                 out.push(';');
             }
         } else if pad.top != 0.0 || pad.right != 0.0 || pad.bottom != 0.0 || pad.left != 0.0 {
@@ -389,22 +355,22 @@ pub fn write_store_node_css(
         if l.margin_inline_logical() {
             if mar.top != 0.0 {
                 out.push_str("margin-top:");
-                write_compact_px(mar.top, out);
+                crate::css::write_px(mar.top, out);
                 out.push(';');
             }
             if mar.bottom != 0.0 {
                 out.push_str("margin-bottom:");
-                write_compact_px(mar.bottom, out);
+                crate::css::write_px(mar.bottom, out);
                 out.push(';');
             }
             if mar.left != 0.0 {
                 out.push_str("margin-inline-start:");
-                write_compact_px(mar.left, out);
+                crate::css::write_px(mar.left, out);
                 out.push(';');
             }
             if mar.right != 0.0 {
                 out.push_str("margin-inline-end:");
-                write_compact_px(mar.right, out);
+                crate::css::write_px(mar.right, out);
                 out.push(';');
             }
         } else if mar.top != 0.0 || mar.right != 0.0 || mar.bottom != 0.0 || mar.left != 0.0 {
@@ -417,28 +383,18 @@ pub fn write_store_node_css(
     if let Some(gl) = store.try_row::<GridLayout>(id) {
         if !gl.template_columns().is_none()
             && let Some(tracks) = store.resource::<GridTracks>(gl.template_columns())
-            && !tracks.0.is_empty()
+            && !tracks.is_empty()
         {
             out.push_str("grid-template-columns:");
-            for (i, t) in tracks.0.iter().enumerate() {
-                if i > 0 {
-                    out.push(' ');
-                }
-                t.write_css_into(out);
-            }
+            tracks.write_css(out);
             out.push(';');
         }
         if !gl.template_rows().is_none()
             && let Some(tracks) = store.resource::<GridTracks>(gl.template_rows())
-            && !tracks.0.is_empty()
+            && !tracks.is_empty()
         {
             out.push_str("grid-template-rows:");
-            for (i, t) in tracks.0.iter().enumerate() {
-                if i > 0 {
-                    out.push(' ');
-                }
-                t.write_css_into(out);
-            }
+            tracks.write_css(out);
             out.push(';');
         }
     }

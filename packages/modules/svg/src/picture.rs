@@ -10,7 +10,7 @@ use nve_abi::{ColorRgba, Xxh64Hasher};
 use crate::path_parser::MAX_SVG_COORD_ABS;
 pub use crate::path_parser::{parse_svg_path_data, MAX_SVG_PATH_COMMANDS, MAX_SVG_PATH_INPUT_BYTES};
 
-fn write_css_color(color: ColorRgba, out: &mut String) {
+pub(crate) fn write_css_color(color: ColorRgba, out: &mut String) {
     use core::fmt::Write as _;
     if color.a == 255 {
         let _ = write!(out, "#{:02x}{:02x}{:02x}", color.r, color.g, color.b);
@@ -284,51 +284,57 @@ impl SvgPicture {
     }
 }
 
+/// Formats one typed [`VectorPathCmd`] into `out`.
+#[inline]
+pub(crate) fn write_path_cmd_into(cmd: VectorPathCmd, out: &mut String) {
+    match cmd {
+        VectorPathCmd::MoveTo(x, y) => {
+            out.push('M');
+            write_f32(out, sanitize_coord(x));
+            out.push(' ');
+            write_f32(out, sanitize_coord(y));
+        }
+        VectorPathCmd::LineTo(x, y) => {
+            out.push('L');
+            write_f32(out, sanitize_coord(x));
+            out.push(' ');
+            write_f32(out, sanitize_coord(y));
+        }
+        VectorPathCmd::QuadTo(cx, cy, x, y) => {
+            out.push('Q');
+            write_f32(out, sanitize_coord(cx));
+            out.push(' ');
+            write_f32(out, sanitize_coord(cy));
+            out.push(' ');
+            write_f32(out, sanitize_coord(x));
+            out.push(' ');
+            write_f32(out, sanitize_coord(y));
+        }
+        VectorPathCmd::CubicTo(c1x, c1y, c2x, c2y, x, y) => {
+            out.push('C');
+            write_f32(out, sanitize_coord(c1x));
+            out.push(' ');
+            write_f32(out, sanitize_coord(c1y));
+            out.push(' ');
+            write_f32(out, sanitize_coord(c2x));
+            out.push(' ');
+            write_f32(out, sanitize_coord(c2y));
+            out.push(' ');
+            write_f32(out, sanitize_coord(x));
+            out.push(' ');
+            write_f32(out, sanitize_coord(y));
+        }
+        VectorPathCmd::Close => out.push('Z'),
+    }
+}
+
 /// Formats typed [`VectorPathCmd`]s as canonical SVG `d="..."` string (injection-free numeric only).
 pub fn write_path_data_into(cmds: &[VectorPathCmd], out: &mut String) {
-    for (idx, cmd) in cmds.iter().enumerate() {
+    for (idx, &cmd) in cmds.iter().enumerate() {
         if idx > 0 {
             out.push(' ');
         }
-        match *cmd {
-            VectorPathCmd::MoveTo(x, y) => {
-                out.push('M');
-                write_f32(out, sanitize_coord(x));
-                out.push(' ');
-                write_f32(out, sanitize_coord(y));
-            }
-            VectorPathCmd::LineTo(x, y) => {
-                out.push('L');
-                write_f32(out, sanitize_coord(x));
-                out.push(' ');
-                write_f32(out, sanitize_coord(y));
-            }
-            VectorPathCmd::QuadTo(cx, cy, x, y) => {
-                out.push('Q');
-                write_f32(out, sanitize_coord(cx));
-                out.push(' ');
-                write_f32(out, sanitize_coord(cy));
-                out.push(' ');
-                write_f32(out, sanitize_coord(x));
-                out.push(' ');
-                write_f32(out, sanitize_coord(y));
-            }
-            VectorPathCmd::CubicTo(c1x, c1y, c2x, c2y, x, y) => {
-                out.push('C');
-                write_f32(out, sanitize_coord(c1x));
-                out.push(' ');
-                write_f32(out, sanitize_coord(c1y));
-                out.push(' ');
-                write_f32(out, sanitize_coord(c2x));
-                out.push(' ');
-                write_f32(out, sanitize_coord(c2y));
-                out.push(' ');
-                write_f32(out, sanitize_coord(x));
-                out.push(' ');
-                write_f32(out, sanitize_coord(y));
-            }
-            VectorPathCmd::Close => out.push('Z'),
-        }
+        write_path_cmd_into(cmd, out);
     }
 }
 
@@ -342,7 +348,7 @@ fn sanitize_coord(v: f32) -> f32 {
 }
 
 #[inline]
-fn sanitize_view_box(vb: (f32, f32, f32, f32)) -> (f32, f32, f32, f32) {
+pub(crate) fn sanitize_view_box(vb: (f32, f32, f32, f32)) -> (f32, f32, f32, f32) {
     let vx = if vb.0.is_finite() { vb.0 } else { 0.0 };
     let vy = if vb.1.is_finite() { vb.1 } else { 0.0 };
     let vw = if vb.2.is_finite() && vb.2 > 0.0 { vb.2 } else { 24.0 };

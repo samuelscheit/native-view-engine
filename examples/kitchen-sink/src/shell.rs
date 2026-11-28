@@ -110,10 +110,7 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
         .width_pct(100.0)
         .flex_grow(1.0)
         .min_height_px(0.0)
-        .at(
-            MediaQuery::max_width(899),
-            ResponsiveStylePatch::new().flex_col(),
-        );
+        .at(MediaQuery::max_width(899), RowPatch::new().flex_col());
 
     let main_pad_style = TypedStyle::new()
         .width_pct(100.0)
@@ -123,15 +120,12 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
         .gap(18.0)
         .at(
             MediaQuery::max_width(639),
-            ResponsiveStylePatch::new().padding(12.0).gap(14.0),
+            RowPatch::new().padding(12.0).gap(14.0),
         );
 
     let search_wrap_style = TypedStyle::new()
         .width_px(210.0)
-        .at(
-            MediaQuery::max_width(639),
-            ResponsiveStylePatch::new().width_pct(100.0),
-        );
+        .at(MediaQuery::max_width(639), RowPatch::new().width_pct(100.0));
 
     let toolbar_controls_style = TypedStyle::new()
         .flex_row()
@@ -142,7 +136,7 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
         .min_width_px(0.0)
         .at(
             MediaQuery::max_width(899),
-            ResponsiveStylePatch::new().justify_content(nve_abi::FlexJustify::FlexStart),
+            RowPatch::new().justify_content(nve_abi::FlexJustify::FlexStart),
         );
 
     let title_text = copy("NVE Kitchen Sink", pseudo);

@@ -209,8 +209,7 @@ fn desktop_1280x800_three_column_and_mobile_390x844_drawer_collapse() {
         desktop
             .surface
             .node_responsive_rules(desktop.find("docs-article-container"))
-            .iter()
-            .any(|r| r.query == MediaQuery::max_width(959))
+            .is_some_and(|rules| rules.iter().any(|(q, _)| q == MediaQuery::max_width(959)))
     );
     assert!(desktop.maybe_find("docs-sidebar-drawer").is_none());
 
@@ -270,7 +269,7 @@ fn desktop_1280x800_three_column_and_mobile_390x844_drawer_collapse() {
     // Verify SSR emits exact zero-flicker `@media` hide rules & mobile article padding.
     let ssr_services: Arc<dyn HostServiceProvider> = Arc::new(MemoryHostServices::new());
     let mut ssr_surface = create_docs_surface_at_route(
-        99,
+        nve_abi::SurfaceId::new(99, 0),
         "/",
         build_config(),
         build_fixture_site(),
@@ -279,7 +278,7 @@ fn desktop_1280x800_three_column_and_mobile_390x844_drawer_collapse() {
     );
     let mut ssr_web = WebBackend::new();
     register_web_html_systems(ssr_web.table_registry_mut());
-    ssr_surface.commit_to(1, &mut ssr_web).expect("ssr commit_to");
+    ssr_surface.commit_to(nve_abi::FrameId(1), &mut ssr_web).expect("ssr commit_to");
     let ssr = ssr_web.render_ssr(ssr_surface.store());
     assert!(
         ssr.style_css.contains("@media (max-width:959.98px){.nve-m-"),
@@ -564,7 +563,7 @@ fn interactive_tabs_and_live_demo_playground_work_in_page() {
 fn create_docs_surface_at_route_renders_target_page_for_ssr() {
     let services: Arc<dyn HostServiceProvider> = Arc::new(MemoryHostServices::new());
     let mut surface = create_docs_surface_at_route(
-        1,
+        nve_abi::SurfaceId::ROOT,
         "/guides/components",
         build_config(),
         build_fixture_site(),
@@ -573,7 +572,7 @@ fn create_docs_surface_at_route_renders_target_page_for_ssr() {
     );
     let mut web = WebBackend::new();
     register_web_html_systems(web.table_registry_mut());
-    surface.commit_to(1, &mut web).expect("web commit_to");
+    surface.commit_to(nve_abi::FrameId(1), &mut web).expect("web commit_to");
     let html = web.render_html(surface.store());
     assert!(
         html.contains("Interactive Components"),
@@ -588,7 +587,7 @@ fn create_docs_surface_at_route_renders_target_page_for_ssr() {
 
     // Also verify default root entrypoint compiles & mounts cleanly
     let mut root_surface = create_docs_surface(
-        2,
+        nve_abi::SurfaceId::new(2, 0),
         build_config(),
         build_fixture_site(),
         build_playgrounds(),
@@ -596,7 +595,7 @@ fn create_docs_surface_at_route_renders_target_page_for_ssr() {
     );
     let mut headless = HeadlessBackend::new();
     root_surface
-        .commit_to(1, &mut headless)
+        .commit_to(nve_abi::FrameId(1), &mut headless)
         .expect("root commit_to");
     assert!(
         headless
@@ -648,7 +647,7 @@ fn docs_prefix_and_custom_pages_coexist_cleanly() {
 
     // Render custom landing at "/"
     let mut landing_surface = create_docs_surface_with_pages(
-        10,
+        nve_abi::SurfaceId::new(10, 0),
         "/",
         DocsViewport::desktop_default(),
         cfg.clone(),
@@ -660,7 +659,7 @@ fn docs_prefix_and_custom_pages_coexist_cleanly() {
     let mut web = WebBackend::new();
     register_web_html_systems(web.table_registry_mut());
     landing_surface
-        .commit_to(1, &mut web)
+        .commit_to(nve_abi::FrameId(1), &mut web)
         .expect("landing commit");
     let landing_html = web.render_ssr(landing_surface.store()).html;
     assert!(landing_html.contains("Custom Landing Hero"));
@@ -668,7 +667,7 @@ fn docs_prefix_and_custom_pages_coexist_cleanly() {
 
     // Render prefixed docs page at "/docs/guides/quickstart"
     let mut docs_surface = create_docs_surface_with_pages(
-        11,
+        nve_abi::SurfaceId::new(11, 0),
         "/docs/guides/quickstart",
         DocsViewport::desktop_default(),
         cfg,
@@ -679,7 +678,7 @@ fn docs_prefix_and_custom_pages_coexist_cleanly() {
     );
     let mut web_docs = WebBackend::new();
     register_web_html_systems(web_docs.table_registry_mut());
-    docs_surface.commit_to(1, &mut web_docs).expect("docs commit");
+    docs_surface.commit_to(nve_abi::FrameId(1), &mut web_docs).expect("docs commit");
     let docs_html = web_docs.render_ssr(docs_surface.store()).html;
     assert!(docs_html.contains("Quickstart"));
     assert!(docs_html.contains("docs-sidebar-desktop"));

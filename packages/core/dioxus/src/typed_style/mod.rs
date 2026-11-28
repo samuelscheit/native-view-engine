@@ -6,20 +6,23 @@ mod builders;
 mod layout_ext;
 mod paint;
 
-pub use builders::{parse_flex_align, parse_flex_direction, parse_flex_justify};
+pub use builders::{
+    parse_flex_align, parse_flex_direction, parse_flex_justify, PendingResponsiveRule,
+    PendingStateRule, PendingStylePatch,
+};
 
 use std::borrow::Cow;
 use std::rc::Rc;
 
 use dioxus_core::{AttributeValue, IntoAttributeValue};
 use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
-use nve_components::interaction::{CursorKind, StateStyleRule};
-use nve_components::layout_ext::LayoutExt;
-use nve_components::media::{MediaQuery, ResponsiveRule};
-use nve_components::motion::TransitionSpec;
-use nve_components::paint::BackgroundFill;
-use nve_components::transform::Transform2D;
-use nve_components::{LayoutSnapshot, VisualSnapshot};
+use nve_tables::interaction::CursorKind;
+use nve_tables::layout_ext::LayoutExt;
+use nve_tables::media::MediaQuery;
+use nve_tables::paint::BackgroundFill;
+use nve_tables::tables::BoxShadow;
+use nve_tables::transform::Transform2D;
+use nve_tables::{LayoutSnapshot, VisualSnapshot};
 
 /// Attribute wire name recognized by [`crate::NveMutationWriter`] for direct [`TypedStyle`] props.
 pub const NVE_TYPED_STYLE_ATTR: &str = "nve_style";
@@ -49,8 +52,8 @@ impl IntoAttributeValue for ShowOn {
 /// Direct binary layout + visual style payload forwarded via Dioxus `AttributeValue::Any`.
 ///
 /// Writes directly into `NodeStore` word tables (`Layout`, `Visual`, `Typography`, `Transform`,
-/// `Interaction`, `Responsive`, `Motion`, `GridLayout`, `GridItem`) without formatting or
-/// parsing any CSS strings.
+/// `Interaction`, `Responsive`, `GridLayout`, `GridItem`) without formatting or parsing any CSS
+/// strings. Capability-module tables (e.g. `nve_motion::Motion`) attach via `nve_table`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedStyle {
     pub(crate) layout: LayoutSnapshot,
@@ -59,17 +62,17 @@ pub struct TypedStyle {
     pub(crate) has_style: bool,
     pub font_weight: Option<Cow<'static, str>>,
     pub text_align: Option<Cow<'static, str>>,
-    pub box_shadow: Option<Cow<'static, str>>,
+    /// `Some(empty)` explicitly clears shadows; `None` leaves them untouched.
+    pub box_shadows: Option<std::sync::Arc<[BoxShadow]>>,
     pub overflow: Option<Cow<'static, str>>,
     pub object_fit: Option<Cow<'static, str>>,
     pub layout_ext: Option<Box<LayoutExt>>,
     pub transform: Option<Transform2D>,
     pub background_fill: Option<BackgroundFill>,
     pub show_on: Option<MediaQuery>,
-    pub responsive: Vec<ResponsiveRule>,
+    pub responsive: Vec<PendingResponsiveRule>,
     pub cursor: Option<CursorKind>,
-    pub state_rules: Vec<StateStyleRule>,
-    pub transitions: Vec<TransitionSpec>,
+    pub state_rules: Vec<PendingStateRule>,
 }
 
 impl Default for TypedStyle {
@@ -92,7 +95,7 @@ impl TypedStyle {
             has_style: false,
             font_weight: None,
             text_align: None,
-            box_shadow: None,
+            box_shadows: None,
             overflow: None,
             object_fit: None,
             layout_ext: None,
@@ -102,7 +105,6 @@ impl TypedStyle {
             responsive: Vec::new(),
             cursor: None,
             state_rules: Vec::new(),
-            transitions: Vec::new(),
         }
     }
 
@@ -282,7 +284,7 @@ impl TypedStyle {
     }
 
     #[inline]
-    pub fn align_self(mut self, align: nve_components::tables::AlignSelf) -> Self {
+    pub fn align_self(mut self, align: nve_tables::tables::AlignSelf) -> Self {
         self.layout.align_self = align;
         self.has_layout = true;
         self

@@ -8,8 +8,10 @@ language mode, so strict concurrency is on.
 | `Xxh64.swift` | `Xxh64` / `Xxh64Hasher`: canonical XXH64, bit-identical to Rust `nve-hash`; an allocation-free value type |
 | `Key64.swift` | `Key64`: 64-bit identity key with `(lo, hi)` halves |
 | `BinCodec.swift` | `BinReader` / `BinWriter` (typed `throws(BinError)`), the `NveBinValue` format, `Utf8.isValid` |
-| `TableReader.swift` | `FieldKind`, `FieldSpec`, `LengthValue`, `Rgba`, `StrSpan`, `TableReader`, `TableViewABI` |
-| `SceneReader.swift` | `SceneReader<View: SceneViewABI>` over `libnve_runtime`'s `NveSceneView` (`NveNodeRow` / `NveLayoutRect` / slabs / tables), typed `NodeId`: validates once (null, address-space fit, alignment, UTF-8, tables), then O(1) bounds-checked, allocation-free reads |
+| `TableReader.swift` | `FieldKind` (0..13), `OptEncoding`, `FieldSpec`, `LengthValue`, `GridLineValue`, `Rgba`, `StrSpan`, `TableReader`, `TableViewABI` |
+| `SceneReader.swift` | `SceneReader<View: SceneViewABI>` over `libnve_runtime`'s `NveSceneView` (`NveNodeRow` / `NveLayoutRect` / slabs / tables), typed `NodeId`, inherited-table & per-table `EventSet` helpers: validates once, then O(1) bounds-checked, allocation-free reads |
+| `EventTypes.swift` | Uniform 64-byte `EventRecord`, `EventFlags`, table-scoped event IDs, `EventWire`, `EventValidationError` |
+| `EventCodec.swift` | `EventBatchBuilder` & zero-alloc ingress-validated `EventBatchReader` + `NVEV` v2 wire codec (`NveHostAbi` bridges directly to C `NveEventBatch`) |
 | `HybridRuntime.swift` | `HybridStatus`, `HostStatus`, `HybridError`, `DynamicValue` |
 
 The generated C structs conform with empty extensions, because Swift imports their fields with exactly

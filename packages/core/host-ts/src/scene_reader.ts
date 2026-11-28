@@ -18,7 +18,7 @@ import {
   NVE_SCROLL_OFFSET_LAYOUT,
 } from './generated/nve_abi.generated.ts';
 import { Key64 } from './key64.ts';
-import { MAX_TABLE_WORDS, NODE_INDEX_MASK, TableReader, isIntIn } from './table_reader.ts';
+import { MAX_TABLE_WORDS, NO_VAL_WORD, NODE_INDEX_MASK, TableReader, isIntIn } from './table_reader.ts';
 import type { FieldSpec } from './table_reader.ts';
 import { UTF8_DECODER, isValidUtf8 } from './utf8.ts';
 
@@ -421,6 +421,44 @@ export class SceneReader {
   str(table: TableReader, row: number, f: FieldSpec): string {
     const { offset, len } = table.str(row, f);
     return this.text(offset, len);
+  }
+
+  /**
+   * Resolves the effective row of field `f` for live node `index`, walking up the parent chain for
+   * `#[nve_table(inherited)]` fields (`f.inherits === true`) until a row has `f.explicitBit` set.
+   * Returns `-1` when no row sets `f` (caller falls back to the table's generated `defaults`).
+   * Bounded by `nodeCapacity` hops so a cyclic parent chain never loops forever.
+   */
+  inheritedRow(table: TableReader | null, index: number, f: FieldSpec): number {
+    if (table === null || !this.isLive(index)) return -1;
+    if (!f.inherits) {
+      const r = this.rowOf(table, index);
+      return r !== -1 && table.isExplicit(r, f) ? r : -1;
+    }
+    let cur = index;
+    for (let steps = 0; steps < this.nodeCapacity; steps++) {
+      const r = this.rowOf(table, cur);
+      if (r !== -1 && table.isExplicit(r, f)) return r;
+      const p = this.parentId(cur);
+      if (p === 0) break;
+      const next = this.indexOf(p);
+      if (next < 0) break;
+      cur = next;
+    }
+    return -1;
+  }
+
+  /** `EventSet<E>` listener bitmask of live node `index` on `table` (`0` if unattached or `NO_VAL_WORD`). */
+  eventMask(table: TableReader | null, index: number, eventsWord: number): number {
+    if (eventsWord === NO_VAL_WORD) return 0;
+    const r = this.rowOf(table, index);
+    return r < 0 ? 0 : table!.eventMask(r, eventsWord);
+  }
+
+  /** `true` when live node `index` subscribes to `eventId` (`0..=31`) in `table`'s `eventsWord`. */
+  hasEvent(table: TableReader | null, index: number, eventsWord: number, eventId: number): boolean {
+    const mask = this.eventMask(table, index, eventsWord);
+    return isIntIn(eventId, 0, 31) && ((mask >>> eventId) & 1) !== 0;
   }
 }
 

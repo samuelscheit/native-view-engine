@@ -253,7 +253,7 @@ fn surface_elevation_and_state_layers_are_ordered() {
             assert_eq!(s.raised, ColorRgba::WHITE);
             assert_eq!(s.overlay, ColorRgba::WHITE);
             assert!(lum(s.sunken) < lum(s.base));
-            assert_ne!(t.elevation.overlay, "none");
+            assert!(t.elevation.overlay.is_some());
         }
         if p == Polarity::Dark {
             assert_eq!(s.canvas, ColorRgba::rgb(0x09, 0x09, 0x0b), "graphite canvas");
@@ -263,7 +263,7 @@ fn surface_elevation_and_state_layers_are_ordered() {
             assert!(t.border.subtle.a < 0xff && t.border.default.a < 0xff, "translucent hairlines");
         }
         if t.is_high_contrast() {
-            assert_eq!(t.elevation.overlay, "none", "{p:?}: high contrast uses borders, not shadows");
+            assert!(t.elevation.overlay.is_none(), "{p:?}: high contrast uses borders, not shadows");
         }
         for bg in [s.base, s.raised] {
             let (base_y, hover_y, active_y) = (lum(bg), lum(composite(t.state.hover, bg)), lum(composite(t.state.active, bg)));

@@ -3,14 +3,14 @@ mod common;
 use common::{MultiBackendHarness, live_node_ids, register_studio_tables, unique_test_dir};
 use nve_abi::xxh64;
 use nve_abi::{
-    EventMask, NveDirectEvent, NveEventBatchRef, NveMapEntry, NvePropsRef, NveValue, ROOT_NODE_ID,
-    pack_key_modifiers,
+    EventBatchBuf, EventFlags, FrameId, NveMapEntry, NvePropsRef, NveValue, SurfaceId,
+    TextInputEvent, TimestampUs, ROOT_NODE_ID,
 };
-use nve_canvas::{Canvas, CanvasOp, DrawList, DrawListDecoder, NVE_DRAW_MAGIC};
-use nve_components::tables::{Image, ImageFit, ImageSrc, Interaction, TextInput};
+use nve_canvas::{Canvas, CanvasOpRef, DrawList, DrawListDecoder, NVE_DRAW_MAGIC};
+use nve_tables::tables::{Image, ImageFit, ImageSrc, ImageSrcView, TextInput};
 use nve_engine::NveApp;
 use nve_store::wire::WireDecoder;
-use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
+use nve_store::{ChangeSet, NodeStore};
 use nve_studio_workspace::{
     AccentTheme, ActiveView, ChannelKind, CornerRadiusMode, DensityMode, DocBlockKind,
     HOST_SURFACES, PersistConfig, STATE_FILE_NAME, StudioWorkspaceModule,
@@ -34,7 +34,7 @@ fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_byt
     );
     for (_, img) in &board_images {
         match store.resource::<ImageSrc>(img.src()) {
-            Some(ImageSrc::Url(src)) => {
+            Some(ImageSrcView::Url(src)) => {
                 assert!(
                     src.starts_with("data:image/png;base64,"),
                     "expected PNG data URI src, got {src}"
@@ -54,14 +54,10 @@ fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_byt
         "expected search + custom task TextInputs on Board, got {}",
         board_inputs.len()
     );
-    for (id, inp) in &board_inputs {
-        let mask = store
-            .try_row::<Interaction>(*id)
-            .map_or(0, |i| i.event_mask());
-        assert_ne!(
-            u64::from(mask) & EventMask::TEXT_CHANGE,
-            0,
-            "TextInput must subscribe to EventMask::TEXT_CHANGE"
+    for (_id, inp) in &board_inputs {
+        assert!(
+            inp.listeners().contains(TextInputEvent::Change),
+            "TextInput must subscribe to TextInputEvent::Change"
         );
         assert!(!inp.placeholder().is_empty());
     }
@@ -77,7 +73,7 @@ fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_byt
     let canvas_row = h
         .surface
         .store()
-        .try_row::<Canvas>(StoreNodeId(canvas_id))
+        .try_row::<Canvas>(canvas_id)
         .expect("Canvas table row");
     let dl = h
         .surface
@@ -86,12 +82,11 @@ fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_byt
         .expect("Canvas DrawList resource");
     assert!(
         dl.ops()
-            .iter()
-            .any(|op| matches!(op, CanvasOp::StrokePolyline { points, .. } if points.len() >= 8)),
-        "expected telemetry StrokePolyline op in Canvas draw list, got {:?}",
-        dl.ops()
+            .any(|op| matches!(op, CanvasOpRef::StrokePolyline { points, .. } if points.len() >= 8)),
+        "expected telemetry StrokePolyline op in Canvas draw list, got {} ops",
+        dl.len()
     );
-    let raw_bytes = dl.to_nve_draw1_bytes();
+    let raw_bytes = dl.to_owned().to_nve_draw1_bytes();
     assert!(raw_bytes.starts_with(&NVE_DRAW_MAGIC));
     assert!(
         DrawListDecoder::decode(&raw_bytes)
@@ -103,11 +98,11 @@ fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_byt
 
     // Verify NVE2 wire roundtrip of the Canvas + DrawList resource through StudioWorkspaceModule.
     register_studio_tables();
-    let mut app = common::headless_module(1);
+    let mut app = common::headless_module(SurfaceId::ROOT);
     let metrics_entries = [NveMapEntry::new("view", NveValue::from_str("metrics"))];
     // SAFETY: `metrics_entries` outlives the synchronous `set_props` call.
     assert!(app.set_props(unsafe { NvePropsRef::from_slice(&metrics_entries) }));
-    let wire_bytes = app.render(1).to_vec();
+    let wire_bytes = app.render(FrameId(1)).to_vec();
 
     let mut replica = NodeStore::replica();
     let mut decoder = WireDecoder::default();
@@ -329,7 +324,7 @@ fn workspace_store_cold_save_atomic_replace_corrupt_recovery_and_full_restart() 
     // StudioWorkspaceModule::with_services_and_persist_dir (sharing the exact open path with
     // `with_services`) must surface the future-schema failure via `persist_open_error()`.
     let mod_v99 = StudioWorkspaceModule::with_services_and_persist_dir(
-        1,
+        SurfaceId::ROOT,
         std::sync::Arc::new(nve_studio_workspace::StudioHostServices::new()),
         &dir,
     );
@@ -360,21 +355,21 @@ fn workspace_store_cold_save_atomic_replace_corrupt_recovery_and_full_restart() 
 
     let mod_dir = unique_test_dir("module-persist");
     {
-        let mut app =
-            StudioWorkspaceModule::create_with_persist_dir(1, &mod_dir).expect("create module");
-        let _ = app.render(1);
+        let mut app = StudioWorkspaceModule::create_with_persist_dir(SurfaceId::ROOT, &mod_dir)
+            .expect("create module");
+        let _ = app.render(FrameId(1));
         let docs_entries = [
             NveMapEntry::new("accent", NveValue::from_str("green")),
             NveMapEntry::new("view", NveValue::from_str("docs")),
         ];
         // SAFETY: `docs_entries` outlives the synchronous `set_props` call.
         assert!(app.set_props(unsafe { NvePropsRef::from_slice(&docs_entries) }));
-        let _ = app.render(2);
+        let _ = app.render(FrameId(2));
         assert!(app.persist_store().expect("persist store").generation() >= 1);
     }
     {
-        let app2 =
-            StudioWorkspaceModule::create_with_persist_dir(1, &mod_dir).expect("reopen module");
+        let app2 = StudioWorkspaceModule::create_with_persist_dir(SurfaceId::ROOT, &mod_dir)
+            .expect("reopen module");
         let snap = app2.state_snapshot();
         assert_eq!(snap.current.studio.accent, AccentTheme::Green);
         assert_eq!(snap.current.active_view, ActiveView::Docs);
@@ -465,20 +460,19 @@ fn docs_view_interactive_blocks_textinput_markdown_export_and_time_travel() {
     assert!(md.contains("- [x] Eliminate JSON scene descriptors"));
     assert!(md.contains("- [ ] Enable crash-safe Frame-0 NVE2"));
 
-    let mut app = common::headless_module(1);
-    let _ = app.render(1);
-    let cmd_k = [NveDirectEvent::key_down(
-        1,
+    let mut app = common::headless_module(SurfaceId::ROOT);
+    let _ = app.render(FrameId(1));
+    let mut cmd_k = EventBatchBuf::new();
+    cmd_k.push_key_down(
+        SurfaceId::ROOT,
         ROOT_NODE_ID,
-        1000,
+        TimestampUs(1000),
         "k",
         "",
-        pack_key_modifiers(true, false, false, false, false),
+        EventFlags::from_modifiers(true, false, false, false, false),
         0,
-        false,
-    )];
-    // SAFETY: `cmd_k` outlives the synchronous `dispatch_events` call.
-    assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&cmd_k) }));
+    );
+    assert!(app.dispatch_events(cmd_k.as_validated()));
     assert!(app.state_snapshot().palette.open);
 
     let mut h_mob = MultiBackendHarness::new(393.0, 852.0);

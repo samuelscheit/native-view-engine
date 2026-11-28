@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: default for `small_u` overflows #[bits(4)] unsigned range
+ --> tests/ui/bad_narrow_u8_default.rs:3:10
+  |
+3 | #[derive(NveTable)]
+  |          ^^^^^^^^ evaluation of `_::__NVE_LAYOUT::_` failed here

@@ -6,7 +6,7 @@
 //! `nve-wire`, remote hosts) decode `NVE2` frames into a replica [`NodeStore`] via
 //! [`StoreWireReplica`] and forward `(&store, &changes)` into the exact same [`StoreBackend`].
 
-use nve_abi::{NativeEvent, NodeId, SurfaceId};
+use nve_abi::{EventBatchBuf, NodeId, SurfaceId};
 use nve_store::wire::{WireDecoder, WireError};
 use nve_store::{ChangeSet, NodeStore, RealizationOrder};
 
@@ -39,10 +39,8 @@ pub trait StoreBackend {
         changes: &ChangeSet,
     ) -> Result<BackendApplyStats, BackendError>;
 
-    /// Drains any pending native input/layout events since the last frame.
-    fn drain_events(&mut self) -> Vec<NativeEvent> {
-        Vec::new()
-    }
+    /// Drains any pending native input/layout events since the last frame into `out`.
+    fn drain_events(&mut self, _out: &mut EventBatchBuf) {}
 
     /// Returns computed layout rectangle for a node if available.
     fn layout_of(&self, _node_id: NodeId) -> Option<LayoutRect> {
@@ -276,8 +274,8 @@ impl<B: StoreBackend> StoreWireReplica<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nve_store::wire::{MAGIC, WireEncoder};
-    use nve_store::{NodeId as StoreNodeId, NveTable};
+    use nve_store::wire::{WireEncoder, MAGIC};
+    use nve_store::{NveTable};
 
     #[allow(dead_code)]
     #[derive(NveTable)]
@@ -319,7 +317,7 @@ mod tests {
         let child = {
             let mut tx = src.tx();
             let c = tx.create();
-            tx.set_children(StoreNodeId::ROOT, &[c]);
+            tx.set_children(NodeId::ROOT, &[c]);
             tx.edit::<TestTag>(c).val(42);
             tx.commit_into(&mut changes);
             c

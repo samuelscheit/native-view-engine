@@ -2,6 +2,7 @@ package dev.nve.host;
 
 import static dev.nve.host.generated.NveJniFrame.*;
 
+import dev.nve.host.generated.NveTables;
 import java.nio.ByteBuffer;
 
 /** {@link SceneReader} over packed frames from {@link PackedSceneBuilder} (the JNI layout). */
@@ -39,10 +40,43 @@ final class RuntimeSceneTest {
     static void run(Check c) {
         nodes(c);
         tablesAndText(c);
+        semantics(c);
         deltasAndScroll(c);
         rejects(c);
         detach(c);
         steadyState(c);
+    }
+
+    static void semantics(Check c) {
+        final PackedSceneBuilder b = new PackedSceneBuilder(5, 1L, 1)
+                .node(2, 1, 0, 0, 100, 40)
+                .node(3, 2, 0, 0, 80, 20)
+                .node(4, 1, 0, 0, 50, 20);
+        b.table(NveTables.Interaction.KEY, 0, NveTables.Interaction.WORDS, NveTables.Interaction.DENSE)
+                .setEvents(2, NveTables.Interaction.EVENTS_WORD, NveTables.Values.InteractionEventSet.PRESS)
+                .setEvents(4, NveTables.Interaction.EVENTS_WORD, NveTables.Values.InteractionEventSet.PRESS)
+                .set(4, NveTables.Interaction.DISABLED, true);
+        b.table(NveTables.Typography.KEY, 1, NveTables.Typography.WORDS, NveTables.Typography.DENSE)
+                .set(1, NveTables.Typography.COLOR, 0xFF112233)
+                .set(1, NveTables.Typography.FONT_SIZE, 20f)
+                .set(1, NveTables.Typography.TEXT_ALIGN, NveTables.Values.TextAlign.CENTER)
+                .set(2, NveTables.Typography.FONT_WEIGHT, 700)
+                .set(2, NveTables.Typography.FONT_STYLE, NveTables.Values.FontStyle.ITALIC)
+                .set(3, NveTables.Typography.COLOR, 0xFF445566);
+        b.table(NveTables.Text.KEY, 2, NveTables.Text.WORDS, NveTables.Text.DENSE)
+                .set(3, NveTables.Text.TEXT, "hi");
+        final SceneReader s = b.attach(new SceneReader());
+        final SceneSemantics.Tables t = new SceneSemantics.Tables().bind(s);
+        c.that(SceneSemantics.pressable(s, t, 2), "press event bit without disabled is pressable");
+        c.that(!SceneSemantics.pressable(s, t, 4) && SceneSemantics.disabled(s, t, 4), "disabled overrides press bit");
+        c.that(!SceneSemantics.pressable(s, t, 3), "node without interaction row is not pressable");
+        c.that(SceneSemantics.kindOf(s, t, 3) == SceneSemantics.Kind.TEXT, "leaf text node kind");
+        final SceneSemantics.TextStyle ts = new SceneSemantics.TextStyle().resolve(s, t, 3);
+        c.eq(ts.color, 0xFF445566, "explicit child color wins");
+        c.that(ts.fontSize == 20f, "root font size inherited across parent");
+        c.eq(ts.fontWeight, 700, "parent font weight inherited");
+        c.that(ts.italic, "parent italic inherited");
+        c.eq(ts.align, NveTables.Values.TextAlign.CENTER, "root text align inherited");
     }
 
     static void nodes(Check c) {

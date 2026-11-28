@@ -15,6 +15,7 @@ Used by `hosts/android-shell` CTest (`add_custom_command` runs it into the build
 
 The package's library is `libnve_host_fixture_app` (cdylib exporting `nve_get_interface`): an
 echo app whose `set_props` returns `true` on changed props and emits a structured `Custom`
-event (`props`: `{count, keys, ok, ratio}`); a truthy `malformed` prop first emits one with an
-invalid-UTF-8 name. Host FFI suites (`NVE_HOST_FIXTURE_APP_LIB`, `scripts/host-runtimes.sh`)
-attach it to prove app-emitted events cross the runtime C ABI.
+event (`props`: `NveBinValue` map `{count, keys, ok, ratio}`); a truthy `malformed` prop first
+emits a `malformed` custom event with invalid `NveBinValue` payload bytes (`[0xFF]`). Host FFI
+suites (`NVE_HOST_FIXTURE_APP_LIB`, `scripts/host-runtimes.sh`) attach it to prove app-emitted
+events cross the runtime C ABI.

@@ -1,7 +1,7 @@
 use super::*;
 use crate::TextStyle;
-use nve_components::layout_ext::{GridSingleTrack, GridTrack, GridTrackUnit};
-use nve_components::tables::{
+use nve_tables::layout_ext::{GridSingleTrack, GridTrack, GridTrackUnit};
+use nve_tables::tables::{
     AlignItems as NveAlignItems, BoxSizing as NveBoxSizing, Direction as NveDirection,
     Display as NveDisplay, FlexDirection as NveFlexDirection, GridItem, GridLayout,
     GridLine as NveGridLine, GridTracks, JustifyContent as NveJustifyContent, Layout as NveLayout,
@@ -240,14 +240,14 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
             |tx, _, c| {
                 tx.edit::<NveLayout>(c)
                     .flex_basis(Length::points(100.0))
-                    .aspect_ratio(2.0);
+                    .aspect_ratio(Some(2.0));
             },
             (100.0, 50.0),
         ),
         (
             NveFlexDirection::Row,
             |tx, _, c| {
-                tx.edit::<NveLayout>(c).flex_grow(1.0).aspect_ratio(4.0);
+                tx.edit::<NveLayout>(c).flex_grow(1.0).aspect_ratio(Some(4.0));
             },
             (400.0, 100.0),
         ),
@@ -256,7 +256,7 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
             |tx, _, c| {
                 tx.edit::<NveLayout>(c)
                     .flex_basis(Length::points(80.0))
-                    .aspect_ratio(2.0);
+                    .aspect_ratio(Some(2.0));
             },
             (160.0, 80.0),
         ),
@@ -266,7 +266,7 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
             |tx, _, c| {
                 tx.edit::<NveLayout>(c)
                     .flex_basis(Length::points(100.0))
-                    .aspect_ratio(2.0)
+                    .aspect_ratio(Some(2.0))
                     .padding_left(Length::points(10.0))
                     .padding_top(Length::points(10.0))
                     .padding_bottom(Length::points(4.0));
@@ -279,7 +279,7 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
             |tx, _, c| {
                 tx.edit::<NveLayout>(c)
                     .flex_grow(1.0)
-                    .aspect_ratio(8.0)
+                    .aspect_ratio(Some(8.0))
                     .padding_top(Length::points(6.0));
                 tx.edit::<Visual>(c).border_width(1.0);
             },
@@ -291,7 +291,7 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
             |tx, _, c| {
                 tx.edit::<NveLayout>(c)
                     .flex_basis(Length::points(40.0))
-                    .aspect_ratio(4.0)
+                    .aspect_ratio(Some(4.0))
                     .padding_top(Length::points(20.0));
             },
             (40.0, 20.0),
@@ -304,7 +304,7 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
                 tx.edit::<NveLayout>(c)
                     .box_sizing(NveBoxSizing::ContentBox)
                     .flex_basis(Length::points(100.0))
-                    .aspect_ratio(2.0)
+                    .aspect_ratio(Some(2.0))
                     .padding_left(Length::points(10.0))
                     .padding_right(Length::points(10.0))
                     .padding_top(Length::points(10.0))
@@ -319,7 +319,7 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
                 tx.edit::<NveLayout>(c)
                     .box_sizing(NveBoxSizing::ContentBox)
                     .flex_basis(Length::points(100.0))
-                    .aspect_ratio(2.0)
+                    .aspect_ratio(Some(2.0))
                     .padding_left(Length::percent(5.0));
             },
             (120.0, 50.0),
@@ -330,7 +330,7 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
             |tx, container, c| {
                 tx.edit::<NveLayout>(container)
                     .height(Length::points(300.0));
-                tx.edit::<NveLayout>(c).flex_grow(1.0).aspect_ratio(0.5);
+                tx.edit::<NveLayout>(c).flex_grow(1.0).aspect_ratio(Some(0.5));
             },
             (150.0, 300.0),
         ),
@@ -341,7 +341,7 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
             |tx, _, c| {
                 tx.edit::<NveLayout>(c)
                     .flex_basis(Length::points(100.0))
-                    .aspect_ratio(1.0)
+                    .aspect_ratio(Some(1.0))
                     .max_height(Length::points(40.0));
             },
             (40.0, 40.0),
@@ -352,7 +352,7 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
             |tx, _, c| {
                 tx.edit::<NveLayout>(c)
                     .flex_basis(Length::points(100.0))
-                    .aspect_ratio(f32::MIN_POSITIVE);
+                    .aspect_ratio(Some(f32::MIN_POSITIVE));
             },
             (100.0, 0.0),
         ),
@@ -362,7 +362,7 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
             |tx, _, c| {
                 tx.edit::<NveLayout>(c)
                     .flex_basis(Length::points(100.0))
-                    .aspect_ratio(f32::NAN);
+                    .aspect_ratio(Some(f32::NAN));
             },
             (100.0, 0.0),
         ),
@@ -371,7 +371,7 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
             |tx, _, c| {
                 tx.edit::<NveLayout>(c)
                     .flex_basis(Length::points(100.0))
-                    .aspect_ratio(-1.0);
+                    .aspect_ratio(Some(-1.0));
             },
             (100.0, 0.0),
         ),
@@ -380,7 +380,7 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
             |tx, _, c| {
                 tx.edit::<NveLayout>(c)
                     .flex_basis(Length::points(100.0))
-                    .aspect_ratio(f32::INFINITY);
+                    .aspect_ratio(Some(f32::INFINITY));
             },
             (100.0, 0.0),
         ),
@@ -391,7 +391,7 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
                 tx.edit::<TextContent>(c).text("hi");
                 tx.edit::<NveLayout>(c)
                     .flex_basis(Length::points(100.0))
-                    .aspect_ratio(2.0);
+                    .aspect_ratio(Some(2.0));
             },
             (100.0, 50.0),
         ),
@@ -402,7 +402,7 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
                 tx.edit::<TextContent>(c).text(WRAPPED);
                 tx.edit::<NveLayout>(c)
                     .flex_basis(Length::points(100.0))
-                    .aspect_ratio(8.0);
+                    .aspect_ratio(Some(8.0));
             },
             (100.0, -1.0),
         ),
@@ -414,7 +414,7 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
                 tx.edit::<TextContent>(c).text(WRAPPED);
                 tx.edit::<NveLayout>(c)
                     .flex_basis(Length::points(100.0))
-                    .aspect_ratio(2.0);
+                    .aspect_ratio(Some(2.0));
             },
             (200.0, 100.0),
         ),
@@ -425,7 +425,7 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
                 tx.edit::<TextContent>(c).text("");
                 tx.edit::<NveLayout>(c)
                     .flex_basis(Length::points(100.0))
-                    .aspect_ratio(2.0);
+                    .aspect_ratio(Some(2.0));
             },
             (100.0, 50.0),
         ),
@@ -504,7 +504,7 @@ fn text_wraps_inside_a_ratio_box_whose_padding_consumes_the_transferred_width() 
     tx.edit::<NveLayout>(leaf)
         .flex_basis(Length::points(25.0))
         .min_height(Length::points(0.0))
-        .aspect_ratio(2.0)
+        .aspect_ratio(Some(2.0))
         .padding_left(Length::points(50.0));
     tx.commit_into(&mut changes);
     layout.sync_changes(&store, &changes);
@@ -546,7 +546,7 @@ fn an_overflowing_ratio_transfer_does_not_collapse_text_to_zero_width() {
     tx.edit::<NveLayout>(leaf)
         .flex_basis(Length::points(100.0))
         .min_height(Length::points(0.0))
-        .aspect_ratio(1e38);
+        .aspect_ratio(Some(1e38));
     tx.commit_into(&mut changes);
     layout.sync_changes(&store, &changes);
     let vp = Viewport {

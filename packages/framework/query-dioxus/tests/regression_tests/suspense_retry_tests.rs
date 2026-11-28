@@ -6,6 +6,7 @@ use core::task::{Poll, Waker};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
+use nve_abi::SurfaceId;
 use nve_backend_web::WebBackend;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
@@ -107,7 +108,8 @@ impl Harness {
             QueryClientConfig::default(),
         );
         let gate = Arc::new(Mutex::new(SleepGate::default()));
-        let surface = DioxusSurface::new(1, RetryApp).with_context((client, gated_sleep(&gate)));
+        let surface = DioxusSurface::new(SurfaceId::ROOT, RetryApp)
+            .with_context((client, gated_sleep(&gate)));
         Self {
             transport,
             gate,

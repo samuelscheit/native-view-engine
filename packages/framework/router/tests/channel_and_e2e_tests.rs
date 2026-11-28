@@ -1,8 +1,8 @@
 //! Binary `NVN1` fuzz tests, `NveChannelBus` bidirectional sync tests, and live Dioxus + `NVE1`
 //! wire scene E2E tests for `nve-router`.
 
-use nve_abi::{EventPayload, NativeEvent, NativeEventKind};
-use nve_components::tables::{Accessibility, AriaRole, DebugId, Interaction, TextContent};
+use nve_abi::{EventBatchBuf, FrameId, SurfaceId, TimestampUs};
+use nve_tables::tables::{Accessibility, AriaRole, DebugId, Interaction, TextContent};
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
 use nve_store::wire::WireDecoder;
@@ -160,21 +160,21 @@ fn channel_bus_bidirectional_sync_retain_and_loop_prevention() {
     assert_eq!(bus.channel_id(TOPIC_NAVIGATION), Some(CHANNEL_ID_NAVIGATION));
 
     let mut router_a = RouterState::new(E2eRoute::Home);
-    let mut bridge_a = RouterChannelBridge::attach(&mut bus, 10, false).unwrap();
+    let mut bridge_a = RouterChannelBridge::attach(&mut bus, SurfaceId::new(10, 0), false).unwrap();
 
     let tr = router_a.push(E2eRoute::Profile).unwrap();
     bridge_a.publish_transition(&mut bus, &tr).unwrap();
     assert!(bridge_a.drain_inbound().is_empty());
 
     let retained = bus.retained(TOPIC_NAVIGATION).expect("retained nav state");
-    assert_eq!(retained.sender_surface, Some(10));
+    assert_eq!(retained.sender_surface, Some(SurfaceId::new(10, 0)));
     assert_eq!(retained.encoding, PayloadEncoding::Binary);
     let retained_pkt = decode_nav_packet(retained.as_bytes()).unwrap();
     assert_eq!(retained_pkt.uri, "/settings/profile");
     assert!(retained_pkt.can_go_back);
 
     // Late joiner replays retained NVN1 state.
-    let bridge_b = RouterChannelBridge::attach(&mut bus, 20, true).unwrap();
+    let bridge_b = RouterChannelBridge::attach(&mut bus, SurfaceId::new(20, 0), true).unwrap();
     let mut router_b = RouterState::new(E2eRoute::Home);
     let outcomes = bridge_b.apply_inbound_to_router(&mut router_b, None);
     assert_eq!(outcomes.len(), 1);
@@ -197,7 +197,7 @@ fn channel_bus_bidirectional_sync_retain_and_loop_prevention() {
     };
     bus.publish_by_id(
         CHANNEL_ID_NAVIGATION,
-        Some(99),
+        Some(SurfaceId::new(99, 0)),
         PayloadEncoding::Binary,
         ChannelPayload::from_vec(os_pkt.encode().unwrap()),
         true,
@@ -205,7 +205,7 @@ fn channel_bus_bidirectional_sync_retain_and_loop_prevention() {
     .unwrap();
     bus.publish_by_id(
         CHANNEL_ID_NAVIGATION,
-        Some(99),
+        Some(SurfaceId::new(99, 0)),
         PayloadEncoding::Binary,
         ChannelPayload::from_slice(b"BAD!"),
         false,
@@ -234,7 +234,7 @@ fn channel_bus_bidirectional_sync_retain_and_loop_prevention() {
         E2eTab::Home,
     )
     .unwrap();
-    let tab_bridge = RouterChannelBridge::attach(&mut bus, 30, false).unwrap();
+    let tab_bridge = RouterChannelBridge::attach(&mut bus, SurfaceId::new(30, 0), false).unwrap();
     let switch_pkt = NavPacket {
         action: NavigationAction::SwitchTab,
         can_go_back: false,
@@ -247,7 +247,7 @@ fn channel_bus_bidirectional_sync_retain_and_loop_prevention() {
     };
     bus.publish_by_id(
         CHANNEL_ID_NAVIGATION,
-        Some(99),
+        Some(SurfaceId::new(99, 0)),
         PayloadEncoding::Binary,
         ChannelPayload::from_vec(switch_pkt.encode().unwrap()),
         true,
@@ -385,38 +385,33 @@ fn press_test_id(surface: &mut DioxusSurface, scene: &mut Nve2Replica, test_id: 
     let node_id = scene.find_by_test_id(test_id);
     assert!(node_id.is_some(), "missing test_id {test_id}");
     let node_id = node_id.expect("checked above");
-    assert!(surface.dispatch_events(&[NativeEvent {
-        surface_id: 1,
-        node_id: node_id.raw(),
-        timestamp_us: frame_id * 16_000,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 10.0, y: 10.0 },
-    }]));
+    let mut batch = EventBatchBuf::new();
+    batch.push_press(SurfaceId::ROOT, node_id, TimestampUs(frame_id * 16_000), 10.0, 10.0);
+    assert!(surface.dispatch_events(batch.as_validated()));
     let mut wire = Vec::new();
-    surface.render_nve2(frame_id, &mut wire);
+    surface.render_nve2(FrameId(frame_id), &mut wire);
     scene.apply(&wire);
 }
 
 #[test]
 fn dioxus_e2e_router_provider_link_outlet_press_navigation_and_modal() {
-    let mut surface = DioxusSurface::new(1, RouterE2eApp);
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, RouterE2eApp);
     let mut scene = Nve2Replica::new();
     let mut wire = Vec::new();
-    surface.render_nve2(1, &mut wire);
+    surface.render_nve2(FrameId(1), &mut wire);
     scene.apply(&wire);
     assert!(scene.collect_texts().contains("Screen: Home (/)"));
 
     let link_id = scene.find_by_test_id("link-issue-42").expect("link node");
     assert_eq!(
-        scene.store.try_row::<Accessibility>(link_id).map(|a| a.role()),
+        scene.store.try_row::<Accessibility>(link_id).and_then(|a| a.role()),
         Some(AriaRole::Link)
     );
-    assert_ne!(
+    assert!(
         scene
             .store
             .try_row::<Interaction>(link_id)
-            .map_or(0, |i| i.event_mask()),
-        0
+            .is_some_and(|i| !i.listeners().is_empty())
     );
 
     press_test_id(&mut surface, &mut scene, "link-issue-42", 2);
@@ -475,10 +470,10 @@ fn TabRouterE2eApp() -> Element {
 
 #[test]
 fn dioxus_e2e_tab_router_provider_preserves_stack_and_retap_pops_to_root() {
-    let mut surface = DioxusSurface::new(1, TabRouterE2eApp);
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, TabRouterE2eApp);
     let mut scene = Nve2Replica::new();
     let mut wire = Vec::new();
-    surface.render_nve2(1, &mut wire);
+    surface.render_nve2(FrameId(1), &mut wire);
     scene.apply(&wire);
     assert!(scene.collect_texts().contains("ActiveTab: Home"));
     assert!(scene.collect_texts().contains("Screen: Home (/)"));

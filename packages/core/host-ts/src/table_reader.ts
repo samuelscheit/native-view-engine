@@ -11,6 +11,12 @@ import { Key64 } from './key64.ts';
 /** Low bits of a raw `NodeId` holding its slot index (`index: 24 | generation: 8`). */
 export const NODE_INDEX_MASK = 0xff_ffff;
 
+/** Sentinel `valWord` / `explicitBit` / `eventsWord` meaning "not applicable" (Rust `NO_VAL_WORD`). */
+export const NO_VAL_WORD = 0xff;
+
+/** Maximum words per table row (Rust `MAX_TABLE_WORDS`). */
+export const MAX_TABLE_WORDS = 32;
+
 /** How a field's bits are interpreted (Rust `nve_abi::table::FieldKind`). */
 export const FieldKind = {
   U32: 0,
@@ -23,48 +29,124 @@ export const FieldKind = {
   Str: 7,
   Resource: 8,
   Node: 9,
+  U64: 10,
+  I64: 11,
+  F64: 12,
+  GridLine: 13,
 } as const;
 export type FieldKind = (typeof FieldKind)[keyof typeof FieldKind];
+
+/** Optionality and wire-bit encoding strategy (Rust `nve_abi::table::OptEncoding`). */
+export const OptEncoding = {
+  Required: 0,
+  ZeroNiche: 1,
+  Bit0Present: 2,
+  PlusOne: 3,
+  TagXor: 4,
+  WideBit: 5,
+} as const;
+export type OptEncoding = (typeof OptEncoding)[keyof typeof OptEncoding];
 
 /** Integer in `[min, max]` (rejects NaN, ±Infinity, and fractions). */
 export function isIntIn(v: number, min: number, max: number): boolean {
   return Number.isInteger(v) && v >= min && v <= max;
 }
 
+/** `true` when `kind` spans two consecutive 32-bit words (`Str`, `U64`, `I64`, `F64`). */
+export function isTwoWordKind(kind: FieldKind): boolean {
+  return kind === FieldKind.Str || kind === FieldKind.U64 || kind === FieldKind.I64 || kind === FieldKind.F64;
+}
+
 /**
- * One field of a table row: `bits` wide at `shift` inside `word` (`Str` spans two words).
+ * One field of a table row: `bits` wide at `shift` inside `word` (`Str` / 64-bit kinds span two
+ * words; `OptEncoding.WideBit` puts a 1-bit presence flag at `(word, shift)` and the 32-bit value
+ * in `valWord`). On `#[nve_table(inherited)]` tables, `explicitBit` names the field's bit in word 0
+ * and `inherits` marks fields that fall back to the parent row when unset.
  *
  * Nominal (the ES private field keeps plain object literals out) and always well-formed: the
- * constructor throws `RangeError` unless `bits` is in `1..=32`, `shift + bits <= 32`, and the field
- * fits a 32-word row, so extraction never mis-shifts.
+ * constructor throws `RangeError` on any invalid shape so extraction never mis-shifts or overruns.
  */
 export class FieldSpec {
   readonly word: number;
   readonly shift: number;
   readonly bits: number;
   readonly kind: FieldKind;
+  readonly opt: OptEncoding;
+  readonly valWord: number;
+  readonly explicitBit: number;
+  readonly inherits: boolean;
   readonly #validated = true;
 
-  constructor(word: number, kind: FieldKind, shift = 0, bits = 32) {
-    const span = kind === FieldKind.Str ? 2 : 1;
-    if (!(isIntIn(bits, 1, 32) && isIntIn(shift, 0, 32 - bits) && isIntIn(word, 0, MAX_TABLE_WORDS - span) && isIntIn(kind, 0, 9))) {
-      throw new RangeError(`invalid field spec word=${word} shift=${shift} bits=${bits} kind=${kind}`);
+  constructor(
+    word: number,
+    kind: FieldKind,
+    shift = 0,
+    bits = 32,
+    opt: OptEncoding = OptEncoding.Required,
+    valWord = NO_VAL_WORD,
+    explicitBit = NO_VAL_WORD,
+    inherits = false,
+  ) {
+    if (!isIntIn(kind, 0, 13) || !isIntIn(opt, 0, 5) || typeof inherits !== 'boolean') {
+      throw new RangeError(`invalid field spec word=${word} shift=${shift} bits=${bits} kind=${kind} opt=${opt}`);
+    }
+    const twoWord = isTwoWordKind(kind);
+    const span = twoWord ? 2 : 1;
+    const shapeOk = twoWord
+      ? shift === 0 && bits === 32 && opt === OptEncoding.Required
+      : isIntIn(bits, 1, 32) && isIntIn(shift, 0, 32 - bits);
+    const wide = opt === OptEncoding.WideBit;
+    const wideOk = wide
+      ? bits === 1 && isIntIn(valWord, 0, MAX_TABLE_WORDS - 1) && valWord !== word
+      : valWord === NO_VAL_WORD;
+    const bit0Ok = opt !== OptEncoding.Bit0Present || bits >= 2;
+    const tagXorOk =
+      opt !== OptEncoding.TagXor ||
+      (kind === FieldKind.Length && bits === 32) ||
+      (kind === FieldKind.GridLine && bits === 16);
+    const explicitOk = explicitBit === NO_VAL_WORD || isIntIn(explicitBit, 0, 31);
+    const inheritOk =
+      (!inherits || explicitBit !== NO_VAL_WORD) &&
+      (explicitBit === NO_VAL_WORD || (word > 0 && (!wide || valWord > 0)));
+    if (!(shapeOk && isIntIn(word, 0, MAX_TABLE_WORDS - span) && wideOk && bit0Ok && tagXorOk && explicitOk && inheritOk)) {
+      throw new RangeError(
+        `invalid field spec word=${word} shift=${shift} bits=${bits} kind=${kind} opt=${opt} valWord=${valWord} explicitBit=${explicitBit}`,
+      );
     }
     this.word = word;
     this.shift = shift;
     this.bits = bits;
     this.kind = kind;
+    this.opt = opt;
+    this.valWord = valWord;
+    this.explicitBit = explicitBit;
+    this.inherits = inherits;
   }
 
-  /** `true` when the field lies inside a row of `words` words. */
+  /** `true` when the field (and its wide value word, if any) lies inside a row of `words` words. */
   fits(words: number): boolean {
-    return this.#validated && this.word + (this.kind === FieldKind.Str ? 2 : 1) <= words;
+    const span = isTwoWordKind(this.kind) ? 2 : 1;
+    return (
+      this.#validated &&
+      isIntIn(words, 1, MAX_TABLE_WORDS) &&
+      this.word + span <= words &&
+      (this.opt !== OptEncoding.WideBit || this.valWord < words)
+    );
   }
 }
 
-/** `FieldSpec` shorthand; whole-word by default. */
-export function field(word: number, kind: FieldKind, shift = 0, bits = 32): FieldSpec {
-  return new FieldSpec(word, kind, shift, bits);
+/** `FieldSpec` shorthand; whole-word required by default. */
+export function field(
+  word: number,
+  kind: FieldKind,
+  shift = 0,
+  bits = 32,
+  opt: OptEncoding = OptEncoding.Required,
+  valWord = NO_VAL_WORD,
+  explicitBit = NO_VAL_WORD,
+  inherits = false,
+): FieldSpec {
+  return new FieldSpec(word, kind, shift, bits, opt, valWord, explicitBit, inherits);
 }
 
 /** Field bits of `value` (unsigned). */
@@ -86,12 +168,28 @@ export interface LengthValue {
   readonly value: number;
 }
 
-const F32_SCRATCH = new DataView(new ArrayBuffer(4));
+export const GridLineKind = { Auto: 0, Line: 1, Span: 2 } as const;
+export type GridLineKind = (typeof GridLineKind)[keyof typeof GridLineKind];
+
+/** Decoded `nve_store::GridLine` (16-bit tagged placement: `Auto`, signed 14-bit `Line`, unsigned 14-bit `Span`). */
+export interface GridLineValue {
+  readonly kind: GridLineKind;
+  readonly value: number;
+}
+
+const FLOAT_SCRATCH = new DataView(new ArrayBuffer(8));
 
 /** Reinterprets u32 bits as an IEEE binary32 value. */
 export function f32FromBits(bits: number): number {
-  F32_SCRATCH.setUint32(0, bits >>> 0, true);
-  return F32_SCRATCH.getFloat32(0, true);
+  FLOAT_SCRATCH.setUint32(0, bits >>> 0, true);
+  return FLOAT_SCRATCH.getFloat32(0, true);
+}
+
+/** Reinterprets little-endian `(lo, hi)` u32 halves as an IEEE binary64 value. */
+export function f64FromBits(lo: number, hi: number): number {
+  FLOAT_SCRATCH.setUint32(0, lo >>> 0, true);
+  FLOAT_SCRATCH.setUint32(4, hi >>> 0, true);
+  return FLOAT_SCRATCH.getFloat64(0, true);
 }
 
 /** Every bit pattern decodes; the unused tag `11` normalizes to `auto` with value 0, like Rust. */
@@ -101,13 +199,19 @@ export function decodeLength(word: number): LengthValue {
   return { unit: tag as LengthUnit, value: f32FromBits(word & ~3) };
 }
 
+/** Every 16-bit pattern decodes; the unused tag `11` normalizes to `Auto` with value 0, like Rust. */
+export function decodeGridLine(bits: number): GridLineValue {
+  const v = bits & 0x3fff;
+  const tag = (bits >>> 14) & 3;
+  if (tag === 1) return { kind: GridLineKind.Line, value: (v << 18) >> 18 };
+  if (tag === 2) return { kind: GridLineKind.Span, value: v };
+  return { kind: GridLineKind.Auto, value: 0 };
+}
+
 /** Channels of a packed `RGBA8888` word (`r | g<<8 | b<<16 | a<<24`). */
 export function rgba(packed: number): { r: number; g: number; b: number; a: number } {
   return { r: packed & 0xff, g: (packed >>> 8) & 0xff, b: (packed >>> 16) & 0xff, a: packed >>> 24 };
 }
-
-/** Maximum words per table row (Rust `MAX_TABLE_WORDS`). */
-export const MAX_TABLE_WORDS = 32;
 
 export interface TableReaderInit {
   readonly key: Key64;
@@ -227,6 +331,33 @@ export class TableReader {
     return this.word(r, f.word);
   }
 
+  /** `true` when `f` was explicitly written on row `r` (always `true` for non-inherited tables). */
+  isExplicit(r: number, f: FieldSpec): boolean {
+    if (!f.fits(this.words)) throw new RangeError(`field word ${f.word} past ${this.words}-word row`);
+    const mask = this.word(r, 0);
+    return f.explicitBit === NO_VAL_WORD || ((mask >>> f.explicitBit) & 1) !== 0;
+  }
+
+  /** `true` when an optional (or required) field holds a `Some` value in row `r`. */
+  isPresent(r: number, f: FieldSpec): boolean {
+    return this.optRawUnsigned(r, f) !== null;
+  }
+
+  /** Raw `EventSet<E>` listener bitmask from `eventsWord` (`0` when `eventsWord === NO_VAL_WORD`). */
+  eventMask(r: number, eventsWord: number): number {
+    if (eventsWord === NO_VAL_WORD) {
+      if (!isIntIn(r, 0, this.rowCount - 1)) throw new RangeError(`row ${r} outside ${this.rowCount}`);
+      return 0;
+    }
+    return this.word(r, eventsWord);
+  }
+
+  /** `true` when row `r` subscribes to `eventId` (`0..=31`) in `eventsWord`. */
+  hasEvent(r: number, eventsWord: number, eventId: number): boolean {
+    const mask = this.eventMask(r, eventsWord);
+    return isIntIn(eventId, 0, 31) && ((mask >>> eventId) & 1) !== 0;
+  }
+
   u32(r: number, f: FieldSpec): number {
     return this.bits(r, f);
   }
@@ -263,12 +394,138 @@ export class TableReader {
     return decodeLength(this.bits(r, f));
   }
 
+  gridLine(r: number, f: FieldSpec): GridLineValue {
+    return decodeGridLine(this.bits(r, f));
+  }
+
+  /** Exact unsigned 64-bit field as `(lo, hi)` `u32` halves (53-bit-safe, zero `BigInt`). */
+  u64(r: number, f: FieldSpec): Key64 {
+    if (f.kind !== FieldKind.U64 || !f.fits(this.words)) {
+      throw new RangeError(`kind ${f.kind} field at word ${f.word} is not a u64 in a ${this.words}-word row`);
+    }
+    return new Key64(this.word(r, f.word), this.word(r, f.word + 1));
+  }
+
+  /** Exact two's-complement halves of a signed 64-bit field (zero `BigInt`). */
+  i64Bits(r: number, f: FieldSpec): Key64 {
+    if (f.kind !== FieldKind.I64 || !f.fits(this.words)) {
+      throw new RangeError(`kind ${f.kind} field at word ${f.word} is not an i64 in a ${this.words}-word row`);
+    }
+    return new Key64(this.word(r, f.word), this.word(r, f.word + 1));
+  }
+
+  /** Exact signed 64-bit field as a `bigint` (53-bit-safe). */
+  i64(r: number, f: FieldSpec): bigint {
+    return this.i64Bits(r, f).toSignedBigInt();
+  }
+
+  /** IEEE binary64 field from two consecutive little-endian words. */
+  f64(r: number, f: FieldSpec): number {
+    if (f.kind !== FieldKind.F64 || !f.fits(this.words)) {
+      throw new RangeError(`kind ${f.kind} field at word ${f.word} is not an f64 in a ${this.words}-word row`);
+    }
+    return f64FromBits(this.word(r, f.word), this.word(r, f.word + 1));
+  }
+
   /** `{offset, len}` of a `Str` field in the scene text slab; throws `RangeError` for a non-`Str` spec or one past the row. */
   str(r: number, f: FieldSpec): { offset: number; len: number } {
     if (f.kind !== FieldKind.Str || !f.fits(this.words)) {
       throw new RangeError(`kind ${f.kind} field at word ${f.word} is not a string in a ${this.words}-word row`);
     }
     return { offset: this.word(r, f.word), len: this.word(r, f.word + 1) };
+  }
+
+  // ---- optional-aware readers (handle `Required` and every `OptEncoding`) --------------------
+
+  optU32(r: number, f: FieldSpec): number | null {
+    return this.optRawUnsigned(r, f);
+  }
+
+  optEnum(r: number, f: FieldSpec): number | null {
+    return this.optRawUnsigned(r, f);
+  }
+
+  optNode(r: number, f: FieldSpec): number | null {
+    return this.optRawUnsigned(r, f);
+  }
+
+  optColor(r: number, f: FieldSpec): number | null {
+    return this.optRawUnsigned(r, f);
+  }
+
+  optF32(r: number, f: FieldSpec): number | null {
+    const raw = this.optRawUnsigned(r, f);
+    return raw === null ? null : f32FromBits(raw);
+  }
+
+  optBool(r: number, f: FieldSpec): boolean | null {
+    const raw = this.optRawUnsigned(r, f);
+    if (raw === null) return null;
+    if (f.opt === OptEncoding.PlusOne && raw > 1) return null;
+    return (raw & 1) !== 0;
+  }
+
+  optI32(r: number, f: FieldSpec): number | null {
+    const w = this.fieldWord(r, f);
+    switch (f.opt) {
+      case OptEncoding.Required:
+        return extractSigned(f, w);
+      case OptEncoding.Bit0Present: {
+        const raw = extractBits(f, w);
+        if ((raw & 1) === 0) return null;
+        const shift = 33 - f.bits;
+        return ((raw >>> 1) << shift) >> shift;
+      }
+      case OptEncoding.WideBit:
+        return ((w >>> f.shift) & 1) !== 0 ? this.word(r, f.valWord) | 0 : null;
+      case OptEncoding.ZeroNiche: {
+        const raw = extractBits(f, w);
+        return raw === 0 ? null : extractSigned(f, w);
+      }
+      case OptEncoding.PlusOne: {
+        const raw = extractBits(f, w);
+        return raw === 0 ? null : (raw - 1) | 0;
+      }
+      case OptEncoding.TagXor:
+        return null;
+    }
+  }
+
+  optLength(r: number, f: FieldSpec): LengthValue | null {
+    const raw = this.optRawUnsigned(r, f);
+    return raw === null ? null : decodeLength(raw);
+  }
+
+  optGridLine(r: number, f: FieldSpec): GridLineValue | null {
+    const raw = this.optRawUnsigned(r, f);
+    return raw === null ? null : decodeGridLine(raw);
+  }
+
+  private optRawUnsigned(r: number, f: FieldSpec): number | null {
+    const w = this.fieldWord(r, f);
+    switch (f.opt) {
+      case OptEncoding.Required:
+        return extractBits(f, w);
+      case OptEncoding.ZeroNiche: {
+        const raw = extractBits(f, w);
+        return raw === 0 ? null : raw;
+      }
+      case OptEncoding.Bit0Present: {
+        const raw = extractBits(f, w);
+        return (raw & 1) === 0 ? null : raw >>> 1;
+      }
+      case OptEncoding.PlusOne: {
+        const raw = extractBits(f, w);
+        return raw === 0 ? null : raw - 1;
+      }
+      case OptEncoding.TagXor: {
+        const raw = extractBits(f, w);
+        const niche = f.kind === FieldKind.GridLine ? 0xc000 : 3;
+        return (raw & niche) === 0 ? null : (raw ^ niche) >>> 0;
+      }
+      case OptEncoding.WideBit:
+        return ((w >>> f.shift) & 1) !== 0 ? this.word(r, f.valWord) : null;
+    }
   }
 
   /** Raw `NodeId` owning sparse row `r`, or `r` itself for dense tables. */

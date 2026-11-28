@@ -19,7 +19,7 @@ assert!(vp.scale_factor > 0.0);
 
 ## Dependency Invariants
 
-- **Depends on**: `nve-abi`, `nve-components`, `serde`, and non-`wasm32` `libloading`.
+- **Depends on**: `nve-abi`, `nve-tables`, `serde`, and non-`wasm32` `libloading`.
 - **Must NOT depend on**: `dioxus*`, `web-sys`, `js-sys`, `wasm-bindgen`, `skia-safe`, runtime `serde_json`, `packages/modules/*`, or `hosts/*`.
 
 ## Verification

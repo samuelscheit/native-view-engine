@@ -1,9 +1,9 @@
 //! Every key in an rsx `style: "..."` literal must be a property the inline style parser knows
-//! (`nve_components::css_key_bits`). The parser skips unknown keys without a trace, so an
+//! (`nve_tables::css_key_bits`). The parser skips unknown keys without a trace, so an
 //! unsupported key ships as a declaration that silently never applies (e.g. `flex-basis`,
 //! `padding-bottom` and `font-family` were dropped before they were added to the parser).
 
-use nve_components::css_key_bits;
+use nve_tables::css_key_bits;
 
 use crate::{is_test_or_bench_rs, RepoIndex, Violation};
 
@@ -46,7 +46,7 @@ pub fn check_inline_style_keys_known(idx: &RepoIndex) -> Vec<Violation> {
                         path: rel.clone(),
                         line: i + 1,
                         snippet: line.trim().chars().take(160).collect(),
-                        reason: format!("inline style key `{key}` is not parsed by nve_components::css_key_bits and silently never applies"),
+                        reason: format!("inline style key `{key}` is not parsed by nve_tables::css_key_bits and silently never applies"),
                     });
                 }
             }

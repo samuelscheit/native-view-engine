@@ -6,17 +6,18 @@
 //   1 ROOT -> 2 column [3 title, 4 "Increment" button, 5 count label, 6 "Reset" button]
 // Press on 4 increments, press on 6 resets; `NveDevApi` snapshots the count as 4 LE bytes.
 // `NveComponentApi`: the `title` string prop retitles node 3, and every count change emits one
-// `Custom` event named `count` whose `value` is the new count (I64).
+// `nve.custom` event named `count` whose binary payload is an `NveBinValue` `I64(count)`.
 #pragma once
 
 #include <cstdint>
 #include <string>
 #include <string_view>
-#include <vector>
 
-#include "nve2_writer.hpp"
 #include "../generated/nve_abi.generated.h"
 #include "../generated/nve_tables.generated.h"
+#include "bin_codec.hpp"
+#include "nve2_writer.hpp"
+#include "owned_events.hpp"
 
 namespace nve::host::demo {
 
@@ -63,11 +64,11 @@ class CounterApp {
   static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto* self = static_cast<CounterApp*>(h);
     const int32_t before = self->count_;
-    for (uint32_t i = 0; batch.ptr != nullptr && i < batch.len; ++i) {
-      const NveDirectEvent& ev = batch.ptr[i];
-      if (ev.kind != NVE_EVENT_PRESS) continue;
-      if (ev.node_id == kIncrement) ++self->count_;
-      if (ev.node_id == kReset) self->count_ = 0;
+    for (uint32_t i = 0u; batch.events != nullptr && i < batch.event_count; ++i) {
+      const NveEvent& ev = batch.events[i];
+      if (!is_interaction_event(ev, NVE_INTERACTION_EVENT_PRESS)) continue;
+      if (ev.node == kIncrement) ++self->count_;
+      if (ev.node == kReset) self->count_ = 0;
     }
     if (before != self->count_) self->count_changed();
     return before != self->count_ ? 1u : 0u;
@@ -76,7 +77,7 @@ class CounterApp {
   static uint32_t set_props(NveAppHandle h, const NveMapEntry* entries, uint32_t count) {
     auto* self = static_cast<CounterApp*>(h);
     uint32_t changed = 0u;
-    for (uint32_t i = 0; entries != nullptr && i < count; ++i) {
+    for (uint32_t i = 0u; entries != nullptr && i < count; ++i) {
       const NveMapEntry& e = entries[i];
       const std::string_view key(reinterpret_cast<const char*>(e.key.ptr), e.key.len);
       if (key != "title" || e.value.tag != NVE_VAL_STR) continue;
@@ -92,19 +93,14 @@ class CounterApp {
     auto* self = static_cast<CounterApp*>(h);
     self->drained_.swap(self->emitted_);
     self->emitted_.clear();
-    return NveEventBatch{self->drained_.data(), static_cast<uint32_t>(self->drained_.size()), 0u};
+    return self->drained_.batch();
   }
 
   void count_changed() {
     count_dirty_ = true;
-    NveDirectEvent ev{};
-    ev.node_id = kCount;
-    ev.kind = NVE_EVENT_CUSTOM;
-    ev.payload_tag = NVE_EVENT_PAYLOAD_CUSTOM;
-    ev.name = NveStrSlice{reinterpret_cast<const uint8_t*>(kCountEventName.data()), kCountEventName.size()};
-    ev.value.tag = NVE_VAL_I64;
-    ev.value.data.i64_val = count_;
-    emitted_.push_back(ev);
+    bin_.clear();
+    bin_.write_i64(count_);
+    (void)emitted_.push_custom(1u, kCount, 0u, kCountEventName, bin_.bytes());
   }
 
   /// The demo has no `rsx!` templates to patch.
@@ -113,7 +109,7 @@ class CounterApp {
   static NveBufferSlice snapshot_state(NveAppHandle h) {
     auto* self = static_cast<CounterApp*>(h);
     const auto c = static_cast<uint32_t>(self->count_);
-    for (uint32_t i = 0; i < 4u; ++i) self->state_[i] = static_cast<uint8_t>(c >> (i * 8u));
+    for (uint32_t i = 0u; i < 4u; ++i) self->state_[i] = static_cast<uint8_t>(c >> (i * 8u));
     return NveBufferSlice{self->state_, 4u};
   }
 
@@ -121,7 +117,7 @@ class CounterApp {
     auto* self = static_cast<CounterApp*>(h);
     if (state.ptr == nullptr || state.len != 4u) return;
     uint32_t c = 0u;
-    for (uint32_t i = 0; i < 4u; ++i) c |= uint32_t{state.ptr[i]} << (i * 8u);
+    for (uint32_t i = 0u; i < 4u; ++i) c |= uint32_t{state.ptr[i]} << (i * 8u);
     self->count_ = static_cast<int32_t>(c);
     self->count_changed();
   }
@@ -129,7 +125,6 @@ class CounterApp {
   void text_node(uint32_t id, const char* text, float font_size) {
     w_.create(id);
     w_.set_str(id, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, text);
-    w_.set(id, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_FONT_SIZE | NVE_TYPOGRAPHY_SET_COLOR);
     w_.set_f32(id, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, font_size);
     w_.set(id, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_COLOR, rgba(15, 23, 42));
   }
@@ -142,7 +137,7 @@ class CounterApp {
     w_.set(id, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_PADDING_RIGHT, length_points(16.0f));
     w_.set(id, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, background);
     w_.set_f32(id, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_RADIUS, 8.0f);
-    w_.set(id, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_EVENT_MASK, 1u << (NVE_EVENT_PRESS - 1u));
+    w_.set_events(id, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_EVENTS_WORD, NVE_INTERACTION_EVENT_SET_PRESS);
     w_.set_bool(id, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_FOCUSABLE, true);
     w_.set(id, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_ROLE, NVE_ARIA_ROLE_BUTTON);
     w_.set_str(id, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_LABEL, label);
@@ -153,8 +148,8 @@ class CounterApp {
     w_.create(1u);  // the receiving replica mirrors node ids exactly, ROOT included
     w_.create(kColumn);
     w_.set(kColumn, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_ROW_GAP, length_points(12.0f));
-    for (const NveFieldSpec f : {NVE_TABLE_LAYOUT_PADDING_TOP, NVE_TABLE_LAYOUT_PADDING_RIGHT, NVE_TABLE_LAYOUT_PADDING_BOTTOM,
-                                 NVE_TABLE_LAYOUT_PADDING_LEFT}) {
+    for (const NveFieldSpec f : {NVE_TABLE_LAYOUT_PADDING_TOP, NVE_TABLE_LAYOUT_PADDING_RIGHT,
+                                 NVE_TABLE_LAYOUT_PADDING_BOTTOM, NVE_TABLE_LAYOUT_PADDING_LEFT}) {
       w_.set(kColumn, NVE_TABLE_LAYOUT_DESC, f, length_points(24.0f));
     }
     w_.set(kColumn, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_ALIGN_ITEMS, NVE_ALIGN_ITEMS_FLEX_START);
@@ -172,12 +167,13 @@ class CounterApp {
   }
 
   Nve2Writer w_;
+  BinWriter bin_;
   int32_t count_ = 0;
   bool mounted_ = false;
   bool count_dirty_ = false;
   uint8_t state_[4] = {};
-  std::vector<NveDirectEvent> emitted_;
-  std::vector<NveDirectEvent> drained_;  // borrowed by the runtime until the next drain
+  OwnedEvents emitted_;
+  OwnedEvents drained_;  // borrowed by the runtime until the next drain
 };
 
 }  // namespace nve::host::demo

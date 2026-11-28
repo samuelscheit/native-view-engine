@@ -4,7 +4,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use nve_components::tables::{
+use nve_tables::tables::{
     FontStyle, OverflowWrap, TextContent, Typography, WhiteSpace, WordBreak,
 };
 use nve_engine::Viewport;
@@ -65,7 +65,7 @@ fn edits() -> [(&'static str, Edit, Check); 9] {
         (
             "max_lines",
             |tx, p| {
-                tx.edit::<Typography>(p).max_lines(3);
+                tx.edit::<Typography>(p).max_lines(core::num::NonZeroU16::new(3));
             },
             |s| s.max_lines == 3,
         ),

@@ -9,9 +9,10 @@ Deterministic fixture library and Criterion benchmark harness (`packages/tools/b
 - `wasm_bundle_size`
 
 ```rust
+use nve_abi::FrameId;
 use nve_bench::build_row_tree_cmd;
 
-let cmd_bytes = build_row_tree_cmd(100, 1);
+let cmd_bytes = build_row_tree_cmd(100, FrameId(1));
 assert!(!cmd_bytes.is_empty());
 ```
 

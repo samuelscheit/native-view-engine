@@ -84,18 +84,26 @@ class NveTvInputBridgeTest {
         assertTrue(evt.alt)
         assertFalse(evt.repeat)
 
-        // Verify little-endian EventRing envelope bytes directly
+        // Verify little-endian NVEV v2 envelope bytes directly
         val buf = ByteBuffer.wrap(encoded).order(ByteOrder.LITTLE_ENDIAN)
+        assertEquals('N'.code.toByte(), buf.get())
+        assertEquals('V'.code.toByte(), buf.get())
+        assertEquals('E'.code.toByte(), buf.get())
+        assertEquals('V'.code.toByte(), buf.get())
+        assertEquals(2.toShort(), buf.short)
         assertEquals(1, buf.int) // event_count
-        assertEquals(3, buf.int) // surface_id
-        assertEquals(42, buf.int) // node_id
-        assertEquals(0x0011223344556677L, buf.long) // timestamp_us
-        assertEquals(NveTvEventRingWire.EVENT_KIND_KEY_DOWN, buf.get().toInt() and 0xFF)
-        assertEquals(NveTvEventRingWire.PAYLOAD_TAG_KEY, buf.get().toInt() and 0xFF)
+        assertEquals("ArrowRight".length, buf.int) // bytes_len (code in arena; key inlined)
+        assertEquals(0x0011223344556677L, buf.long) // timestamp
+        assertEquals(NveTvEventRingWire.TABLE_INTERACTION, buf.long) // table
+        assertEquals(3, buf.int) // surface
+        assertEquals(42, buf.int) // node
+        assertEquals(NveTvEventRingWire.EVENT_ID_KEY_DOWN, buf.int) // event
+        val flags = buf.int
         assertEquals(
             NveTvEventRingWire.KEY_MOD_META or NveTvEventRingWire.KEY_MOD_SHIFT or NveTvEventRingWire.KEY_MOD_ALT,
-            buf.get().toInt() and 0xFF,
+            flags and 0x1F,
         )
+        assertTrue((flags and NveTvEventRingWire.FLAG_INLINE_KEY_UTF8) != 0)
         assertEquals(NveTvKeyMapper.KEYCODE_DPAD_RIGHT, buf.int)
 
         // Malformed EventRing rejected strictly
@@ -103,6 +111,16 @@ class NveTvInputBridgeTest {
         assertThrows(IllegalArgumentException::class.java) {
             NveTvEventRingWire.decode(encoded + byteArrayOf(0x00))
         }
+        // Conflicting INLINE_KEY_UTF8 | KEY_SPLIT_BYTES rejected
+        val conflicting = encoded.copyOf()
+        ByteBuffer.wrap(conflicting).order(ByteOrder.LITTLE_ENDIAN)
+            .putInt(14 + 28, NveTvEventRingWire.FLAG_INLINE_KEY_UTF8 or NveTvEventRingWire.FLAG_KEY_SPLIT_BYTES)
+        assertThrows(IllegalArgumentException::class.java) { NveTvEventRingWire.decode(conflicting) }
+        // Invalid UTF-8 in code arena rejected strictly
+        val badUtf8 = encoded.copyOf()
+        badUtf8[badUtf8.size - 2] = 0xFF.toByte()
+        badUtf8[badUtf8.size - 1] = 0xFE.toByte()
+        assertThrows(IllegalArgumentException::class.java) { NveTvEventRingWire.decode(badUtf8) }
     }
 
     @Test

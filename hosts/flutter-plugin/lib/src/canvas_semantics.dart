@@ -8,9 +8,6 @@ import 'package:nve_host/nve_host.dart';
 
 import 'scene_tree.dart';
 
-/// `EventMask::PRESS` (bit 0 of `Interaction.event_mask`).
-const int nveEventMaskPress = 1;
-
 final class NveCanvasSemanticsAssembler {
   final Map<int, SemanticsNode> _nodes = <int, SemanticsNode>{};
   final NveTreeWalk _walk = NveTreeWalk();
@@ -80,13 +77,13 @@ final class _Collector {
   }
 
   void _emit(int index, Rect rect, int ar) {
-    final role = ar >= 0 ? a11y!.enumValue(ar, AccessibilityTable.role) : NveAriaRole.none;
+    final role = ar >= 0 ? a11y!.optEnumValue(ar, AccessibilityTable.role) : null;
     if (role == NveAriaRole.presentation) {
       return;
     }
     final ir = s.rowOf(input, index);
     final tr = s.rowOf(text, index);
-    final pressable = t.eventMask(index) & nveEventMaskPress != 0;
+    final pressable = t.eventMask(index) & NveInteractionEventSet.press != 0;
     final isImage = role == NveAriaRole.image || s.rowOf(image, index) >= 0;
     String a11yStr(FieldSpec f) => ar >= 0 ? s.str(a11y!, ar, f) : '';
     var label = a11yStr(AccessibilityTable.label);
@@ -114,7 +111,7 @@ final class _Collector {
       ..value = value
       ..hint = hint
       ..textDirection = TextDirection.ltr
-      ..isButton = role == NveAriaRole.button || (pressable && ir < 0 && role == NveAriaRole.none)
+      ..isButton = role == NveAriaRole.button || (pressable && ir < 0 && role == null)
       ..isLink = role == NveAriaRole.link
       ..isHeader = role == NveAriaRole.heading
       ..isImage = isImage
@@ -132,11 +129,11 @@ final class _Collector {
     out.add(node);
   }
 
-  void _states(SemanticsConfiguration c, int row, int role) {
+  void _states(SemanticsConfiguration c, int row, int? role) {
     final a = a11y!;
-    int tri(FieldSpec f) => a.enumValue(row, f);
-    final checked = tri(AccessibilityTable.checked);
-    if (checked != NveAriaTriState.unset) {
+    int? opt(FieldSpec f) => a.optEnumValue(row, f);
+    final checked = opt(AccessibilityTable.checked);
+    if (checked != null) {
       if (role == NveAriaRole.switchValue) {
         c.isToggled = checked == NveAriaTriState.trueValue;
       } else {
@@ -145,22 +142,23 @@ final class _Collector {
           ..isCheckStateMixed = checked == NveAriaTriState.mixed;
       }
     }
-    final selected = tri(AccessibilityTable.selected);
-    if (selected != NveAriaTriState.unset) {
+    final selected = opt(AccessibilityTable.selected);
+    if (selected != null) {
       c.isSelected = selected == NveAriaTriState.trueValue;
     }
-    final expanded = tri(AccessibilityTable.expanded);
-    if (expanded != NveAriaTriState.unset) {
+    final expanded = opt(AccessibilityTable.expanded);
+    if (expanded != null) {
       c.isExpanded = expanded == NveAriaTriState.trueValue;
     }
-    final pressed = tri(AccessibilityTable.pressed);
-    if (pressed != NveAriaTriState.unset) {
+    final pressed = opt(AccessibilityTable.pressed);
+    if (pressed != null) {
       c.isToggled = pressed == NveAriaTriState.trueValue;
     }
     if (a.boolean(row, AccessibilityTable.modal)) {
       c.scopesRoute = true;
     }
-    if (tri(AccessibilityTable.live) >= NveAriaLive.polite) {
+    final live = opt(AccessibilityTable.live);
+    if (live != null && live >= NveAriaLive.polite) {
       c.liveRegion = true;
     }
   }

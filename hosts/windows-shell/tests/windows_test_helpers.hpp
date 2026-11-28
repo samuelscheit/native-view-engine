@@ -8,6 +8,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <initializer_list>
 #include <iostream>
 #include <memory>
 #include <source_location>
@@ -61,10 +62,28 @@ inline void sized(host::Nve2Writer& w, uint32_t id, float width, float height) {
   w.set_f32(id, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_FLEX_SHRINK, 0.0f);
 }
 
-inline void events(host::Nve2Writer& w, uint32_t id, std::initializer_list<NveEventKind> kinds) {
+inline void events(host::Nve2Writer& w, uint32_t id, std::initializer_list<NveInteractionEvent> kinds) {
   uint32_t mask = 0u;
-  for (const NveEventKind k : kinds) mask |= host::event_bit(k);
-  w.set(id, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_EVENT_MASK, mask);
+  for (const NveInteractionEvent k : kinds) mask |= host::event_set_bit(k);
+  (void)w.set_events(id, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_EVENTS_WORD, mask);
+}
+
+inline void events(host::Nve2Writer& w, uint32_t id, std::initializer_list<NveTextInputEvent> kinds) {
+  uint32_t mask = 0u;
+  for (const NveTextInputEvent k : kinds) mask |= host::event_set_bit(k);
+  (void)w.set_events(id, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_EVENTS_WORD, mask);
+}
+
+inline void events(host::Nve2Writer& w, uint32_t id, std::initializer_list<NveScrollEvent> kinds) {
+  uint32_t mask = 0u;
+  for (const NveScrollEvent k : kinds) mask |= host::event_set_bit(k);
+  (void)w.set_events(id, NVE_TABLE_SCROLL_DESC, NVE_TABLE_SCROLL_EVENTS_WORD, mask);
+}
+
+inline void events(host::Nve2Writer& w, uint32_t id, std::initializer_list<NveLayoutEvent> kinds) {
+  uint32_t mask = 0u;
+  for (const NveLayoutEvent k : kinds) mask |= host::event_set_bit(k);
+  (void)w.set_events(id, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_EVENTS_WORD, mask);
 }
 
 inline const WinNodeVisual& node(const NveWinHost& host, uint32_t id,

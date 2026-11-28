@@ -9,6 +9,7 @@ mod native {
     use std::hint::black_box;
 
     use criterion::{criterion_group, Criterion};
+    use nve_abi::{DurationMs, NodeId};
     use nve_wire_core::{
         NveNodePatchDeltaBuilder, NveNodePatchDeltaView, NveWireFrame, NveWireFrameRef,
         NveWireKind, DEFAULT_MAX_WIRE_FRAME_BYTES,
@@ -17,9 +18,10 @@ mod native {
     fn bench_wire_core(c: &mut Criterion) {
         let mut builder = NveNodePatchDeltaBuilder::with_capacity(32, 256);
         for id in 1..=16u32 {
+            let nid = NodeId::new(id, 0);
             builder
-                .set_text(id, "status: active")
-                .set_opacity(id, 0.85, 120);
+                .set_text(nid, "status: active")
+                .set_opacity(nid, 0.85, DurationMs(120));
         }
         let delta_bytes = builder.encode().expect("valid bench patch delta");
         let frame = NveWireFrame::new(NveWireKind::NodePatchDelta, 42, delta_bytes.clone());

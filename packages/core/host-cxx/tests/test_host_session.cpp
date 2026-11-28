@@ -172,10 +172,15 @@ void test_reentrant_event_sink() {
     int64_t value = 0;
   };
   std::vector<Seen> seen;  // recorded AFTER the nested calls returned
-  host->set_event_sink([&](std::span<const NveDirectEvent> evs) {
-    for (const NveDirectEvent& ev : evs) {
-      if (ev.value.data.i64_val < 4) (void)press(*host, CounterApp::kIncrement);
-      seen.push_back({std::string(reinterpret_cast<const char*>(ev.name.ptr), ev.name.len), ev.value.data.i64_val});
+  const auto decode_count = [](const NveEvent& ev, NveEventBatch batch) -> int64_t {
+    BinReader r(event_custom_data(ev, batch));
+    return r.read_i64();
+  };
+  host->set_event_sink([&](NveEventBatch batch) {
+    for (const NveEvent& ev : batch_events(batch)) {
+      const int64_t val = decode_count(ev, batch);
+      if (val < 4) (void)press(*host, CounterApp::kIncrement);
+      seen.push_back({std::string(event_custom_name(ev, batch)), val});
     }
   });
   CHECK(press(*host, CounterApp::kIncrement));
@@ -188,8 +193,8 @@ void test_reentrant_event_sink() {
   // A sink that replaces itself keeps running on its own (copied) state.
   int calls = 0;
   const std::string tag(64, 'x');  // heap-allocated capture: freed if the running sink were destroyed
-  host->set_event_sink([&host, &calls, tag](std::span<const NveDirectEvent>) {
-    host->set_event_sink([&calls](std::span<const NveDirectEvent>) { calls += 100; });
+  host->set_event_sink([&host, &calls, tag](NveEventBatch) {
+    host->set_event_sink([&calls](NveEventBatch) { calls += 100; });
     calls += tag.size() == 64u ? 1 : 1000;
   });
   CHECK(press(*host, CounterApp::kIncrement) && calls == 1);
@@ -206,11 +211,12 @@ void test_sink_reloading_the_module() {
   std::vector<std::string> names;
   std::vector<int64_t> values;
   bool reloaded = false;
-  host->set_event_sink([&](std::span<const NveDirectEvent> evs) {
+  host->set_event_sink([&](NveEventBatch batch) {
     if (!std::exchange(reloaded, true)) CHECK(host->reload_module(NVE_TEST_COUNTER_DOUBLE_MODULE));
-    for (const NveDirectEvent& ev : evs) {
-      names.emplace_back(reinterpret_cast<const char*>(ev.name.ptr), ev.name.len);
-      values.push_back(ev.value.data.i64_val);
+    for (const NveEvent& ev : batch_events(batch)) {
+      names.emplace_back(event_custom_name(ev, batch));
+      BinReader r(event_custom_data(ev, batch));
+      values.push_back(r.read_i64());
     }
   });
   CHECK(press(*host, CounterApp::kIncrement));

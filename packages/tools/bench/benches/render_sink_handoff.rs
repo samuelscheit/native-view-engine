@@ -7,15 +7,18 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
-use nve_abi::{ColorRgba, EventMask, EventPayload, NativeEvent, NativeEventKind};
+use nve_abi::{
+    ColorRgba, EventBatchBuf, FrameId, InteractionEvent, NodeId, SurfaceId, TimestampUs,
+};
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::SkiaBackend;
 use nve_backend_web::WebBackend;
 use nve_bench::DEFAULT_VIEWPORT;
-use nve_components::tables::{core_realization_order, Interaction};
+use nve_tables::tables::{core_realization_order, Interaction};
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
 use nve_engine::{StoreBackend, StoreWireReplica};
+use nve_motion::{write_transitions, EasingCurve, Motion, TransitionProperty, TransitionSpec};
 use nve_store::NodeStore;
 
 #[derive(Clone, PartialEq)]
@@ -83,10 +86,6 @@ fn rich_extended_app() -> Element {
                 GradientStop::new(1.0, ColorRgba::rgb(124, 58, 237)),
             ],
         )
-        .transition(
-            TransitionSpec::new(TransitionProperty::BackgroundColor, 160)
-                .easing(EasingCurve::EaseOut),
-        )
         .on_hover_with(|p| {
             p.scale(1.02).linear_gradient(
                 90.0,
@@ -105,6 +104,11 @@ fn rich_extended_app() -> Element {
                 pressable {
                     key: "{i}",
                     nve_style: card_style.clone(),
+                    nve_table: nve_dioxus::table_attr::<Motion, _>(
+                        [TransitionSpec::new(TransitionProperty::BackgroundColor, 160)
+                            .easing(EasingCurve::EaseOut)],
+                        |tx, node, specs| write_transitions(tx, node, specs),
+                    ),
                     view {
                         nve_style: TypedStyle::new()
                             .width_px(20.0)
@@ -119,12 +123,15 @@ fn rich_extended_app() -> Element {
     }
 }
 
-fn find_tick_node_id(store: &NodeStore) -> u32 {
+fn find_tick_node_id(store: &NodeStore) -> NodeId {
     store
         .live_nodes()
         .find_map(|id| {
-            let mask = store.try_row::<Interaction>(id)?.event_mask();
-            ((u64::from(mask) & EventMask::PRESS) != 0).then_some(id.raw())
+            store
+                .try_row::<Interaction>(id)?
+                .listeners()
+                .contains(InteractionEvent::Press)
+                .then_some(id)
         })
         .expect("pressable tick node")
 }
@@ -135,25 +142,28 @@ fn bench_handoff_patch_10_nodes(c: &mut Criterion) {
 
     // 1. Direct single-owner NodeStore commit -> WebBackend
     let mut direct_surface =
-        DioxusSurface::new_with_props(1, row_list_app, RowListProps { rows: 50 });
+        DioxusSurface::new_with_props(SurfaceId::ROOT, row_list_app, RowListProps { rows: 50 });
     let mut direct_web = WebBackend::new();
-    direct_web.set_viewport(1, DEFAULT_VIEWPORT);
+    direct_web.set_viewport(SurfaceId::ROOT, DEFAULT_VIEWPORT);
     direct_surface
-        .commit_to(1, &mut direct_web)
+        .commit_to(FrameId(1), &mut direct_web)
         .expect("initial direct commit to web");
     let direct_btn = find_tick_node_id(direct_surface.store());
-    let mut direct_frame = 1u64;
+    let mut direct_frame = FrameId(1);
 
+    let mut direct_ev = EventBatchBuf::with_capacity(1, 0);
     group.bench_function("direct_commit_to_web", |b| {
         b.iter(|| {
-            direct_frame += 1;
-            direct_surface.dispatch_events(&[NativeEvent {
-                surface_id: 1,
-                node_id: direct_btn,
-                timestamp_us: direct_frame * 16_000,
-                kind: NativeEventKind::Press,
-                payload: EventPayload::Point { x: 10.0, y: 10.0 },
-            }]);
+            direct_frame = direct_frame.next();
+            direct_ev.clear();
+            direct_ev.push_press(
+                SurfaceId::ROOT,
+                direct_btn,
+                TimestampUs(direct_frame.raw() * 16_000),
+                10.0,
+                10.0,
+            );
+            direct_surface.dispatch_events(direct_ev.as_validated());
             black_box(
                 direct_surface
                     .commit_to(direct_frame, &mut direct_web)
@@ -164,28 +174,31 @@ fn bench_handoff_patch_10_nodes(c: &mut Criterion) {
 
     // 2. Cross-boundary NVE2 wire encode + StoreWireReplica<WebBackend> decode
     let mut wire_surface =
-        DioxusSurface::new_with_props(1, row_list_app, RowListProps { rows: 50 });
+        DioxusSurface::new_with_props(SurfaceId::ROOT, row_list_app, RowListProps { rows: 50 });
     let mut wire_web = StoreWireReplica::new(WebBackend::new(), core_realization_order());
-    wire_web.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
+    wire_web.backend_mut().set_viewport(SurfaceId::ROOT, DEFAULT_VIEWPORT);
     {
-        let init = wire_surface.render_nve2_slice(1);
+        let init = wire_surface.render_nve2_slice(FrameId(1));
         wire_web
             .submit_nve2_frame(init)
             .expect("initial wire commit to web");
     }
     let wire_btn = find_tick_node_id(wire_web.store());
-    let mut wire_frame = 1u64;
+    let mut wire_frame = FrameId(1);
 
+    let mut wire_ev = EventBatchBuf::with_capacity(1, 0);
     group.bench_function("nve2_wire_encode_decode_web", |b| {
         b.iter(|| {
-            wire_frame += 1;
-            wire_surface.dispatch_events(&[NativeEvent {
-                surface_id: 1,
-                node_id: wire_btn,
-                timestamp_us: wire_frame * 16_000,
-                kind: NativeEventKind::Press,
-                payload: EventPayload::Point { x: 10.0, y: 10.0 },
-            }]);
+            wire_frame = wire_frame.next();
+            wire_ev.clear();
+            wire_ev.push_press(
+                SurfaceId::ROOT,
+                wire_btn,
+                TimestampUs(wire_frame.raw() * 16_000),
+                10.0,
+                10.0,
+            );
+            wire_surface.dispatch_events(wire_ev.as_validated());
             let bytes = wire_surface.render_nve2_slice(wire_frame);
             black_box(
                 wire_web
@@ -206,14 +219,17 @@ fn bench_handoff_mount_trees(c: &mut Criterion) {
         group.bench_function("direct_commit_to_web", |b| {
             b.iter_batched(
                 || {
-                    let surface =
-                        DioxusSurface::new_with_props(1, row_list_app, RowListProps { rows });
+                    let surface = DioxusSurface::new_with_props(
+                        SurfaceId::ROOT,
+                        row_list_app,
+                        RowListProps { rows },
+                    );
                     let mut web = WebBackend::new();
-                    web.set_viewport(1, DEFAULT_VIEWPORT);
+                    web.set_viewport(SurfaceId::ROOT, DEFAULT_VIEWPORT);
                     (surface, web)
                 },
                 |(mut surface, mut web)| {
-                    black_box(surface.commit_to(1, &mut web).expect("mount commit web"))
+                    black_box(surface.commit_to(FrameId(1), &mut web).expect("mount commit web"))
                 },
                 BatchSize::SmallInput,
             );
@@ -222,15 +238,18 @@ fn bench_handoff_mount_trees(c: &mut Criterion) {
         group.bench_function("nve2_wire_encode_decode_web", |b| {
             b.iter_batched(
                 || {
-                    let surface =
-                        DioxusSurface::new_with_props(1, row_list_app, RowListProps { rows });
+                    let surface = DioxusSurface::new_with_props(
+                        SurfaceId::ROOT,
+                        row_list_app,
+                        RowListProps { rows },
+                    );
                     let mut web =
                         StoreWireReplica::new(WebBackend::new(), core_realization_order());
-                    web.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
+                    web.backend_mut().set_viewport(SurfaceId::ROOT, DEFAULT_VIEWPORT);
                     (surface, web)
                 },
                 |(mut surface, mut web)| {
-                    let bytes = surface.render_nve2_slice(1);
+                    let bytes = surface.render_nve2_slice(FrameId(1));
                     black_box(
                         web.submit_nve2_frame(black_box(bytes))
                             .expect("mount wire web"),
@@ -243,16 +262,19 @@ fn bench_handoff_mount_trees(c: &mut Criterion) {
         group.bench_function("direct_commit_to_headless", |b| {
             b.iter_batched(
                 || {
-                    let surface =
-                        DioxusSurface::new_with_props(1, row_list_app, RowListProps { rows });
+                    let surface = DioxusSurface::new_with_props(
+                        SurfaceId::ROOT,
+                        row_list_app,
+                        RowListProps { rows },
+                    );
                     let mut headless = HeadlessBackend::new().with_mutation_tracking(false);
-                    headless.set_viewport(1, DEFAULT_VIEWPORT);
+                    headless.set_viewport(SurfaceId::ROOT, DEFAULT_VIEWPORT);
                     (surface, headless)
                 },
                 |(mut surface, mut headless)| {
                     black_box(
                         surface
-                            .commit_to(1, &mut headless)
+                            .commit_to(FrameId(1), &mut headless)
                             .expect("mount commit headless"),
                     )
                 },
@@ -263,17 +285,20 @@ fn bench_handoff_mount_trees(c: &mut Criterion) {
         group.bench_function("nve2_wire_encode_decode_headless", |b| {
             b.iter_batched(
                 || {
-                    let surface =
-                        DioxusSurface::new_with_props(1, row_list_app, RowListProps { rows });
+                    let surface = DioxusSurface::new_with_props(
+                        SurfaceId::ROOT,
+                        row_list_app,
+                        RowListProps { rows },
+                    );
                     let mut headless = StoreWireReplica::new(
                         HeadlessBackend::new().with_mutation_tracking(false),
                         core_realization_order(),
                     );
-                    headless.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
+                    headless.backend_mut().set_viewport(SurfaceId::ROOT, DEFAULT_VIEWPORT);
                     (surface, headless)
                 },
                 |(mut surface, mut headless)| {
-                    let bytes = surface.render_nve2_slice(1);
+                    let bytes = surface.render_nve2_slice(FrameId(1));
                     black_box(
                         headless
                             .submit_nve2_frame(black_box(bytes))
@@ -295,13 +320,13 @@ fn bench_handoff_rich_extended(c: &mut Criterion) {
     group.bench_function("direct_commit_to_web", |b| {
         b.iter_batched(
             || {
-                let surface = DioxusSurface::new(1, rich_extended_app);
+                let surface = DioxusSurface::new(SurfaceId::ROOT, rich_extended_app);
                 let mut web = WebBackend::new();
-                web.set_viewport(1, DEFAULT_VIEWPORT);
+                web.set_viewport(SurfaceId::ROOT, DEFAULT_VIEWPORT);
                 (surface, web)
             },
             |(mut surface, mut web)| {
-                black_box(surface.commit_to(1, &mut web).expect("rich commit web"))
+                black_box(surface.commit_to(FrameId(1), &mut web).expect("rich commit web"))
             },
             BatchSize::SmallInput,
         );
@@ -310,13 +335,13 @@ fn bench_handoff_rich_extended(c: &mut Criterion) {
     group.bench_function("nve2_wire_encode_decode_web", |b| {
         b.iter_batched(
             || {
-                let surface = DioxusSurface::new(1, rich_extended_app);
+                let surface = DioxusSurface::new(SurfaceId::ROOT, rich_extended_app);
                 let mut web = StoreWireReplica::new(WebBackend::new(), core_realization_order());
-                web.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
+                web.backend_mut().set_viewport(SurfaceId::ROOT, DEFAULT_VIEWPORT);
                 (surface, web)
             },
             |(mut surface, mut web)| {
-                let bytes = surface.render_nve2_slice(1);
+                let bytes = surface.render_nve2_slice(FrameId(1));
                 black_box(
                     web.submit_nve2_frame(black_box(bytes))
                         .expect("rich wire web"),
@@ -329,13 +354,13 @@ fn bench_handoff_rich_extended(c: &mut Criterion) {
     group.bench_function("direct_commit_to_skia", |b| {
         b.iter_batched(
             || {
-                let surface = DioxusSurface::new(1, rich_extended_app);
+                let surface = DioxusSurface::new(SurfaceId::ROOT, rich_extended_app);
                 let mut skia = SkiaBackend::new();
-                skia.set_viewport(1, DEFAULT_VIEWPORT);
+                skia.set_viewport(SurfaceId::ROOT, DEFAULT_VIEWPORT);
                 (surface, skia)
             },
             |(mut surface, mut skia)| {
-                black_box(surface.commit_to(1, &mut skia).expect("rich commit skia"))
+                black_box(surface.commit_to(FrameId(1), &mut skia).expect("rich commit skia"))
             },
             BatchSize::SmallInput,
         );
@@ -344,13 +369,13 @@ fn bench_handoff_rich_extended(c: &mut Criterion) {
     group.bench_function("nve2_wire_encode_decode_skia", |b| {
         b.iter_batched(
             || {
-                let surface = DioxusSurface::new(1, rich_extended_app);
+                let surface = DioxusSurface::new(SurfaceId::ROOT, rich_extended_app);
                 let mut skia = StoreWireReplica::new(SkiaBackend::new(), core_realization_order());
-                skia.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
+                skia.backend_mut().set_viewport(SurfaceId::ROOT, DEFAULT_VIEWPORT);
                 (surface, skia)
             },
             |(mut surface, mut skia)| {
-                let bytes = surface.render_nve2_slice(1);
+                let bytes = surface.render_nve2_slice(FrameId(1));
                 black_box(
                     skia.submit_nve2_frame(black_box(bytes))
                         .expect("rich wire skia"),

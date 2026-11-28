@@ -7,7 +7,6 @@ import dev.nve.host.NativeRuntime
 import dev.nve.host.SceneReader
 import dev.nve.host.FrameHost
 import dev.nve.host.RuntimeSurface
-import dev.nve.host.generated.NveAbi
 import dev.nve.host.generated.NveRuntimeAbi
 import java.util.concurrent.Executor
 
@@ -137,25 +136,25 @@ class NveSurfaceController(private val host: NveRuntimeHost) : AutoCloseable {
     }
 
     fun press(nodeId: Int, xDp: Float, yDp: Float) {
-        host.send { it.point(NveAbi.EVENT_PRESS, nodeId, now(), xDp, yDp) }
+        host.send { it.press(nodeId, now(), xDp, yDp) }
     }
 
     fun textChanged(nodeId: Int, text: String) {
-        host.send { it.text(NveAbi.EVENT_TEXT_CHANGE, nodeId, now(), text) }
+        host.send { it.textChange(nodeId, now(), text) }
     }
 
     fun submit(nodeId: Int, text: String) {
-        host.send { it.text(NveAbi.EVENT_SUBMIT, nodeId, now(), text) }
+        host.send { it.submit(nodeId, now(), text) }
     }
 
     fun focusChanged(nodeId: Int, focused: Boolean) {
-        host.send { it.empty(if (focused) NveAbi.EVENT_FOCUS else NveAbi.EVENT_BLUR, nodeId, now()) }
+        host.send { if (focused) it.focus(nodeId, now()) else it.blur(nodeId, now()) }
     }
 
     /** Native scroll moved by `(dx, dy)` to `(x, y)`: syncs runtime hit testing and tells the app. */
     fun scrolled(nodeId: Int, dxDp: Float, dyDp: Float, xDp: Float, yDp: Float, contentWDp: Float, contentHDp: Float) {
         host.scrollBy(nodeId, dxDp, dyDp)
-        host.send { it.scroll(NveAbi.EVENT_SCROLL, nodeId, now(), xDp, yDp, contentWDp, contentHDp) }
+        host.send { it.scroll(nodeId, now(), xDp, yDp, contentWDp, contentHDp) }
     }
 
     /** Wake-driven or explicit re-render (e.g. after resuming). */

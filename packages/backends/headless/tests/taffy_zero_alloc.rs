@@ -7,11 +7,11 @@ mod counting_alloc;
 use counting_alloc::count_allocs;
 use nve_backend_headless::HeadlessBackend;
 use nve_layout::TaffyStoreLayout;
-use nve_components::tables::{
+use nve_tables::tables::{
     FlexDirection, Layout, TextContent, Transform, Typography, Visual, core_realization_order,
 };
 use nve_engine::{StoreBackend, Viewport};
-use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
+use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba, SurfaceId};
 
 #[test]
 fn counting_alloc_probe_fires_on_this_thread_only() {
@@ -30,7 +30,7 @@ fn taffy_store_layout_and_headless_commit_zero_steady_state_allocs() {
         height: 600.0,
         scale_factor: 1.0,
     };
-    backend.set_viewport(1, vp);
+    backend.set_viewport(SurfaceId::ROOT, vp);
 
     // Build a 64-node Flexbox + text tree and warm all caches/scratch stacks.
     let mut tx = store.tx();

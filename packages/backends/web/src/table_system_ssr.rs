@@ -1,11 +1,12 @@
 //! Deterministic SSR rendering for [`WebStoreRenderer`] and shared core SSR attribute emission.
 
+use crate::css::Keyword;
 use core::fmt::Write as _;
 
-use nve_components::tables::{
-    Accessibility, DebugId, Image, ImageSrc, Interaction, Layout, Link, LinkTarget, Scroll,
-    StreamBoundary, TextContent, TextInput, Transform, Visibility, Visual, NVE_STREAM_SLOT_ATTR,
-    NVE_STREAM_SLOT_ROLE_ATTR, NVE_SUSPENSE_ATTR,
+use nve_tables::tables::{
+    Accessibility, DebugId, Image, ImageSrc, Interaction, Layout, Link, LinkRel, LinkTarget,
+    Scroll, StreamBoundary, TextContent, TextInput, Transform, Visibility, Visual,
+    NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_ROLE_ATTR, NVE_SUSPENSE_ATTR,
 };
 use nve_store::{NodeId, NodeStore};
 
@@ -41,8 +42,8 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
                 write_attr(name, val, out);
             }
         }
-        if let Some(role) = boundary.slot_role().as_attr() {
-            write_attr(NVE_STREAM_SLOT_ROLE_ATTR, role, out);
+        if let Some(role) = boundary.slot_role() {
+            write_attr(NVE_STREAM_SLOT_ROLE_ATTR, role.as_attr(), out);
         }
     }
     if let Some(link) = store.try_row::<Link>(id) {
@@ -56,15 +57,19 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
             LinkTarget::Blank => write_attr("target", "_blank", out),
             LinkTarget::Parent => write_attr("target", "_parent", out),
         }
-        let rel_bits = if is_blank {
-            link.rel() | 1 | 2
+        let rel_flags = if is_blank {
+            link.rel() | LinkRel::NOOPENER | LinkRel::NOREFERRER
         } else {
             link.rel()
         };
-        if rel_bits != 0 {
+        if !rel_flags.is_empty() {
             let mut rel = String::new();
-            for (bit, kw) in [(1u8, "noopener"), (2u8, "noreferrer"), (4u8, "nofollow")] {
-                if rel_bits & bit != 0 {
+            for (flag, kw) in [
+                (LinkRel::NOOPENER, "noopener"),
+                (LinkRel::NOREFERRER, "noreferrer"),
+                (LinkRel::NOFOLLOW, "nofollow"),
+            ] {
+                if rel_flags.contains(flag) {
                     if !rel.is_empty() {
                         rel.push(' ');
                     }
@@ -78,7 +83,8 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
     }
     if let Some(img) = store.try_row::<Image>(id) {
         if !img.src().is_none()
-            && let Some(ImageSrc::Url(url)) = store.resource::<ImageSrc>(img.src())
+            && let Some(nve_tables::tables::ImageSrcView::Url(url)) =
+                store.resource::<ImageSrc>(img.src())
             && is_safe_web_url(url)
         {
             write_attr("src", url, out);
@@ -93,7 +99,7 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
             if ti.secure() {
                 write_attr("type", "password", out);
             } else {
-                let html_type = ti.input_kind().as_html_type();
+                let html_type = ti.input_kind().keyword();
                 if html_type != "text" {
                     write_attr("type", html_type, out);
                 }
@@ -107,11 +113,11 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
         if !ph.is_empty() {
             write_attr("placeholder", ph, out);
         }
-        if let Some(ac) = ti.autofill().get() {
-            write_attr("autocomplete", ac.as_html_autocomplete(), out);
+        if let Some(ac) = ti.autofill() {
+            write_attr("autocomplete", ac.whatwg_token(), out);
         }
-        if ti.input_mode() != nve_components::InputMode::Text {
-            write_attr("inputmode", ti.input_mode().as_html_inputmode(), out);
+        if ti.input_mode() != nve_tables::InputMode::Text {
+            write_attr("inputmode", ti.input_mode().whatwg_token(), out);
         }
         if ti.required() {
             out.push_str(" required");
@@ -119,29 +125,28 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
         if ti.read_only() {
             out.push_str(" readonly");
         }
-        if ti.max_length() > 0 && ti.max_length() < u16::MAX {
-            let _ = write!(out, " maxlength=\"{}\"", ti.max_length());
+        if let Some(ml) = ti.max_length() {
+            let _ = write!(out, " maxlength=\"{ml}\"");
         }
     }
     if let Some(inter) = store.try_row::<Interaction>(id) {
         if inter.disabled() {
             out.push_str(" disabled aria-disabled=\"true\"");
         }
-        if inter.tab_index_set() {
-            let _ = write!(out, " tabindex=\"{}\"", inter.tab_index());
+        if let Some(ti_idx) = inter.tab_index() {
+            let _ = write!(out, " tabindex=\"{ti_idx}\"");
         }
     }
     if let Some(a11y) = store.try_row::<Accessibility>(id) {
-        let role = a11y.role().as_aria_str();
-        if !role.is_empty() {
-            write_attr("role", role, out);
+        if let Some(role) = a11y.role() {
+            write_attr("role", role.as_aria_str(), out);
         }
         let label = a11y.label();
         if !label.is_empty() {
             write_attr("aria-label", label, out);
         }
-        if let Some(live) = a11y.live().as_aria_str() {
-            write_attr("aria-live", live, out);
+        if let Some(live) = a11y.live() {
+            write_attr("aria-live", live.as_aria_str(), out);
         }
         if a11y.hidden() {
             write_attr("aria-hidden", "true", out);
@@ -167,7 +172,7 @@ impl WebStoreRenderer {
         let (tag, _ns) = self.registry.resolve_tag(store, node);
         out.push('<');
         out.push_str(tag);
-        let _ = write!(out, " data-nve-id=\"{}\"", node.0);
+        let _ = write!(out, " data-nve-id=\"{}\"", node.raw());
 
         write_core_ssr_attrs(store, node, out);
 
@@ -190,7 +195,7 @@ impl WebStoreRenderer {
             style.push_str("overflow:auto;");
         }
         if let Some(l) = store.try_row::<Layout>(node)
-            && l.display() == nve_components::tables::Display::None
+            && l.display() == nve_tables::tables::Display::None
         {
             style.push_str("display:none;");
         }

@@ -115,9 +115,14 @@ fn format_css_color(c: nve_abi::ColorRgba, buf: &mut String) -> &str {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn paint_canvas_dom(el: &web_sys::Element, store: &NodeStore, node: NodeId, dl: &DrawList) {
-    use nve_canvas::CanvasOp;
-    use nve_components::tables::Layout;
+fn paint_canvas_dom(
+    el: &web_sys::Element,
+    store: &NodeStore,
+    node: NodeId,
+    dl: nve_canvas::DrawListView<'_>,
+) {
+    use nve_canvas::CanvasOpRef;
+    use nve_tables::tables::Layout;
     use wasm_bindgen::JsCast;
 
     let Some(canvas) = el.dyn_ref::<web_sys::HtmlCanvasElement>() else {
@@ -176,22 +181,22 @@ fn paint_canvas_dom(el: &web_sys::Element, store: &NodeStore, node: NodeId, dl: 
     let mut color_buf = String::with_capacity(32);
     let mut clip_depth = 0u32;
     for op in dl.ops() {
-        match *op {
-            CanvasOp::Clear { color } => {
+        match op {
+            CanvasOpRef::Clear { color } => {
                 ctx2d.clear_rect(0.0, 0.0, logical_w, logical_h);
                 if color.a > 0 {
                     ctx2d.set_fill_style_str(format_css_color(color, &mut color_buf));
                     ctx2d.fill_rect(0.0, 0.0, logical_w, logical_h);
                 }
             }
-            CanvasOp::FillRect { x, y, w: rw, h: rh, color } => {
+            CanvasOpRef::FillRect { x, y, w: rw, h: rh, color } => {
                 if !x.is_finite() || !y.is_finite() || !rw.is_finite() || !rh.is_finite() || rw <= 0.0 || rh <= 0.0 {
                     continue;
                 }
                 ctx2d.set_fill_style_str(format_css_color(color, &mut color_buf));
                 ctx2d.fill_rect(f64::from(x), f64::from(y), f64::from(rw), f64::from(rh));
             }
-            CanvasOp::FillRoundedRect { x, y, w: rw, h: rh, radius, color } => {
+            CanvasOpRef::FillRoundedRect { x, y, w: rw, h: rh, radius, color } => {
                 if !x.is_finite() || !y.is_finite() || !rw.is_finite() || !rh.is_finite() || rw <= 0.0 || rh <= 0.0 {
                     continue;
                 }
@@ -215,7 +220,7 @@ fn paint_canvas_dom(el: &web_sys::Element, store: &NodeStore, node: NodeId, dl: 
                 ctx2d.set_fill_style_str(format_css_color(color, &mut color_buf));
                 ctx2d.fill();
             }
-            CanvasOp::FillCircle { cx, cy, radius, color } => {
+            CanvasOpRef::FillCircle { cx, cy, radius, color } => {
                 if !cx.is_finite() || !cy.is_finite() || !radius.is_finite() || radius <= 0.0 {
                     continue;
                 }
@@ -230,7 +235,7 @@ fn paint_canvas_dom(el: &web_sys::Element, store: &NodeStore, node: NodeId, dl: 
                 ctx2d.set_fill_style_str(format_css_color(color, &mut color_buf));
                 ctx2d.fill();
             }
-            CanvasOp::StrokeLine { x0, y0, x1, y1, width, color } => {
+            CanvasOpRef::StrokeLine { x0, y0, x1, y1, width, color } => {
                 if !x0.is_finite() || !y0.is_finite() || !x1.is_finite() || !y1.is_finite() || !width.is_finite() || width <= 0.0 {
                     continue;
                 }
@@ -241,11 +246,11 @@ fn paint_canvas_dom(el: &web_sys::Element, store: &NodeStore, node: NodeId, dl: 
                 ctx2d.set_line_width(f64::from(width));
                 ctx2d.stroke();
             }
-            CanvasOp::StrokePolyline { ref points, width, color } => {
+            CanvasOpRef::StrokePolyline { points, width, color } => {
                 if !width.is_finite() || width <= 0.0 {
                     continue;
                 }
-                let mut iter = points.iter().copied().filter(|(px, py)| px.is_finite() && py.is_finite());
+                let mut iter = points.iter().filter(|(px, py)| px.is_finite() && py.is_finite());
                 if let Some((x0, y0)) = iter.next() {
                     ctx2d.begin_path();
                     ctx2d.move_to(f64::from(x0), f64::from(y0));
@@ -257,7 +262,7 @@ fn paint_canvas_dom(el: &web_sys::Element, store: &NodeStore, node: NodeId, dl: 
                     ctx2d.stroke();
                 }
             }
-            CanvasOp::ClipRect { x, y, w: rw, h: rh } => {
+            CanvasOpRef::ClipRect { x, y, w: rw, h: rh } => {
                 ctx2d.save();
                 clip_depth += 1;
                 ctx2d.begin_path();
@@ -274,7 +279,7 @@ fn paint_canvas_dom(el: &web_sys::Element, store: &NodeStore, node: NodeId, dl: 
                 }
                 ctx2d.clip();
             }
-            CanvasOp::RestoreClip => {
+            CanvasOpRef::RestoreClip => {
                 if clip_depth > 0 {
                     ctx2d.restore();
                     clip_depth -= 1;

@@ -5,9 +5,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use nve_abi::ColorRgba;
+use nve_abi::{ColorRgba, FrameId, SurfaceId};
 use nve_clipboard::MemoryClipboard;
-use nve_components::tables::{Accessibility, AriaTriState, TextContent, Visual};
+use nve_tables::tables::{Accessibility, AriaTriState, TextContent, Visual};
 use nve_host_services::MemoryHostServices;
 use nve_studio_workspace::theme::{author_tone, studio_theme, task_status_tone};
 use nve_studio_workspace::{
@@ -114,9 +114,12 @@ fn audit(sc: Scenario, totals: &mut AuditTotals) {
             );
         }
     }
-    let mut surface =
-        create_surface_with_services(1, Arc::new(Mutex::new(state)), services(sc.os.0, sc.os.1));
-    surface.reconcile(1);
+    let mut surface = create_surface_with_services(
+        SurfaceId::ROOT,
+        Arc::new(Mutex::new(state)),
+        services(sc.os.0, sc.os.1),
+    );
+    surface.reconcile(FrameId(1));
     let (text_min, indicator_min) = if sc.os.1 == ContrastLevel::High {
         (7.0, 4.5)
     } else {
@@ -131,8 +134,8 @@ fn audit(sc: Scenario, totals: &mut AuditTotals) {
         .live_nodes()
         .filter(|&id| {
             store.try_row::<Accessibility>(id).is_some_and(|a| {
-                matches!(a.checked(), AriaTriState::True | AriaTriState::Mixed)
-                    || a.selected() == AriaTriState::True
+                matches!(a.checked(), Some(AriaTriState::True | AriaTriState::Mixed))
+                    || a.selected() == Some(AriaTriState::True)
             })
         })
         .count();
@@ -307,11 +310,11 @@ fn mounted_surface_paints_the_os_polarity_from_its_first_frame() {
             .surface
             .canvas;
         let mut surface = create_surface_with_services(
-            1,
+            SurfaceId::ROOT,
             Arc::new(Mutex::new(WorkspaceState::default())),
             services(scheme, contrast),
         );
-        surface.reconcile(1);
+        surface.reconcile(FrameId(1));
         let store = surface.store();
         let canvases: Vec<ColorRgba> = store
             .live_nodes()

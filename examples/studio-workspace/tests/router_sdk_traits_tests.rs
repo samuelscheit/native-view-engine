@@ -13,12 +13,12 @@ mod common;
 
 use common::{data_attr_in_store, find_in_store, live_node_ids, register_studio_tables};
 use nve_abi::{
-    EventPayload, NativeEvent, NativeEventKind, NodeId, NveDirectEvent, NveEventBatchRef,
-    NveMapEntry, NvePropsRef, NveValue, ROOT_NODE_ID,
+    EventBatchBuf, FrameId, NodeId, NveMapEntry, NvePropsRef, NveValue, SurfaceId, TimestampUs,
+    ROOT_NODE_ID,
 };
 use nve_backend_headless::HeadlessBackend;
 use nve_clipboard::{ClipboardClient, MemoryClipboard};
-use nve_components::tables::DebugId;
+use nve_tables::tables::DebugId;
 use nve_dioxus::DioxusSurface;
 use nve_dioxus::prelude::*;
 use nve_dioxus::traits::{ReactiveTraitStore, TraitProvider, TraitScope};
@@ -66,10 +66,10 @@ impl StudioHarness {
             scale_factor: 1.0,
         };
         let mut headless = HeadlessBackend::new();
-        headless.set_viewport(1, viewport);
+        headless.set_viewport(SurfaceId::ROOT, viewport);
 
         let mut h = Self {
-            surface: create_surface_with_services(1, Arc::clone(&store), host_services),
+            surface: create_surface_with_services(SurfaceId::ROOT, Arc::clone(&store), host_services),
             headless,
             store,
             memory,
@@ -84,7 +84,7 @@ impl StudioHarness {
         let fid = self.next_frame;
         self.next_frame += 1;
         self.surface
-            .commit_to(fid, &mut self.headless)
+            .commit_to(FrameId(fid), &mut self.headless)
             .expect("headless commit");
     }
 
@@ -119,13 +119,15 @@ impl StudioHarness {
         let hit = hit.expect("checked above");
         assert_eq!(hit, node_id, "hit_test mismatch for '{test_id}'");
 
-        let handled = self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
-            node_id: hit,
-            timestamp_us: self.next_frame * 16_000,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: cx, y: cy },
-        }]);
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(
+            SurfaceId::ROOT,
+            hit,
+            TimestampUs(self.next_frame * 16_000),
+            cx,
+            cy,
+        );
+        let handled = self.surface.dispatch_events(batch.as_validated());
         assert!(handled, "press on '{test_id}' was not handled");
         self.render_next();
     }
@@ -137,7 +139,7 @@ impl StudioHarness {
     fn assert_no_horizontal_overflow(&self, label: &str) {
         let store = self.surface.store();
         for sid in live_node_ids(store) {
-            let nid = sid.raw();
+            let nid = sid;
             if let Some(rect) = self.headless.layout_of(nid) {
                 let tid = store.try_row::<DebugId>(sid).map(|d| d.test_id());
                 assert!(
@@ -302,12 +304,9 @@ fn typed_studio_route_deep_links_and_back_forward_navigation_sync() {
     assert_eq!(restored.current_route(), &StudioRoute::Doc { id: 2 });
 
     // 4. Deep-link navigation via `StudioWorkspaceModule` direct props.
-    let mut module = common::headless_module(1);
-    let _ = module.render(1);
-    let entries = [NveMapEntry::new(
-        "route",
-        NveValue::from_str("aether://studio/doc/2"),
-    )];
+    let mut module = common::headless_module(SurfaceId::ROOT);
+    let _ = module.render(FrameId(1));
+    let entries = [NveMapEntry::new("route", NveValue::from_str("aether://studio/doc/2"))];
     // SAFETY: `entries` outlives the synchronous `set_props` call.
     assert!(module.set_props(unsafe { NvePropsRef::from_slice(&entries) }));
     let snap = module.state_snapshot();
@@ -369,12 +368,12 @@ fn breakpoint_only_size_class_collapse_and_zero_churn_on_1px_desktop_drags() {
 
     // 2. Live `StudioWorkspaceModule::dispatch_events`: 1px desktop drags do NOT churn surface.
     register_studio_tables();
-    let mut app = common::headless_module(1);
-    let first_frame = app.render(1).to_vec();
+    let mut app = common::headless_module(SurfaceId::ROOT);
+    let first_frame = app.render(FrameId(1)).to_vec();
     let dispatch_resize = |app: &mut StudioWorkspaceModule, w: f32, h: f32, ts: u64| {
-        let ev = [NveDirectEvent::layout(1, ROOT_NODE_ID, ts, 0.0, 0.0, w, h)];
-        // SAFETY: `ev` stack array outlives the synchronous `dispatch_events` call.
-        app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev) })
+        let mut ev = EventBatchBuf::new();
+        ev.push_layout(SurfaceId::ROOT, ROOT_NODE_ID, TimestampUs(ts), 0.0, 0.0, w, h);
+        app.dispatch_events(ev.as_validated())
     };
 
     // Initial default is 960x640 (Medium) -> 1200x800 (Expanded) crosses breakpoint.
@@ -392,17 +391,17 @@ fn breakpoint_only_size_class_collapse_and_zero_churn_on_1px_desktop_drags() {
     assert!(app.state_snapshot().is_mobile_portrait());
 
     // Host events update the mounted surface in place: frame 2 is a delta on frame 1.
-    let frame = app.render(2).to_vec();
+    let frame = app.render(FrameId(2)).to_vec();
     let mut host = HeadlessBackend::new();
     host.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 393.0,
             height: 852.0,
             scale_factor: 1.0,
         },
     );
-    let mut rep = StoreWireReplica::new(host, nve_components::tables::core_realization_order());
+    let mut rep = StoreWireReplica::new(host, nve_tables::tables::core_realization_order());
     rep.submit_nve2_frame(&first_frame).expect("frame 1");
     rep.submit_nve2_frame(&frame).expect("frame 2");
     let root_id = find_in_store(rep.store(), "workspace-root").expect("workspace-root");
@@ -458,17 +457,17 @@ fn custom_trait_key_and_trait_scope_override_isolation() {
         }
     }
 
-    let mut surface = DioxusSurface::new(1, TraitScopeProbeApp);
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, TraitScopeProbeApp);
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 800.0,
             height: 400.0,
             scale_factor: 1.0,
         },
     );
-    surface.commit_to(1, &mut headless).unwrap();
+    surface.commit_to(FrameId(1), &mut headless).unwrap();
 
     let read_prop = |tid: &str, key: &str| -> String {
         let id =

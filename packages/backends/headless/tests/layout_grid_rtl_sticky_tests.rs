@@ -1,9 +1,9 @@
 //! Integration tests for CSS Grid, RTL logical edges, sticky positioning, overflow clipping,
 //! and `Transform2D` inverse hit-testing in [`HeadlessBackend`].
 
-use nve_abi::EventMask;
+use nve_abi::{InteractionEvent, SurfaceId};
 use nve_backend_headless::{GridTrack, HeadlessBackend};
-use nve_components::tables::{
+use nve_tables::tables::{
     Direction, Display, FlexDirection, GridLayout, GridTracks, Interaction, Layout, Overflow,
     Position, Transform, Visual,
 };
@@ -16,7 +16,7 @@ fn sticky_clamping_overflow_clipping_and_transform_hit_test() {
     let mut changes = ChangeSet::default();
     let mut backend = HeadlessBackend::new();
     backend.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 300.0,
             height: 200.0,
@@ -47,7 +47,7 @@ fn sticky_clamping_overflow_clipping_and_transform_hit_test() {
     // paint, and so hit-test, above the later `body` it overlaps once scrolled.
     tx.edit::<Visual>(sticky_hdr).z_index(1);
     tx.edit::<Interaction>(sticky_hdr)
-        .event_mask(EventMask::PRESS as u32);
+        .listen(InteractionEvent::Press);
 
     tx.edit::<Layout>(body)
         .flex_shrink(0.0)
@@ -59,21 +59,21 @@ fn sticky_clamping_overflow_clipping_and_transform_hit_test() {
         .translate_x(100.0)
         .translate_y(20.0);
     tx.edit::<Interaction>(transformed_btn)
-        .event_mask(EventMask::PRESS as u32);
+        .listen(InteractionEvent::Press);
     tx.commit_into(&mut changes);
 
     backend.commit(&store, &changes).unwrap();
 
     // Without scroll, transformed_btn sits at (100..180, 60..100).
-    assert_eq!(backend.hit_test(&store, 140.0, 80.0), Some(transformed_btn.raw()));
+    assert_eq!(backend.hit_test(&store, 140.0, 80.0), Some(transformed_btn));
     // Original untransformed rect (10, 60) should miss!
     assert_eq!(backend.hit_test(&store, 10.0, 60.0), None);
 
     // Scroll down by 120px: sticky header clamps to top of scroller (dy = +120px) so y=10 still hits sticky_hdr!
-    backend.set_scroll_offset(scroller.raw(), 0.0, 120.0);
+    backend.set_scroll_offset(scroller, 0.0, 120.0);
     let (dx, dy) = backend.compute_sticky_delta(&store, sticky_hdr);
     assert_eq!((dx, dy), (0.0, 120.0));
-    assert_eq!(backend.hit_test(&store, 50.0, 10.0), Some(sticky_hdr.raw()));
+    assert_eq!(backend.hit_test(&store, 50.0, 10.0), Some(sticky_hdr));
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn grid_and_rtl_layout_via_nodestore() {
     let mut changes = ChangeSet::default();
     let mut backend = HeadlessBackend::new();
     backend.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 300.0,
             height: 200.0,
@@ -123,12 +123,12 @@ fn grid_and_rtl_layout_via_nodestore() {
 
     backend.commit(&store, &changes).unwrap();
 
-    let ra = backend.layout_of(a.raw()).unwrap();
-    let rb = backend.layout_of(b.raw()).unwrap();
+    let ra = backend.layout_of(a).unwrap();
+    let rb = backend.layout_of(b).unwrap();
     assert_eq!(ra.width, 140.0);
     assert_eq!(rb.x, 160.0);
     assert_eq!(rb.width, 140.0);
 
-    let r_item = backend.layout_of(item.raw()).unwrap();
+    let r_item = backend.layout_of(item).unwrap();
     assert_eq!(r_item.x, 240.0); // 300 - 10 (inline-start) - 50 (width)
 }

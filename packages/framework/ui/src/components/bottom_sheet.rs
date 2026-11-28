@@ -455,7 +455,7 @@ pub fn BottomSheet(
             border_color: ColorRgba::TRANSPARENT,
             border_radius: 0.0,
             opacity: 1.0,
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 
@@ -496,7 +496,7 @@ pub fn BottomSheet(
             border_color: ColorRgba::TRANSPARENT,
             border_radius: theme.radius.full,
             opacity: 1.0,
-            box_shadow: "none",
+            box_shadow: None,
         })
         .finish();
 

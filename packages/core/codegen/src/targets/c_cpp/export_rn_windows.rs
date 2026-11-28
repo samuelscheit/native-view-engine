@@ -61,7 +61,7 @@ pub(crate) fn emit_windows_rnw_component_view_hpp(spec: &NveExportSpec) -> Strin
     writeln!(out);
     writeln!(
         out,
-        "/// `{name}` custom events by name; `payload_bin` is the event's `NVE_VAL_BYTES` value (empty otherwise)."
+        "/// `{name}` custom events by name; `payload_bin` is the `nve.custom` `NveEvent`'s binary payload slice (empty otherwise)."
     );
     writeln!(out, "struct {name}RnwEventCallbacks {{");
     for ev in &spec.events {
@@ -98,11 +98,15 @@ pub(crate) fn emit_windows_rnw_component_view_hpp(spec: &NveExportSpec) -> Strin
     writeln!(out, "    if (host_ == nullptr) return;");
     writeln!(
         out,
-        "    host_->set_event_callback([this](std::span<const NveDirectEvent> events) {{"
+        "    host_->set_event_callback([this](NveEventBatch batch) {{"
     );
     writeln!(
         out,
-        "      for (const NveDirectEvent& ev : events) dispatch_event(ev);"
+        "      if (batch.events == nullptr) return;"
+    );
+    writeln!(
+        out,
+        "      for (uint32_t i = 0u; i < batch.event_count; ++i) dispatch_event(batch.events[i], batch);"
     );
     writeln!(out, "    }});");
     writeln!(out, "  }}");
@@ -154,14 +158,41 @@ pub(crate) fn emit_windows_rnw_component_view_hpp(spec: &NveExportSpec) -> Strin
     );
     writeln!(out);
     writeln!(out, " private:");
-    writeln!(out, "  void dispatch_event(const NveDirectEvent& ev) {{");
     writeln!(
         out,
-        "    const std::string_view event(reinterpret_cast<const char*>(ev.name.ptr), ev.name.ptr != nullptr ? ev.name.len : 0u);"
+        "  void dispatch_event(const NveEvent& ev, NveEventBatch batch) {{"
     );
     writeln!(
         out,
-        "    const NveBufferSlice payload_bin = ev.value.tag == NVE_VAL_BYTES ? ev.value.data.bytes_val : NveBufferSlice{{nullptr, 0u}};"
+        "    if (ev.table != NVE_TABLE_CUSTOM || (ev.flags & NVE_EVENT_FLAG_CUSTOM_NAMED) == 0u) return;"
+    );
+    writeln!(
+        out,
+        "    if (batch.bytes == nullptr || ev.bytes.offset > batch.bytes_len || ev.bytes.len > batch.bytes_len - ev.bytes.offset) return;"
+    );
+    writeln!(
+        out,
+        "    const uint32_t name_len = ev.payload[0];"
+    );
+    writeln!(
+        out,
+        "    if (name_len > ev.bytes.len) return;"
+    );
+    writeln!(
+        out,
+        "    const uint8_t* const base = batch.bytes + ev.bytes.offset;"
+    );
+    writeln!(
+        out,
+        "    const std::string_view event(reinterpret_cast<const char*>(base), name_len);"
+    );
+    writeln!(
+        out,
+        "    const uint32_t payload_len = ev.bytes.len - name_len;"
+    );
+    writeln!(
+        out,
+        "    const NveBufferSlice payload_bin{{payload_len > 0u ? base + name_len : nullptr, payload_len}};"
     );
     for (idx, ev) in spec.events.iter().enumerate() {
         let cb_name = cpp_ident(&ev.name);

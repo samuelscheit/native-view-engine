@@ -9,6 +9,8 @@
 #include "NveAppleDemoApp.hpp"
 #include "NveAppleValueBridge.h"
 
+#include <nve/host/bin_codec.hpp>
+#include <nve/host/core_resources.hpp>
 #include <nve/host/host_session.hpp>
 #include <nve/host/nve2_builder.hpp>
 
@@ -47,14 +49,6 @@ NSString *label_text(RCTNveMacComponentView *view, uint32_t node) {
 
 bool near(CGFloat a, CGFloat b) { return std::fabs(a - b) < 0.5; }
 
-std::vector<uint8_t> image_src(std::string_view url) {
-  std::vector<uint8_t> out{0u};
-  const auto n = static_cast<uint32_t>(url.size());
-  for (uint32_t s = 0; s < 32u; s += 8u) out.push_back(static_cast<uint8_t>((n >> s) & 0xFFu));
-  out.insert(out.end(), url.begin(), url.end());
-  return out;
-}
-
 std::string png_data_uri(NSInteger pixels = 4) {
   NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:nullptr pixelsWide:pixels pixelsHigh:pixels
       bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:0 bitsPerPixel:0];
@@ -62,13 +56,14 @@ std::string png_data_uri(NSInteger pixels = 4) {
   return std::string("data:image/png;base64,") + [png base64EncodedStringWithOptions:0].UTF8String;
 }
 
-/// ROOT(1) -> [input(2): secure text input, image(3): data-URI src + a11y label, scroll(4) -> row(5)].
+/// ROOT(1) -> [input(2): secure text input, image(3): data-URI src + tint + a11y label,
+///             scroll(4) -> row(5), decorative(6): presentation role].
 NSData *core_table_scene() {
   auto slot = [](uint64_t key) { return Nve2FrameBuilder::core_slot(Key64{key}); };
   Nve2FrameBuilder b;
-  b.declare_core_tables().create_nodes({1u, 2u, 3u, 4u, 5u});
-  const std::vector<uint8_t> src = image_src(png_data_uri());
-  b.define_resource(9u, Key64::of("nve.res.image_src"), src);
+  b.declare_core_tables().create_nodes({1u, 2u, 3u, 4u, 5u, 6u});
+  const std::vector<uint8_t> src = nve::host::encode_image_url(png_data_uri());
+  b.define_resource(9u, nve::host::kImageSrcKind, src);
   std::array<uint32_t, NVE_TABLE_TEXT_INPUT_WORDS> input{};
   std::copy(std::begin(NVE_TABLE_TEXT_INPUT_DEFAULTS), std::end(NVE_TABLE_TEXT_INPUT_DEFAULTS), input.begin());
   b.patch(slot(NVE_TABLE_TEXT_INPUT_KEY), 2u, set_field(input, NVE_TABLE_TEXT_INPUT_SECURE, 1u), input);
@@ -76,11 +71,15 @@ NSData *core_table_scene() {
   b.set_string(slot(NVE_TABLE_TEXT_INPUT_KEY), 2u, NVE_TABLE_TEXT_INPUT_PLACEHOLDER.word, "Password");
   std::array<uint32_t, NVE_TABLE_IMAGE_WORDS> img{};
   std::copy(std::begin(NVE_TABLE_IMAGE_DEFAULTS), std::end(NVE_TABLE_IMAGE_DEFAULTS), img.begin());
-  b.patch(slot(NVE_TABLE_IMAGE_KEY), 3u, set_field(img, NVE_TABLE_IMAGE_SRC, 9u), img);
+  b.patch(slot(NVE_TABLE_IMAGE_KEY), 3u,
+          set_field(img, NVE_TABLE_IMAGE_SRC, 9u) | set_field(img, NVE_TABLE_IMAGE_TINT, 0xFF00FF00u), img);
   std::array<uint32_t, NVE_TABLE_ACCESSIBILITY_WORDS> a11y{};
   std::copy(std::begin(NVE_TABLE_ACCESSIBILITY_DEFAULTS), std::end(NVE_TABLE_ACCESSIBILITY_DEFAULTS), a11y.begin());
   b.patch(slot(NVE_TABLE_ACCESSIBILITY_KEY), 3u, set_field(a11y, NVE_TABLE_ACCESSIBILITY_ROLE, NVE_ARIA_ROLE_IMAGE), a11y);
   b.set_string(slot(NVE_TABLE_ACCESSIBILITY_KEY), 3u, NVE_TABLE_ACCESSIBILITY_LABEL.word, "Brand logo");
+  std::copy(std::begin(NVE_TABLE_ACCESSIBILITY_DEFAULTS), std::end(NVE_TABLE_ACCESSIBILITY_DEFAULTS), a11y.begin());
+  b.patch(slot(NVE_TABLE_ACCESSIBILITY_KEY), 6u,
+          set_field(a11y, NVE_TABLE_ACCESSIBILITY_ROLE, NVE_ARIA_ROLE_PRESENTATION), a11y);
   std::array<uint32_t, NVE_TABLE_LAYOUT_WORDS> lay{};
   std::copy(std::begin(NVE_TABLE_LAYOUT_DEFAULTS), std::end(NVE_TABLE_LAYOUT_DEFAULTS), lay.begin());
   b.patch(slot(NVE_TABLE_LAYOUT_KEY), 3u, set_field(lay, NVE_TABLE_LAYOUT_WIDTH, 0x42000000u) | set_field(lay, NVE_TABLE_LAYOUT_HEIGHT, 0x42000000u), lay);
@@ -90,7 +89,7 @@ NSData *core_table_scene() {
   std::array<uint32_t, NVE_TABLE_SCROLL_WORDS> scroll{};
   std::copy(std::begin(NVE_TABLE_SCROLL_DEFAULTS), std::end(NVE_TABLE_SCROLL_DEFAULTS), scroll.begin());
   b.patch(slot(NVE_TABLE_SCROLL_KEY), 4u, 0u, scroll);
-  b.set_children(1u, {2u, 3u, 4u});
+  b.set_children(1u, {2u, 3u, 4u, 6u});
   b.set_children(4u, {5u});
   const std::vector<uint8_t> frame = b.finish();
   return [NSData dataWithBytes:frame.data() length:frame.size()];
@@ -110,8 +109,7 @@ NSData *typography_scene(uint64_t revision) {
     uint32_t bits = 0u;
     std::memcpy(&bits, &size, sizeof bits);
     b.patch(slot(NVE_TABLE_TYPOGRAPHY_KEY), 2u,
-            set_field(row, NVE_TABLE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_FONT_SIZE) |
-                set_field(row, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, bits),
+            set_field(row, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, bits),
             row);
   };
   Nve2FrameBuilder b(revision);
@@ -138,7 +136,7 @@ NSData *typography_scene(uint64_t revision) {
 /// Revision 2 of `core_table_scene`: only resource 9's bytes change (an 8px PNG); node 3 stays clean.
 NSData *rewritten_image_scene() {
   Nve2FrameBuilder b(2u);
-  b.define_resource(9u, Key64::of("nve.res.image_src"), image_src(png_data_uri(8)));
+  b.define_resource(9u, nve::host::kImageSrcKind, nve::host::encode_image_url(png_data_uri(8)));
   const std::vector<uint8_t> frame = b.finish();
   return [NSData dataWithBytes:frame.data() length:frame.size()];
 }
@@ -258,7 +256,10 @@ int main() {
     CHECK([((NSTextField *)input).placeholderString isEqualToString:@"Password"]);
     NSView *image = [scene nativeViewForNodeId:3u];
     CHECK([image isKindOfClass:[NveAppleImageView class]] && ((NveAppleImageView *)image).image != nil);
+    NSColor *tint = [((NveAppleImageView *)image).contentTintColor colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    CHECK(tint != nil && near(tint.greenComponent, 1.0) && near(tint.redComponent, 0.0));
     CHECK([image.accessibilityLabel isEqualToString:@"Brand logo"] && [image.accessibilityRole isEqualToString:NSAccessibilityImageRole]);
+    CHECK(![scene nativeViewForNodeId:6u].accessibilityElement);  // `NVE_ARIA_ROLE_PRESENTATION` -> non-element
     NSView *scroller = [scene nativeViewForNodeId:4u];
     CHECK([scroller isKindOfClass:[NSScrollView class]]);
     CHECK([scene nativeViewForNodeId:5u].superview == ((NSScrollView *)scroller).documentView);
@@ -320,6 +321,31 @@ int main() {
         ++levels;
       }
       CHECK(levels == 33u);  // arrays and dictionaries count one level each
+    }
+
+    // 7d. Track 1B-1d uniform 64-byte `NveEvent` bridge: interaction, text, scroll, key, and custom `NveBinValue`.
+    {
+      nve::host::OwnedEvents evs;
+      CHECK(evs.push_text_change(7u, 2u, 100u, "hello"));
+      CHECK(evs.push_scroll(7u, 4u, 200u, 10.0f, 20.0f, 300.0f, 400.0f));
+      CHECK(evs.push_key(7u, 2u, 300u, NVE_INTERACTION_EVENT_KEY_DOWN, "Enter", "Enter", 0u, 13u));
+      nve::host::BinWriter bin;
+      const auto m = bin.begin_map(1u);
+      bin.write_map_key("msg");
+      bin.write_str("ok");
+      bin.end(m);
+      CHECK(evs.push_custom(7u, 3u, 400u, "customPing", bin.bytes()));
+      const NveEventBatch batch = evs.batch();
+      const auto span = nve::host::batch_events(batch);
+      CHECK(span.size() == 4u);
+      CHECK([nve::apple::event_name(span[0], batch) isEqualToString:@"textChange"]);
+      CHECK([nve::apple::payload_dictionary_from_event(span[0], batch)[@"text"] isEqualToString:@"hello"]);
+      CHECK([nve::apple::event_name(span[1], batch) isEqualToString:@"scroll"]);
+      CHECK([nve::apple::payload_dictionary_from_event(span[1], batch)[@"height"] isEqual:@400.0f]);
+      CHECK([nve::apple::event_name(span[2], batch) isEqualToString:@"keyDown"]);
+      CHECK([nve::apple::payload_dictionary_from_event(span[2], batch)[@"key"] isEqualToString:@"Enter"]);
+      CHECK([nve::apple::event_name(span[3], batch) isEqualToString:@"customPing"]);
+      CHECK([nve::apple::payload_dictionary_from_event(span[3], batch)[@"value"][@"msg"] isEqualToString:@"ok"]);
     }
 
     // 8. Pairing errors surface the runtime's diagnostics.

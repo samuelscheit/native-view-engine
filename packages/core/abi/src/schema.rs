@@ -6,19 +6,21 @@
 //! and consumed directly by `nve-codegen` to emit all checked-in C11/C++20, Swift, Dart, Java,
 //! and TypeScript ABI bindings with zero duplicated spec files.
 
+use crate::event::{
+    InteractionEvent, LayoutEvent, NveEvent, NveEventBatch, RawEventBytes, ScrollEvent,
+    TextInputEvent, NVE_EVENT_ALIGN, NVE_EVENT_INLINE_KEY_CAP, NVE_EVENT_SIZE, NVE_TABLE_CUSTOM,
+    NVE_TABLE_INTERACTION, NVE_TABLE_LAYOUT, NVE_TABLE_SCROLL, NVE_TABLE_TEXT_INPUT,
+};
 use crate::ffi::{
-    NativeEventKind, NveBufferSlice, NveEventPayloadTag, NveGestureDisposition,
-    NveIntrinsicSize, NveSizeConstraints, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
-    NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    NveBufferSlice, NveGestureDisposition, NveIntrinsicSize, NveSizeConstraints,
+    NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 use crate::host::{NveHostCallbacks, NVE_CHANNEL_FLAG_RETAIN};
 use crate::value::{
-    NveCommandSlice, NveDirectEvent, NveEventBatch, NveMapEntry, NvePropEntry, NvePropSlice,
-    NveStrSlice, NveValue, NveValueArray, NveValueData, NveValueMap, NveValueTag,
-    NVE_EVENT_FLAG_BUTTON_MASK, NVE_EVENT_FLAG_CAPTURE, NVE_EVENT_FLAG_COMPOSING, NVE_KEY_MOD_ALT,
-    NVE_KEY_MOD_CTRL, NVE_KEY_MOD_META, NVE_KEY_MOD_REPEAT, NVE_KEY_MOD_SHIFT,
+    NveCommandSlice, NveMapEntry, NvePropEntry, NvePropSlice, NveStrSlice, NveValue,
+    NveValueArray, NveValueData, NveValueMap, NveValueTag,
 };
-use crate::ROOT_NODE_ID;
+use crate::{EventFlags, InterfaceId, ROOT_NODE_ID};
 
 pub use crate::runtime::runtime_abi_descriptor;
 pub use nve_abi_macros::NveAbi;
@@ -150,7 +152,7 @@ pub struct AbiMethodDescriptor {
 pub struct AbiModuleDescriptor {
     pub name: &'static str,
     pub trait_name: &'static str,
-    pub interface_id: u32,
+    pub interface_id: InterfaceId,
     pub c_name: &'static str,
     pub doc: Option<&'static str>,
     pub methods: &'static [AbiMethodDescriptor],
@@ -197,6 +199,10 @@ const fn abi_const(name: &'static str, value: u64, hex: bool, doc: Option<&'stat
     AbiConstDescriptor { name, ty: "u32", value, hex, doc }
 }
 
+const fn abi_const_u64(name: &'static str, value: u64, hex: bool, doc: Option<&'static str>) -> AbiConstDescriptor {
+    AbiConstDescriptor { name, ty: "u64", value, hex, doc }
+}
+
 const fn abi_param(name: &'static str, ty: &'static str) -> AbiParamDescriptor {
     AbiParamDescriptor { name, ty }
 }
@@ -215,24 +221,48 @@ const fn abi_method(
 const CORE_CONSTS: &[AbiConstDescriptor] = &[
     abi_const("NVE_ABI_MAGIC", u32::from_le_bytes(*b"NVE2") as u64, true, Some("Wire magic bytes (`\"NVE2\"` little-endian).")),
     abi_const("NVE_ABI_VERSION", 1, false, Some("Binary `NVE2` wire protocol version.")),
-    abi_const("NVE_ROOT_NODE_ID", ROOT_NODE_ID as u64, false, Some("Reserved root node ID for every surface.")),
+    abi_const("NVE_ROOT_NODE_ID", ROOT_NODE_ID.raw() as u64, false, Some("Reserved root node ID for every surface.")),
     abi_const("NVE_BIN_VALUE_MAX_DEPTH", 64, false, Some("Maximum permitted container nesting depth for `NveBinValue`.")),
     abi_const("NVE_CHANNEL_FLAG_RETAIN", NVE_CHANNEL_FLAG_RETAIN as u64, false, Some("Flag bit on `channel_publish` / `ChannelMessage` requesting retained channel state.")),
-    abi_const("NVE_KEY_MOD_META", NVE_KEY_MOD_META as u64, true, Some("Meta / Command modifier flag in `NveDirectEvent::modifiers`.")),
-    abi_const("NVE_KEY_MOD_CTRL", NVE_KEY_MOD_CTRL as u64, true, Some("Control modifier flag in `NveDirectEvent::modifiers`.")),
-    abi_const("NVE_KEY_MOD_SHIFT", NVE_KEY_MOD_SHIFT as u64, true, Some("Shift modifier flag in `NveDirectEvent::modifiers`.")),
-    abi_const("NVE_KEY_MOD_ALT", NVE_KEY_MOD_ALT as u64, true, Some("Alt / Option modifier flag in `NveDirectEvent::modifiers`.")),
-    abi_const("NVE_KEY_MOD_REPEAT", NVE_KEY_MOD_REPEAT as u64, true, Some("Key auto-repeat flag in `NveDirectEvent::modifiers`.")),
-    abi_const("NVE_EVENT_FLAG_BUTTON_MASK", NVE_EVENT_FLAG_BUTTON_MASK as u64, true, Some("Pointer button bitmask (bits 0..=2) in `NveDirectEvent::event_flags`.")),
-    abi_const("NVE_EVENT_FLAG_CAPTURE", NVE_EVENT_FLAG_CAPTURE as u64, true, Some("Pointer capture active flag in `NveDirectEvent::event_flags`.")),
-    abi_const("NVE_EVENT_FLAG_COMPOSING", NVE_EVENT_FLAG_COMPOSING as u64, true, Some("IME composition active flag in `NveDirectEvent::event_flags`.")),
     abi_const("NVE_PRIMARY_SLOT_NONE", crate::table::NVE_PRIMARY_SLOT_NONE as u64, true, Some("`NveNodeRow::primary_slot` sentinel (`0xFF`): plain container with no realizing table.")),
     abi_const("NVE_ROW_INDEX_PAGE_BITS", crate::table::NVE_ROW_INDEX_PAGE_BITS as u64, false, Some("`log2` of the node indices one `NveTableView::row_index_pages` page covers.")),
     abi_const("NVE_ROW_INDEX_PAGE_LEN", crate::table::NVE_ROW_INDEX_PAGE_LEN as u64, false, Some("Entries per `NveTableView::row_index_pages` page.")),
     abi_const("NVE_ROW_INDEX_NO_PAGE", crate::table::NVE_ROW_INDEX_NO_PAGE as u64, true, Some("`NveTableView::row_index_dir` entry of a node-index range without a page.")),
+    abi_const("NVE_EVENT_SIZE", NVE_EVENT_SIZE as u64, false, Some("Exact byte stride of one uniform `NveEvent` record (64 bytes).")),
+    abi_const("NVE_EVENT_ALIGN", NVE_EVENT_ALIGN as u64, false, Some("Rust cache-line alignment of `NveEvent` slabs (64 bytes).")),
+    abi_const("NVE_EVENT_INLINE_KEY_CAP", NVE_EVENT_INLINE_KEY_CAP as u64, false, Some("Maximum inline UTF-8 key bytes stored in `NveEvent::payload[2..6]`.")),
+    abi_const("NVE_EVENT_FLAG_MOD_META", EventFlags::MOD_META.raw() as u64, true, Some("Meta / Command modifier flag in `NveEvent::flags`.")),
+    abi_const("NVE_EVENT_FLAG_MOD_CTRL", EventFlags::MOD_CTRL.raw() as u64, true, Some("Control modifier flag in `NveEvent::flags`.")),
+    abi_const("NVE_EVENT_FLAG_MOD_SHIFT", EventFlags::MOD_SHIFT.raw() as u64, true, Some("Shift modifier flag in `NveEvent::flags`.")),
+    abi_const("NVE_EVENT_FLAG_MOD_ALT", EventFlags::MOD_ALT.raw() as u64, true, Some("Alt / Option modifier flag in `NveEvent::flags`.")),
+    abi_const("NVE_EVENT_FLAG_MOD_REPEAT", EventFlags::MOD_REPEAT.raw() as u64, true, Some("Key auto-repeat flag in `NveEvent::flags`.")),
+    abi_const("NVE_EVENT_FLAG_BUTTON_SHIFT", EventFlags::BUTTON_SHIFT as u64, false, Some("Bit shift for pointer button index in `NveEvent::flags`.")),
+    abi_const("NVE_EVENT_FLAG_BUTTON_MASK", EventFlags::BUTTON_MASK.raw() as u64, true, Some("Pointer button bitmask (bits 8..=10) in `NveEvent::flags`.")),
+    abi_const("NVE_EVENT_FLAG_CAPTURE", EventFlags::CAPTURE.raw() as u64, true, Some("Pointer capture active flag in `NveEvent::flags`.")),
+    abi_const("NVE_EVENT_FLAG_COMPOSING", EventFlags::COMPOSING.raw() as u64, true, Some("IME composition active flag in `NveEvent::flags`.")),
+    abi_const("NVE_EVENT_FLAG_UTF8_BYTES", EventFlags::UTF8_BYTES.raw() as u64, true, Some("Ingress-validated UTF-8 byte-arena slice flag in `NveEvent::flags`.")),
+    abi_const("NVE_EVENT_FLAG_INLINE_KEY_UTF8", EventFlags::INLINE_KEY_UTF8.raw() as u64, true, Some("Inline UTF-8 key (`<= 16 B` in `payload[2..6]`) flag in `NveEvent::flags`.")),
+    abi_const("NVE_EVENT_FLAG_CUSTOM_NAMED", EventFlags::CUSTOM_NAMED.raw() as u64, true, Some("Custom named event prefix flag in `NveEvent::flags`.")),
+    abi_const("NVE_EVENT_FLAG_KEY_SPLIT_BYTES", EventFlags::KEY_SPLIT_BYTES.raw() as u64, true, Some("Arena-split `[key, code]` UTF-8 flag for keys `> 16 B` in `NveEvent::flags`.")),
+    abi_const_u64("NVE_TABLE_INTERACTION", NVE_TABLE_INTERACTION.0, true, Some("Compile-time XXH64 `TableKey` for `nve.interaction`.")),
+    abi_const_u64("NVE_TABLE_TEXT_INPUT", NVE_TABLE_TEXT_INPUT.0, true, Some("Compile-time XXH64 `TableKey` for `nve.text_input`.")),
+    abi_const_u64("NVE_TABLE_SCROLL", NVE_TABLE_SCROLL.0, true, Some("Compile-time XXH64 `TableKey` for `nve.scroll`.")),
+    abi_const_u64("NVE_TABLE_LAYOUT", NVE_TABLE_LAYOUT.0, true, Some("Compile-time XXH64 `TableKey` for `nve.layout`.")),
+    abi_const_u64("NVE_TABLE_CUSTOM", NVE_TABLE_CUSTOM.0, true, Some("Compile-time XXH64 `TableKey` for `nve.custom`.")),
 ];
 
 const CORE_ALIASES: &[AbiAliasDescriptor] = &[
+    AbiAliasDescriptor { name: "NveNodeId", target: "u32", doc: Some("Generational node identifier (`index:24 | generation:8`; `0` is null).") },
+    AbiAliasDescriptor { name: "NveSurfaceId", target: "u32", doc: Some("Generational surface identifier (`index:24 | generation:8`; `0` is null).") },
+    AbiAliasDescriptor { name: "NveFrameId", target: "u64", doc: Some("Monotonic 64-bit frame counter.") },
+    AbiAliasDescriptor { name: "NveTableKey", target: "u64", doc: Some("Stable 64-bit table identity (`xxh64(name)`).") },
+    AbiAliasDescriptor { name: "NveTimestampUs", target: "u64", doc: Some("Monotonic timestamp in microseconds.") },
+    AbiAliasDescriptor { name: "NveDurationUs", target: "u64", doc: Some("Elapsed duration in microseconds.") },
+    AbiAliasDescriptor { name: "NveEventId", target: "u32", doc: Some("Table-scoped event discriminant (`0..32`).") },
+    AbiAliasDescriptor { name: "NveEventFlags", target: "u32", doc: Some("Bitflags for event modifiers, pointer buttons, capture, IME, and framing.") },
+    AbiAliasDescriptor { name: "NveArenaOffset", target: "u32", doc: Some("Byte offset inside an event batch byte arena.") },
+    AbiAliasDescriptor { name: "NveByteLen", target: "u32", doc: Some("32-bit byte length across ABI arenas and slices.") },
+    AbiAliasDescriptor { name: "NveInterfaceId", target: "u32", doc: Some("Modular C ABI interface identifier passed to `nve_get_interface`.") },
     AbiAliasDescriptor { name: "NveAppHandle", target: "*mut c_void", doc: Some("Opaque handle to an instantiated NVE app/component.") },
     AbiAliasDescriptor { name: "NveHostInvokeFn", target: "*const c_void", doc: Some("Host capability invocation callback function pointer (`NveHostCallbacks::invoke`).") },
     AbiAliasDescriptor { name: "NveHostChannelPublishFn", target: "*const c_void", doc: Some("Host channel-bus publish callback function pointer (`NveHostCallbacks::channel_publish`).") },
@@ -241,8 +271,10 @@ const CORE_ALIASES: &[AbiAliasDescriptor] = &[
 const CORE_ENUMS: &[AbiEnumDescriptor] = &[
     <NveGestureDisposition as NveEnumSchema>::SCHEMA,
     <NveValueTag as NveEnumSchema>::SCHEMA,
-    <NativeEventKind as NveEnumSchema>::SCHEMA,
-    <NveEventPayloadTag as NveEnumSchema>::SCHEMA,
+    <InteractionEvent as NveEnumSchema>::SCHEMA,
+    <TextInputEvent as NveEnumSchema>::SCHEMA,
+    <ScrollEvent as NveEnumSchema>::SCHEMA,
+    <LayoutEvent as NveEnumSchema>::SCHEMA,
 ];
 
 const CORE_RECORDS: &[AbiRecordDescriptor] = &[
@@ -253,7 +285,8 @@ const CORE_RECORDS: &[AbiRecordDescriptor] = &[
     AbiRecordDescriptor::Union(<NveValueData as NveUnionSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveValue as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveMapEntry as NveStructSchema>::SCHEMA),
-    AbiRecordDescriptor::Struct(<NveDirectEvent as NveStructSchema>::SCHEMA),
+    AbiRecordDescriptor::Struct(<RawEventBytes as NveStructSchema>::SCHEMA),
+    AbiRecordDescriptor::Struct(<NveEvent as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveEventBatch as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NvePropEntry as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NvePropSlice as NveStructSchema>::SCHEMA),
@@ -272,9 +305,9 @@ const CORE_MODULES: &[AbiModuleDescriptor] = &[
         c_name: "NveSurfaceApi",
         doc: Some("Required core surface interface (`NVE_IFACE_SURFACE = 1`)."),
         methods: &[
-            abi_method("create", &[abi_param("surface_id", "u32")], "NveAppHandle", false, false, None),
+            abi_method("create", &[abi_param("surface_id", "NveSurfaceId")], "NveAppHandle", false, false, None),
             abi_method("destroy", &[], "()", true, false, None),
-            abi_method("render", &[abi_param("frame_id", "u64")], "NveBufferSlice", true, false, None),
+            abi_method("render", &[abi_param("frame_id", "NveFrameId")], "NveBufferSlice", true, false, None),
             abi_method("dispatch_events", &[abi_param("batch", "NveEventBatch")], "u32", true, false, None),
         ],
     },
@@ -463,7 +496,7 @@ pub const fn compute_core_abi_schema_hash() -> u64 {
         let m = &desc.modules[i];
         hash_tag_str(&mut h, "module");
         hash_tag_str(&mut h, m.name);
-        h.update_u64(m.interface_id as u64);
+        h.update_u64(m.interface_id.raw() as u64);
         h.update_u64(m.methods.len() as u64);
         let mut j = 0;
         while j < m.methods.len() {

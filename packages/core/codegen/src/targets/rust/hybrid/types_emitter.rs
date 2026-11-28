@@ -140,33 +140,41 @@ pub(super) fn emit_rust_struct(
         emit_raw_carrier(out, s, spec);
     }
 
-    // `NveBinValue` map keyed by field name; the runtime derives the full codec from these two.
+    let keys: Vec<&str> = s.fields.iter().map(|f| f.name.as_str()).collect();
+    emit_struct_codec(out, name, &keys);
+}
+
+/// `HybridStruct` + `HybridCodec` of a record whose fields are spelled `rust_ident(key)`: an
+/// `NveBinValue` map keyed by `keys`; the runtime derives the full codec from these two.
+pub(super) fn emit_struct_codec(out: &mut CodeWriter, name: &str, keys: &[&str]) {
+    let m_arg = if keys.is_empty() { "_m" } else { "m" };
+    let fields_arg = if keys.is_empty() { "_fields" } else { "fields" };
     writeln!(out, "impl nve_abi::hybrid::HybridStruct for {name} {{");
     writeln!(
         out,
-        "    fn encode_fields(&self, m: &mut nve_abi::BinMapWriter<'_>) {{"
+        "    fn encode_fields(&self, {m_arg}: &mut nve_abi::BinMapWriter<'_>) {{"
     );
-    for f in &s.fields {
+    for key in keys {
         writeln!(
             out,
             "        nve_abi::hybrid::HybridCodec::encode_bin(&self.{}, m.key(\"{}\"));",
-            rust_ident(&f.name),
-            escape_c_like_string(&f.name)
+            rust_ident(key),
+            escape_c_like_string(key)
         );
     }
     writeln!(out, "    }}");
     writeln!(out);
     writeln!(
         out,
-        "    fn decode_fields(fields: &impl nve_abi::hybrid::HybridFields) -> {RESULT}<Self, nve_abi::DecodeError> {{"
+        "    fn decode_fields({fields_arg}: &impl nve_abi::hybrid::HybridFields) -> {RESULT}<Self, nve_abi::DecodeError> {{"
     );
     writeln!(out, "        Ok(Self {{");
-    for f in &s.fields {
+    for key in keys {
         writeln!(
             out,
             "            {}: fields.field(\"{}\")?,",
-            rust_ident(&f.name),
-            escape_c_like_string(&f.name)
+            rust_ident(key),
+            escape_c_like_string(key)
         );
     }
     writeln!(out, "        }})");

@@ -26,7 +26,7 @@ use crate::state::use_docs_state;
 #[inline]
 pub(crate) fn html_semantic(element: SemanticElement) -> TableAttr {
     table_attr_fn(move |tx, node| {
-        tx.edit::<HtmlSemantics>(node).element(element);
+        tx.edit::<HtmlSemantics>(node).element(Some(element));
     })
 }
 

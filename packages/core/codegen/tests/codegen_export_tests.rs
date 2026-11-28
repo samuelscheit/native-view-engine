@@ -274,7 +274,7 @@ fn generated_c_and_cpp20_abi_headers_compile_cleanly() {
     std::fs::write(
         &cpp_harness,
         format!(
-            "#include <nve/generated/nve_abi.generated.h>\n#include <nve/generated/nve_runtime_abi.generated.h>\nstatic_assert(sizeof(NveLayoutRect) == NVE_LAYOUT_RECT_SIZE);\nstatic_assert(sizeof(NveNodeRow) == NVE_NODE_ROW_SIZE);\nstatic_assert(NVE_RUNTIME_SCHEMA_HASH == 0x{:016X}ULL);\nint check_abi_cpp() {{ return static_cast<int>(NVE_PRIMARY_SLOT_NONE) + static_cast<int>(NVE_RUNTIME_OK); }}\n",
+            "#include <nve/generated/nve_abi.generated.h>\n#include <nve/generated/nve_runtime_abi.generated.h>\nstatic_assert(sizeof(NveLayoutRect) == NVE_LAYOUT_RECT_SIZE);\nstatic_assert(sizeof(NveNodeRow) == NVE_NODE_ROW_SIZE);\nstatic_assert(sizeof(NveEvent) == NVE_EVENT_SIZE);\nstatic_assert(NVE_RUNTIME_SCHEMA_HASH == 0x{:016X}ULL);\nint check_abi_cpp() {{ return static_cast<int>(NVE_PRIMARY_SLOT_NONE) + static_cast<int>(NVE_RUNTIME_OK); }}\n",
             nve_abi::NVE_RUNTIME_SCHEMA_HASH
         ),
     )

@@ -20,8 +20,8 @@ const NodeSemantics& no_semantics() {
   return kNone;
 }
 
-bool wants(const QtNodeView* view, NveEventKind kind) noexcept {
-  return view != nullptr && !view->sem.disabled && (view->event_mask & host::event_bit(kind)) != 0u;
+bool wants(const QtNodeView* view, NveInteractionEvent kind) noexcept {
+  return view != nullptr && !view->sem.disabled && (view->interaction_events & host::event_set_bit(kind)) != 0u;
 }
 
 }  // namespace
@@ -94,17 +94,19 @@ void NveQtNodeWidget::mouseReleaseEvent(QMouseEvent* event) {
 }
 
 void NveQtNodeWidget::mouseMoveEvent(QMouseEvent* event) {
-  if (wants(view_, NVE_EVENT_POINTER_MOVE)) view_hover(view_, NVE_EVENT_POINTER_MOVE, event->position());
+  if (wants(view_, NVE_INTERACTION_EVENT_POINTER_MOVE)) {
+    view_hover(view_, NVE_INTERACTION_EVENT_POINTER_MOVE, event->position());
+  }
   QWidget::mouseMoveEvent(event);
 }
 
 void NveQtNodeWidget::enterEvent(QEnterEvent* event) {
-  view_hover(view_, NVE_EVENT_POINTER_ENTER, event->position());
+  view_hover(view_, NVE_INTERACTION_EVENT_POINTER_ENTER, event->position());
   QWidget::enterEvent(event);
 }
 
 void NveQtNodeWidget::leaveEvent(QEvent* event) {
-  view_hover(view_, NVE_EVENT_POINTER_LEAVE, QPointF());
+  view_hover(view_, NVE_INTERACTION_EVENT_POINTER_LEAVE, QPointF());
   QWidget::leaveEvent(event);
 }
 
@@ -184,12 +186,12 @@ void NveQtLineEdit::focusOutEvent(QFocusEvent* event) {
 }
 
 void NveQtLineEdit::enterEvent(QEnterEvent* event) {
-  view_hover(view_, NVE_EVENT_POINTER_ENTER, event->position());
+  view_hover(view_, NVE_INTERACTION_EVENT_POINTER_ENTER, event->position());
   QLineEdit::enterEvent(event);
 }
 
 void NveQtLineEdit::leaveEvent(QEvent* event) {
-  view_hover(view_, NVE_EVENT_POINTER_LEAVE, QPointF());
+  view_hover(view_, NVE_INTERACTION_EVENT_POINTER_LEAVE, QPointF());
   QLineEdit::leaveEvent(event);
 }
 
@@ -219,12 +221,12 @@ void NveQtTextEdit::focusOutEvent(QFocusEvent* event) {
 }
 
 void NveQtTextEdit::enterEvent(QEnterEvent* event) {
-  view_hover(view_, NVE_EVENT_POINTER_ENTER, event->position());
+  view_hover(view_, NVE_INTERACTION_EVENT_POINTER_ENTER, event->position());
   QPlainTextEdit::enterEvent(event);
 }
 
 void NveQtTextEdit::leaveEvent(QEvent* event) {
-  view_hover(view_, NVE_EVENT_POINTER_LEAVE, QPointF());
+  view_hover(view_, NVE_INTERACTION_EVENT_POINTER_LEAVE, QPointF());
   QPlainTextEdit::leaveEvent(event);
 }
 

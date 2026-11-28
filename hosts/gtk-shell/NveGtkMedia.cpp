@@ -77,7 +77,7 @@ GdkTexture* decode_url(std::string_view uri) {
 } // namespace
 
 // -----------------------------------------------------------------------------
-// NVE_DRAW1 Cairo renderer
+// Flat `nve.res.draw_list` Cairo renderer
 // -----------------------------------------------------------------------------
 
 DrawListDecodeResult render_draw_list_to_cairo(

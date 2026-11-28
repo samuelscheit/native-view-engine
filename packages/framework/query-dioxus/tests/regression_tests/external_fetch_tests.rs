@@ -9,6 +9,7 @@ use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use nve_abi::SurfaceId;
 use nve_backend_web::WebBackend;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
@@ -66,7 +67,7 @@ fn fresh_mount_during_external_fetch_recovers_on_cancel_across_cold_stale_and_in
     let mut cx = core::task::Context::from_waker(&waker);
     assert!(matches!(core::pin::Pin::as_mut(&mut ext_cold).poll(&mut cx), Poll::Pending));
 
-    let mut s = DioxusSurface::new(1, MountRoot).with_context((client.clone(), 20u64, 60_000u32));
+    let mut s = DioxusSurface::new(SurfaceId::ROOT, MountRoot).with_context((client.clone(), 20u64, 60_000u32));
     let mut web = WebBackend::new();
     let mut frame = 0;
     let _ = render_once(&mut s, &mut web, &mut frame);
@@ -108,7 +109,7 @@ fn fresh_mount_during_external_fetch_recovers_on_cancel_across_cold_stale_and_in
     let mut ext_stale = Box::pin(client.fetch_handle::<GetItem>(h_stale));
     assert!(matches!(core::pin::Pin::as_mut(&mut ext_stale).poll(&mut cx), Poll::Pending));
 
-    let mut s2 = DioxusSurface::new(1, MountRoot).with_context((client.clone(), 21u64, 5_000u32));
+    let mut s2 = DioxusSurface::new(SurfaceId::ROOT, MountRoot).with_context((client.clone(), 21u64, 5_000u32));
     let mut web2 = WebBackend::new();
     let mut frame2 = 0;
     let _ = render_once(&mut s2, &mut web2, &mut frame2);
@@ -150,7 +151,7 @@ fn fresh_mount_during_external_fetch_recovers_on_cancel_across_cold_stale_and_in
     let mut ext_inv = Box::pin(client.fetch_handle::<GetItem>(h_inv));
     assert!(matches!(core::pin::Pin::as_mut(&mut ext_inv).poll(&mut cx), Poll::Pending));
 
-    let mut s3 = DioxusSurface::new(1, MountRoot).with_context((client.clone(), 22u64, 60_000u32));
+    let mut s3 = DioxusSurface::new(SurfaceId::ROOT, MountRoot).with_context((client.clone(), 22u64, 60_000u32));
     let mut web3 = WebBackend::new();
     let mut frame3 = 0;
     let _ = render_once(&mut s3, &mut web3, &mut frame3);
@@ -177,7 +178,7 @@ fn fresh_mount_during_external_fetch_recovers_on_cancel_across_cold_stale_and_in
     let mut ext_ok = Box::pin(client.prefetch::<GetItem>(&23));
     assert!(matches!(core::pin::Pin::as_mut(&mut ext_ok).poll(&mut cx), Poll::Pending));
 
-    let mut s4 = DioxusSurface::new(1, MountRoot).with_context((client.clone(), 23u64, 0u32));
+    let mut s4 = DioxusSurface::new(SurfaceId::ROOT, MountRoot).with_context((client.clone(), 23u64, 0u32));
     let mut web4 = WebBackend::new();
     let mut frame4 = 0;
     let _ = render_once(&mut s4, &mut web4, &mut frame4);
@@ -226,7 +227,7 @@ fn invalidated_hook_refetches_after_external_fetch_is_cancelled() {
         }
     }
 
-    let mut surface = DioxusSurface::new(1, Root).with_context(client.clone());
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, Root).with_context(client.clone());
     let mut web = WebBackend::new();
     let mut frame = 0;
     let waker = Waker::from(Arc::new(NoopFlagWaker(AtomicBool::new(false))));
@@ -321,7 +322,7 @@ fn invalidated_sibling_observing_in_flight_bridge_fetch_does_not_double_fire_on_
         }
     }
 
-    let mut surface = DioxusSurface::new(1, Root)
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, Root)
         .with_context(client.clone())
         .with_context(Rc::clone(&poke_slot))
         .with_context(Rc::clone(&sibling_b_saw_fetching));
@@ -406,7 +407,7 @@ fn invalidation_after_external_prefetch_settlement_triggers_refetch() {
     let mut ext1 = Box::pin(client.prefetch::<GetItem>(&30));
     assert!(matches!(core::pin::Pin::as_mut(&mut ext1).poll(&mut cx), Poll::Pending));
 
-    let mut s1 = DioxusSurface::new(1, Root).with_context((client.clone(), 30u64));
+    let mut s1 = DioxusSurface::new(SurfaceId::ROOT, Root).with_context((client.clone(), 30u64));
     let mut web1 = WebBackend::new();
     let mut frame1 = 0;
     let _ = render_once(&mut s1, &mut web1, &mut frame1);
@@ -436,7 +437,7 @@ fn invalidation_after_external_prefetch_settlement_triggers_refetch() {
     let mut ext2 = Box::pin(client.prefetch::<GetItem>(&31));
     assert!(matches!(core::pin::Pin::as_mut(&mut ext2).poll(&mut cx), Poll::Pending));
 
-    let mut s2 = DioxusSurface::new(1, Root).with_context((client.clone(), 31u64));
+    let mut s2 = DioxusSurface::new(SurfaceId::ROOT, Root).with_context((client.clone(), 31u64));
     let mut web2 = WebBackend::new();
     let mut frame2 = 0;
     let _ = render_once(&mut s2, &mut web2, &mut frame2);
@@ -511,7 +512,7 @@ fn failed_external_refetch_after_invalidation_does_not_duplicate_network_call() 
     // 3rd request, yet a subsequent `invalidate_tags` DOES trigger refetch ("Recovered1").
     let mut ext_pre = Box::pin(client.prefetch::<GetItem>(&40));
     assert!(matches!(core::pin::Pin::as_mut(&mut ext_pre).poll(&mut cx), Poll::Pending));
-    let mut s1 = DioxusSurface::new(1, Root).with_context((client.clone(), 40u64));
+    let mut s1 = DioxusSurface::new(SurfaceId::ROOT, Root).with_context((client.clone(), 40u64));
     let mut web1 = WebBackend::new();
     let mut frame1 = 0;
     let _ = render_once(&mut s1, &mut web1, &mut frame1);
@@ -561,7 +562,7 @@ fn failed_external_refetch_after_invalidation_does_not_duplicate_network_call() 
         g.fail_queries = false;
         g.name = "MountedV1".into();
     }
-    let mut s2 = DioxusSurface::new(1, Root).with_context((client.clone(), 41u64));
+    let mut s2 = DioxusSurface::new(SurfaceId::ROOT, Root).with_context((client.clone(), 41u64));
     let mut web2 = WebBackend::new();
     let mut frame2 = 0;
     let _ = render_once(&mut s2, &mut web2, &mut frame2);

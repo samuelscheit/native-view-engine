@@ -47,16 +47,16 @@ final class NveRuntimeHostTests: XCTestCase {
         }
         s.visual(row) { SceneBuilder.put(&$0, NveTables.Visual.opacity, Float(0.5)) }
         s.typography(root) {
-            SceneBuilder.put(&$0, NveTables.Typography.set, NveTypographySet.color | NveTypographySet.fontSize)
+            SceneBuilder.setExplicit(&$0, NveTables.Typography.color, NveTables.Typography.fontSize, NveTables.Typography.maxLines)
             SceneBuilder.put(&$0, NveTables.Typography.color, SceneBuilder.rgba(0, 0, 255))
             SceneBuilder.put(&$0, NveTables.Typography.fontSize, Float(24))
-            SceneBuilder.put(&$0, NveTables.Typography.fontSize, Float(24))
+            SceneBuilder.put(&$0, NveTables.Typography.maxLines, UInt32(2))
         }
         s.typography(title) {
-            SceneBuilder.put(&$0, NveTables.Typography.set, NveTypographySet.fontWeight | NveTypographySet.textAlign)
+            SceneBuilder.setExplicit(&$0, NveTables.Typography.fontWeight, NveTables.Typography.textAlign)
             SceneBuilder.put(&$0, NveTables.Typography.fontWeight, UInt32(700))
             SceneBuilder.put(&$0, NveTables.Typography.textAlign, NveTextAlign.center.rawValue)
-            // Not in `set`: must NOT override the inherited 24pt.
+            // Not in `__explicit`: must NOT override the inherited 24pt.
             SceneBuilder.put(&$0, NveTables.Typography.fontSize, Float(9))
         }
         s.text(title, "Hello")
@@ -79,7 +79,9 @@ final class NveRuntimeHostTests: XCTestCase {
             SceneBuilder.put(&$0, NveTables.Accessibility.role, NveAriaRole.image.rawValue)
             SceneBuilder.put(&$0, NveTables.Accessibility.label, label)
         }
-        s.sparse(NveTables.Interaction.key, words: NveTables.Interaction.words, defaults: NveTables.Interaction.defaults, card)
+        s.sparse(NveTables.Interaction.key, words: NveTables.Interaction.words, defaults: NveTables.Interaction.defaults, card) {
+            SceneBuilder.setEvents(&$0, eventsWord: NveTables.Interaction.eventsWord, NveInteractionEventSet.press)
+        }
         m.scene = s
         return (root, card, title, scroll, input, image)
     }
@@ -142,11 +144,14 @@ final class NveRuntimeHostTests: XCTestCase {
         XCTAssertEqual(m.restored, [9, 8])
         XCTAssertTrue(try session.applyHotPatch(Data([0x4E, 0x56, 0x50, 0x31])))
         XCTAssertEqual(m.patches, [4])
-        m.resources[5] = [0, 3, 0, 0, 0, 0x61, 0x2E, 0x62]
+        let flatUrl: [UInt8] = [0, 0, 0, 0, 3, 0, 0, 0, 0x61, 0x2E, 0x62, 0]
+        m.resources[5] = flatUrl
         let res = try session.withScene { try session.resource(5, in: $0) }
-        XCTAssertEqual(res.bytes, [0, 3, 0, 0, 0, 0x61, 0x2E, 0x62])
+        XCTAssertEqual(res.bytes, flatUrl)
         XCTAssertEqual(res.kind, Key64(0x1234))
         XCTAssertEqual(NveImageSource(resourceBytes: res.bytes), .url("a.b"))
+        XCTAssertNil(NveImageSource(resourceBytes: [0, 0, 0, 0, 3, 0, 0, 0, 0x61, 0x2E, 0x62, 1]), "non-zero pad byte")
+        XCTAssertNil(NveImageSource(resourceBytes: [0, 3, 0, 0, 0, 0x61, 0x2E, 0x62]), "legacy 5-byte layout rejected")
         XCTAssertThrowsError(try session.withScene { try session.resource(6, in: $0) }) {
             XCTAssertTrue(($0 as? NveRuntimeError)?.isMissingCapability == true, "stale id: NOT_FOUND")
         }
@@ -219,12 +224,17 @@ final class NveRuntimeHostTests: XCTestCase {
             let style = t.textStyle(ids.title.index)
             XCTAssertEqual(style.fontSize, 24, "inherited from root; unset local field ignored")
             XCTAssertEqual(style.color, NveColor(Rgba(packed: SceneBuilder.rgba(0, 0, 255))))
+            XCTAssertEqual(style.maxLines, 2, "optional zeroNiche maxLines inherited from root")
             XCTAssertEqual(style.fontWeight, 700)
             XCTAssertEqual(style.align, .center)
             XCTAssertEqual(t.textStyle(ids.card.index).fontWeight, 400, "default weight")
             XCTAssertTrue(t.isScroll(ids.scroll.index) && t.clipsChildren(ids.scroll.index))
             XCTAssertFalse(t.clipsChildren(ids.card.index))
             XCTAssertTrue(t.isInteractive(ids.card.index))
+            XCTAssertTrue(t.hasInteractionEvent(ids.card.index, bit: NveInteractionEventSet.press))
+            XCTAssertFalse(t.hasInteractionEvent(ids.card.index, bit: NveInteractionEventSet.longPress))
+            XCTAssertEqual(t.interactionEvents(ids.card.index), NveInteractionEventSet.press)
+            XCTAssertEqual(t.interactionEvents(ids.title.index), 0)
             let input = try XCTUnwrap(t.textInput(ids.input.index))
             XCTAssertEqual(input.value, "hunter2")
             XCTAssertTrue(input.secure)
@@ -274,7 +284,7 @@ final class NveRuntimeHostTests: XCTestCase {
         XCTAssertEqual(byId[ids.image]?.label, "Brand logo")
         XCTAssertEqual(byId[ids.image]?.role, .image)
 
-        m.resources[9] = [1, 3, 0, 0, 0, 0xFF, 0xD8, 0xFF]
+        m.resources[9] = [1, 0, 0, 0, 3, 0, 0, 0, 0xFF, 0xD8, 0xFF, 0]
         XCTAssertEqual(store.imageSource(9), .encoded([0xFF, 0xD8, 0xFF]))
         XCTAssertNil(store.image(resource: 9), "invalid JPEG bytes decode to nil, never crash")
     }
@@ -282,7 +292,11 @@ final class NveRuntimeHostTests: XCTestCase {
     func testImageSourcesFollowDirtyResourcesEpochsAndFrameGaps() throws {
         _ = buildScene()
         let store = NveSceneStore(session: try makeSession())
-        let url = { (s: String) -> [UInt8] in [0, UInt8(s.utf8.count), 0, 0, 0] + Array(s.utf8) }
+        let url = { (s: String) -> [UInt8] in
+            let p = Array(s.utf8)
+            let pad = (4 - (p.count & 3)) & 3
+            return [0, 0, 0, 0, UInt8(p.count), 0, 0, 0] + p + Array(repeating: 0, count: pad)
+        }
         m.resources = [4: url("a"), 5: url("b")]
         store.sync()
         XCTAssertEqual(store.imageSource(4), .url("a"))
@@ -328,16 +342,15 @@ final class NveRuntimeHostTests: XCTestCase {
         XCTAssertFalse(controller.setProps(["count": 1, "title": "A"]), "canonical props dedupe")
         XCTAssertEqual(m.propCounts, [2])
 
-        var received: [NveEvent] = []
+        var received: [NveSwiftUI.NveEvent] = []
         controller.onEvent = { received.append($0) }
-        m.emitted = [NveDirectEvent()]
-        m.emitted[0].surface_id = 7
-        m.emitted[0].node_id = 3
-        XCTAssertTrue(controller.dispatchEvent(NveEvent(surfaceId: 7, nodeId: 2, timestampUs: 1, kind: .press, payload: .point(x: 1, y: 2))))
+        m.emitted.pushPress(surface: 7, node: 3, timestamp: 10, x: 5, y: 6)
+        XCTAssertTrue(controller.dispatchEvent(NveSwiftUI.NveEvent(surfaceId: 7, nodeId: 2, timestampUs: 1, kind: .press, payload: .point(x: 1, y: 2))))
         XCTAssertEqual(m.dispatched.last?.first?.nodeId, 2)
         XCTAssertEqual(received.map(\.nodeId), [3], "outbound events are drained after each pump")
+        XCTAssertEqual(received.first?.kind, .press)
         controller.onEvent = nil
-        m.emitted = [NveDirectEvent()]
+        m.emitted.pushFocus(surface: 7, node: 3, timestamp: 11)
         controller.pump()
         XCTAssertTrue(m.emitted.isEmpty, "events are drained even without a listener")
 
@@ -405,5 +418,31 @@ final class NveRuntimeHostTests: XCTestCase {
         XCTAssertLessThan(card.1, 60)
         let root = pixel(150, 40)
         XCTAssertGreaterThan(root.1, 200, "white root background")
+    }
+
+    func testOptionalImageTintAndAccessibilityRoleDecodeViaOptEncoding() throws {
+        var s = SceneBuilder()
+        let root = s.node(rect: CGRect(x: 0, y: 0, width: 100, height: 100))
+        let tinted = s.node(parent: root, rect: CGRect(x: 0, y: 0, width: 50, height: 50))
+        let unlabeled = s.node(parent: root, rect: CGRect(x: 50, y: 0, width: 50, height: 50))
+        s.setChildren(root, [tinted, unlabeled])
+        s.sparse(NveTables.Image.key, words: NveTables.Image.words, defaults: NveTables.Image.defaults, tinted) {
+            SceneBuilder.put(&$0, NveTables.Image.src, UInt32(3))
+            SceneBuilder.put(&$0, NveTables.Image.tint, SceneBuilder.rgba(10, 20, 30))
+        }
+        let hint = s.str("Details")
+        s.sparse(NveTables.Accessibility.key, words: NveTables.Accessibility.words, defaults: NveTables.Accessibility.defaults, unlabeled) {
+            SceneBuilder.put(&$0, NveTables.Accessibility.hint, hint)
+        }
+        m.scene = s
+        let session = try makeSession()
+        try session.withScene { scene in
+            let t = NveRuntimeTables(scene: scene)
+            let img = try XCTUnwrap(t.imageSource(tinted.index))
+            XCTAssertEqual(img.tint, NveColor(Rgba(packed: SceneBuilder.rgba(10, 20, 30))))
+            let a11y = try XCTUnwrap(t.accessibility(unlabeled.index))
+            XCTAssertNil(a11y.role, "absent plusOne Accessibility.role decodes to nil")
+            XCTAssertEqual(a11y.hint, "Details")
+        }
     }
 }

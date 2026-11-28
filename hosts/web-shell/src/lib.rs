@@ -65,12 +65,14 @@ mod wasm_appearance;
 
 pub use hydrate::{CapturedInteraction, HydrateTrigger, IslandHydrationScheduler, IslandSpec};
 
-/// Plugin set for dev sessions rendering arbitrary remote apps (pairing, probes): `nve-web-html`
-/// plus canvas. App sessions register their family's shared set (`SessionApp::register_web_systems`).
+/// Plugin set for dev sessions rendering arbitrary remote apps (pairing, probes): `nve-web-html`,
+/// canvas, and motion. App sessions register their family's shared set
+/// (`SessionApp::register_web_systems`).
 #[cfg(feature = "dev")]
 pub fn register_dev_web_systems(backend: &mut nve_backend_web::WebBackend) {
     nve_web_html_web::register_web_html_systems(backend.table_registry_mut());
     backend.register_table_system(nve_canvas_web::CanvasWebSystem);
+    backend.register_table_system(nve_motion_web::MotionWebSystem::new());
 }
 #[cfg(feature = "multi-window")]
 pub use multi_window::{

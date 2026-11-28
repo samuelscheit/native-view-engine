@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use nve_codec::{ByteReader, ByteWriter, CodecError, DEFAULT_MAX_BYTES};
 use nve_hash::xxh64;
 
 use crate::search::{Posting, SearchDoc, SearchIndex};
@@ -26,7 +27,26 @@ pub enum SearchIndexError {
     UnexpectedEof,
     InvalidUtf8,
     InvalidDocId { doc_id: u32, doc_count: u32 },
+    NonZeroReserved(u16),
     TrailingBytes(usize),
+}
+
+impl From<CodecError> for SearchIndexError {
+    #[inline]
+    fn from(err: CodecError) -> Self {
+        match err {
+            CodecError::InvalidUtf8 => Self::InvalidUtf8,
+            CodecError::NonZeroReserved(v) => Self::NonZeroReserved(v as u16),
+            CodecError::TrailingBytes(n) => Self::TrailingBytes(n),
+            CodecError::Truncated { .. }
+            | CodecError::BadMagic
+            | CodecError::BadVersion(_)
+            | CodecError::BadEnum { .. }
+            | CodecError::BadBool(_)
+            | CodecError::LenOverflow { .. }
+            | CodecError::DepthExceeded { .. } => Self::UnexpectedEof,
+        }
+    }
 }
 
 impl fmt::Display for SearchIndexError {
@@ -44,6 +64,7 @@ impl fmt::Display for SearchIndexError {
             Self::InvalidDocId { doc_id, doc_count } => {
                 write!(f, "posting doc_id {doc_id} out of range (doc_count={doc_count})")
             }
+            Self::NonZeroReserved(v) => write!(f, "NVS2 reserved header bytes must be 0, got {v}"),
             Self::TrailingBytes(n) => write!(f, "NVS2 buffer has {n} unexpected trailing bytes"),
         }
     }
@@ -51,68 +72,59 @@ impl fmt::Display for SearchIndexError {
 
 impl std::error::Error for SearchIndexError {}
 
-pub(crate) fn encode_index(index: &SearchIndex) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(
+pub(crate) fn encode_index(index: &SearchIndex) -> Result<Vec<u8>, CodecError> {
+    let mut w = ByteWriter::with_capacity(
         HEADER_BYTES + index.docs.len() * 64 + index.tokens.len() * 16 + CHECKSUM_BYTES,
     );
-    buf.extend_from_slice(NVS2_MAGIC);
-    buf.extend_from_slice(&NVS2_VERSION.to_le_bytes());
-    buf.extend_from_slice(&0u16.to_le_bytes());
-    buf.extend_from_slice(&(index.docs.len() as u32).to_le_bytes());
-    buf.extend_from_slice(&(index.tokens.len() as u32).to_le_bytes());
-    buf.extend_from_slice(&(index.trigrams.len() as u32).to_le_bytes());
+    w.write_raw(NVS2_MAGIC);
+    w.write_u16(NVS2_VERSION);
+    w.write_u16(0);
+    w.write_len(index.docs.len())?;
+    w.write_len(index.tokens.len())?;
+    w.write_len(index.trigrams.len())?;
 
     for doc in &index.docs {
-        write_str_u32(&mut buf, &doc.route);
-        write_str_u32(&mut buf, &doc.title);
-        write_str_u32(&mut buf, &doc.section);
-        write_str_u32(&mut buf, &doc.anchor);
-        write_str_u32(&mut buf, &doc.excerpt);
+        w.write_str(&doc.route)?;
+        w.write_str(&doc.title)?;
+        w.write_str(&doc.section)?;
+        w.write_str(&doc.anchor)?;
+        w.write_str(&doc.excerpt)?;
     }
 
     for (term, postings) in &index.tokens {
-        write_str_u32(&mut buf, term);
-        write_postings(&mut buf, postings);
+        w.write_str(term)?;
+        write_postings(&mut w, postings)?;
     }
 
     for (tri, postings) in &index.trigrams {
-        let tri_bytes = tri.as_bytes();
-        let len = tri_bytes.len().min(u8::MAX as usize);
-        buf.push(len as u8);
-        buf.extend_from_slice(&tri_bytes[..len]);
-        write_postings(&mut buf, postings);
+        w.write_str_u8(tri)?;
+        write_postings(&mut w, postings)?;
     }
 
-    let checksum = xxh64(&buf, 0);
-    buf.extend_from_slice(&checksum.to_le_bytes());
-    buf
+    let checksum = xxh64(w.as_slice(), 0);
+    w.write_u64(checksum);
+    Ok(w.into_bytes())
 }
 
 pub(crate) fn decode_index(bytes: &[u8]) -> Result<SearchIndex, SearchIndexError> {
     if bytes.len() < HEADER_BYTES + CHECKSUM_BYTES {
         return Err(SearchIndexError::TooShort);
     }
-    let magic: [u8; 4] = [bytes[0], bytes[1], bytes[2], bytes[3]];
+    let payload_len = bytes.len() - CHECKSUM_BYTES;
+    let payload = &bytes[..payload_len];
+    let mut r = ByteReader::new(payload);
+
+    let magic = r.read_array::<4>()?;
     if &magic != NVS2_MAGIC {
         return Err(SearchIndexError::InvalidMagic(magic));
     }
-    let version = u16::from_le_bytes([bytes[4], bytes[5]]);
+    let version = r.read_u16()?;
     if version != NVS2_VERSION {
         return Err(SearchIndexError::UnsupportedVersion(version));
     }
+    r.expect_zero(2)?;
 
-    let payload_len = bytes.len() - CHECKSUM_BYTES;
-    let payload = &bytes[..payload_len];
-    let expected_ck = u64::from_le_bytes([
-        bytes[payload_len],
-        bytes[payload_len + 1],
-        bytes[payload_len + 2],
-        bytes[payload_len + 3],
-        bytes[payload_len + 4],
-        bytes[payload_len + 5],
-        bytes[payload_len + 6],
-        bytes[payload_len + 7],
-    ]);
+    let expected_ck = ByteReader::new(&bytes[payload_len..]).read_u64()?;
     let actual_ck = xxh64(payload, 0);
     if expected_ck != actual_ck {
         return Err(SearchIndexError::ChecksumMismatch {
@@ -121,48 +133,33 @@ pub(crate) fn decode_index(bytes: &[u8]) -> Result<SearchIndex, SearchIndexError
         });
     }
 
-    let mut r = Reader::new(&payload[8..]);
     let doc_count = r.read_u32()? as usize;
     let token_count = r.read_u32()? as usize;
     let trigram_count = r.read_u32()? as usize;
 
-    if doc_count > r.remaining() / MIN_DOC_BYTES {
-        return Err(SearchIndexError::UnexpectedEof);
-    }
-    let mut docs = Vec::with_capacity(doc_count);
-    for _ in 0..doc_count {
-        docs.push(SearchDoc {
-            route: r.read_str_u32()?,
-            title: r.read_str_u32()?,
-            section: r.read_str_u32()?,
-            anchor: r.read_str_u32()?,
-            excerpt: r.read_str_u32()?,
-        });
-    }
+    let docs = read_counted_vec(&mut r, doc_count, MIN_DOC_BYTES, |r| {
+        Ok(SearchDoc {
+            route: r.read_string(DEFAULT_MAX_BYTES)?,
+            title: r.read_string(DEFAULT_MAX_BYTES)?,
+            section: r.read_string(DEFAULT_MAX_BYTES)?,
+            anchor: r.read_string(DEFAULT_MAX_BYTES)?,
+            excerpt: r.read_string(DEFAULT_MAX_BYTES)?,
+        })
+    })?;
 
-    if token_count > r.remaining() / MIN_TOKEN_BYTES {
-        return Err(SearchIndexError::UnexpectedEof);
-    }
-    let mut tokens = Vec::with_capacity(token_count);
-    for _ in 0..token_count {
-        let term = r.read_str_u32()?;
-        let postings = r.read_postings(doc_count as u32)?;
-        tokens.push((term, postings));
-    }
+    let tokens = read_counted_vec(&mut r, token_count, MIN_TOKEN_BYTES, |r| {
+        let term = r.read_string(DEFAULT_MAX_BYTES)?;
+        let postings = read_postings(r, doc_count as u32)?;
+        Ok((term, postings))
+    })?;
 
-    if trigram_count > r.remaining() / MIN_TRIGRAM_BYTES {
-        return Err(SearchIndexError::UnexpectedEof);
-    }
-    let mut trigrams = Vec::with_capacity(trigram_count);
-    for _ in 0..trigram_count {
-        let tri = r.read_str_u8()?;
-        let postings = r.read_postings(doc_count as u32)?;
-        trigrams.push((tri, postings));
-    }
+    let trigrams = read_counted_vec(&mut r, trigram_count, MIN_TRIGRAM_BYTES, |r| {
+        let tri = r.read_str_u8(u8::MAX as usize)?.to_owned();
+        let postings = read_postings(r, doc_count as u32)?;
+        Ok((tri, postings))
+    })?;
 
-    if r.remaining() != 0 {
-        return Err(SearchIndexError::TrailingBytes(r.remaining()));
-    }
+    r.finish()?;
 
     Ok(SearchIndex {
         docs,
@@ -171,91 +168,39 @@ pub(crate) fn decode_index(bytes: &[u8]) -> Result<SearchIndex, SearchIndexError
     })
 }
 
-fn write_str_u32(buf: &mut Vec<u8>, s: &str) {
-    let bytes = s.as_bytes();
-    buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-    buf.extend_from_slice(bytes);
+fn read_counted_vec<T>(
+    r: &mut ByteReader<'_>,
+    count: usize,
+    min_elem_bytes: usize,
+    mut decode: impl FnMut(&mut ByteReader<'_>) -> Result<T, SearchIndexError>,
+) -> Result<Vec<T>, SearchIndexError> {
+    if count > r.remaining() / min_elem_bytes {
+        return Err(SearchIndexError::UnexpectedEof);
+    }
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        out.push(decode(r)?);
+    }
+    Ok(out)
 }
 
-fn write_postings(buf: &mut Vec<u8>, postings: &[Posting]) {
-    buf.extend_from_slice(&(postings.len() as u32).to_le_bytes());
+fn write_postings(w: &mut ByteWriter, postings: &[Posting]) -> Result<(), CodecError> {
+    w.write_len(postings.len())?;
     for p in postings {
-        buf.extend_from_slice(&p.doc_id.to_le_bytes());
-        buf.extend_from_slice(&p.weight_x10.to_le_bytes());
+        w.write_u32(p.doc_id);
+        w.write_u16(p.weight_x10);
     }
+    Ok(())
 }
 
-struct Reader<'a> {
-    data: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Reader<'a> {
-    fn new(data: &'a [u8]) -> Self {
-        Self { data, pos: 0 }
-    }
-
-    fn remaining(&self) -> usize {
-        self.data.len().saturating_sub(self.pos)
-    }
-
-    fn read_exact(&mut self, len: usize) -> Result<&'a [u8], SearchIndexError> {
-        let end = self
-            .pos
-            .checked_add(len)
-            .ok_or(SearchIndexError::UnexpectedEof)?;
-        if end > self.data.len() {
-            return Err(SearchIndexError::UnexpectedEof);
+fn read_postings(r: &mut ByteReader<'_>, doc_count: u32) -> Result<Vec<Posting>, SearchIndexError> {
+    let count = r.read_u32()? as usize;
+    read_counted_vec(r, count, POSTING_BYTES, |r| {
+        let doc_id = r.read_u32()?;
+        if doc_id >= doc_count {
+            return Err(SearchIndexError::InvalidDocId { doc_id, doc_count });
         }
-        let slice = &self.data[self.pos..end];
-        self.pos = end;
-        Ok(slice)
-    }
-
-    fn read_u8(&mut self) -> Result<u8, SearchIndexError> {
-        Ok(self.read_exact(1)?[0])
-    }
-
-    fn read_u16(&mut self) -> Result<u16, SearchIndexError> {
-        let b = self.read_exact(2)?;
-        Ok(u16::from_le_bytes([b[0], b[1]]))
-    }
-
-    fn read_u32(&mut self) -> Result<u32, SearchIndexError> {
-        let b = self.read_exact(4)?;
-        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    }
-
-    fn read_str_u32(&mut self) -> Result<String, SearchIndexError> {
-        let len = self.read_u32()? as usize;
-        let bytes = self.read_exact(len)?;
-        std::str::from_utf8(bytes)
-            .map(ToOwned::to_owned)
-            .map_err(|_| SearchIndexError::InvalidUtf8)
-    }
-
-    fn read_str_u8(&mut self) -> Result<String, SearchIndexError> {
-        let len = self.read_u8()? as usize;
-        let bytes = self.read_exact(len)?;
-        std::str::from_utf8(bytes)
-            .map(ToOwned::to_owned)
-            .map_err(|_| SearchIndexError::InvalidUtf8)
-    }
-
-    fn read_postings(&mut self, doc_count: u32) -> Result<Vec<Posting>, SearchIndexError> {
-        let count = self.read_u32()? as usize;
-        if count > self.remaining() / POSTING_BYTES {
-            return Err(SearchIndexError::UnexpectedEof);
-        }
-        let mut out = Vec::with_capacity(count);
-        for _ in 0..count {
-            let doc_id = self.read_u32()?;
-            if doc_id >= doc_count {
-                return Err(SearchIndexError::InvalidDocId { doc_id, doc_count });
-            }
-            let weight_x10 = self.read_u16()?;
-            out.push(Posting { doc_id, weight_x10 });
-        }
-        Ok(out)
-    }
+        let weight_x10 = r.read_u16()?;
+        Ok(Posting { doc_id, weight_x10 })
+    })
 }

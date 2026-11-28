@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 use nve_backend_web::{WebBackend, WebTableSystem};
-use nve_components::tables::{
+use nve_tables::tables::{
     Accessibility, AriaRole, StreamBoundary, TextContent, Typography, Visual,
 };
 use nve_engine::StoreBackend;
@@ -49,8 +49,12 @@ pub fn commit(
     web.commit(store, &changes).expect("commit frame");
 }
 
+pub fn nid(id: u32) -> NodeId {
+    NodeId::from_raw(id).expect("non-zero test NodeId")
+}
+
 pub fn node(tx: &mut Transaction<'_>, id: u32) -> NodeId {
-    let n = NodeId(id);
+    let n = nid(id);
     assert!(tx.create_at(n), "node {id} already live");
     n
 }
@@ -92,7 +96,9 @@ pub fn delta_style(tx: &mut Transaction<'_>, n: NodeId) {
 
 pub fn heading(tx: &mut Transaction<'_>, id: u32) -> NodeId {
     let n = text(tx, id, "Dashboard");
-    tx.edit::<Accessibility>(n).role(AriaRole::Heading).level(1);
+    tx.edit::<Accessibility>(n)
+        .role(Some(AriaRole::Heading))
+        .level(Some(1));
     shared_style(tx, n);
     n
 }

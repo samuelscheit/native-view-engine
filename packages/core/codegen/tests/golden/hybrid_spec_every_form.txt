@@ -241,7 +241,9 @@ HybridFileSpec {
                 "Camera.\nSecond line.",
             ),
             explicit_interface_id: Some(
-                4097,
+                InterfaceId(
+                    4097,
+                ),
             ),
             c_name: Some(
                 "NveCameraApi",
@@ -377,7 +379,9 @@ HybridFileSpec {
             ],
             doc: None,
             explicit_interface_id: Some(
-                4098,
+                InterfaceId(
+                    4098,
+                ),
             ),
         },
     ],

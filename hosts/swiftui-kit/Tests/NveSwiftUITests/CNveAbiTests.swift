@@ -11,7 +11,7 @@ private enum AbiTestFixtures {
                 create: { sid in UnsafeMutableRawPointer(bitPattern: Int(sid) + 0x1000) },
                 destroy: { _ in },
                 render: { _, _ in NveBufferSlice(ptr: nil, len: 0) },
-                dispatch_events: { _, batch in batch.len > 0 ? 1 : 0 }
+                dispatch_events: { _, batch in batch.event_count > 0 ? 1 : 0 }
             )
         )
         return UnsafePointer(ptr)
@@ -35,7 +35,7 @@ private enum AbiTestFixtures {
         ptr.initialize(
             to: NveComponentApi(
                 set_props: { _, _, count in count > 0 ? 1 : 0 },
-                drain_emitted_events: { _ in NveEventBatch(ptr: nil, len: 0, _pad: 0) }
+                drain_emitted_events: { _ in NveEventBatch(events: nil, bytes: nil, event_count: 0, bytes_len: 0) }
             )
         )
         return UnsafePointer(ptr)
@@ -152,8 +152,8 @@ final class CNveAbiTests: XCTestCase {
         XCTAssertEqual(MemoryLayout<NveStrSlice>.size, 16)
         XCTAssertEqual(MemoryLayout<NveValue>.size, 24)
         XCTAssertEqual(MemoryLayout<NveMapEntry>.size, 40)
-        XCTAssertEqual(MemoryLayout<NveDirectEvent>.size, 96)
-        XCTAssertEqual(MemoryLayout<NveEventBatch>.size, 16)
+        XCTAssertEqual(MemoryLayout<CNveAbi.NveEvent>.size, 64)
+        XCTAssertEqual(MemoryLayout<NveEventBatch>.size, 24)
         #endif
     }
 }

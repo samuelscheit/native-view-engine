@@ -21,8 +21,9 @@ bool operator==(const NodeSemantics& a, const NodeSemantics& b) noexcept {
 
 namespace {
 
-QAccessible::Role qt_role(uint8_t role) noexcept {
-  switch (role) {
+QAccessible::Role qt_role(std::optional<uint8_t> role) noexcept {
+  if (!role.has_value()) return QAccessible::Grouping;
+  switch (*role) {
     case NVE_ARIA_ROLE_BUTTON: return QAccessible::Button;
     case NVE_ARIA_ROLE_LINK: return QAccessible::Link;
     case NVE_ARIA_ROLE_HEADING: return QAccessible::Heading;
@@ -198,11 +199,12 @@ NodeSemantics node_semantics(const host::NodeData& node) {
   s.disabled = node.interaction.disabled;
   s.hidden = a.hidden || node.visual.visibility == NVE_VISIBILITY_HIDDEN;
   s.focusable = node.interaction.focusable || node.kind == host::NodeKind::TextInput;
-  s.activatable = node.wants(NVE_EVENT_PRESS) || !node.href.empty();
+  s.activatable = node.wants(NVE_INTERACTION_EVENT_PRESS) || !node.href.empty();
   s.secure = node.input.secure || node.input.input_kind == NVE_INPUT_KIND_PASSWORD;
   s.multiline = node.input.multiline;
   s.read_only = node.input.read_only;
-  s.search = node.input.input_kind == NVE_INPUT_KIND_SEARCH || (a.present && a.role == NVE_ARIA_ROLE_SEARCH_BOX);
+  s.search = node.input.input_kind == NVE_INPUT_KIND_SEARCH ||
+             (a.present && a.role == static_cast<uint8_t>(NVE_ARIA_ROLE_SEARCH_BOX));
   return s;
 }
 
@@ -211,15 +213,15 @@ QAccessible::State accessible_state(const NodeSemantics& s) noexcept {
   st.disabled = s.disabled;
   st.invisible = s.hidden;
   st.focusable = s.focusable;
-  st.checkable = s.checked != NVE_ARIA_TRI_STATE_UNSET;
-  st.checked = s.checked == NVE_ARIA_TRI_STATE_TRUE;
-  st.checkStateMixed = s.checked == NVE_ARIA_TRI_STATE_MIXED;
-  st.selectable = s.selected != NVE_ARIA_TRI_STATE_UNSET;
-  st.selected = s.selected == NVE_ARIA_TRI_STATE_TRUE;
-  st.expandable = s.expanded != NVE_ARIA_TRI_STATE_UNSET;
-  st.expanded = s.expanded == NVE_ARIA_TRI_STATE_TRUE;
-  st.collapsed = s.expanded == NVE_ARIA_TRI_STATE_FALSE;
-  st.pressed = s.pressed == NVE_ARIA_TRI_STATE_TRUE;
+  st.checkable = s.checked.has_value();
+  st.checked = s.checked == static_cast<uint8_t>(NVE_ARIA_TRI_STATE_TRUE);
+  st.checkStateMixed = s.checked == static_cast<uint8_t>(NVE_ARIA_TRI_STATE_MIXED);
+  st.selectable = s.selected.has_value();
+  st.selected = s.selected == static_cast<uint8_t>(NVE_ARIA_TRI_STATE_TRUE);
+  st.expandable = s.expanded.has_value();
+  st.expanded = s.expanded == static_cast<uint8_t>(NVE_ARIA_TRI_STATE_TRUE);
+  st.collapsed = s.expanded == static_cast<uint8_t>(NVE_ARIA_TRI_STATE_FALSE);
+  st.pressed = s.pressed == static_cast<uint8_t>(NVE_ARIA_TRI_STATE_TRUE);
   const bool editable = s.role == QAccessible::EditableText;
   st.editable = editable && !s.read_only;
   st.readOnly = s.read_only;

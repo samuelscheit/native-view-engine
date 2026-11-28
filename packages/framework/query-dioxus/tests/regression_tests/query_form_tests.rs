@@ -7,6 +7,7 @@ use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
+use nve_abi::SurfaceId;
 use nve_backend_web::WebBackend;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
@@ -60,7 +61,7 @@ fn invalidated_query_failure_does_not_loop_and_retry_uses_sleep_backoff() {
         rsx! { text { "ITEM:{label}:ERR:{has_err}" } }
     }
 
-    let mut surface = DioxusSurface::new(1, Root).with_context((client.clone(), sleep));
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, Root).with_context((client.clone(), sleep));
     let mut web = WebBackend::new();
     let mut frame = 0;
     let waker = Waker::from(Arc::new(NoopFlagWaker(AtomicBool::new(false))));
@@ -129,7 +130,7 @@ fn multi_field_form_settles_without_loop_and_controller_swap_rebinds_cleanly() {
         }
     }
 
-    let mut surface = DioxusSurface::new(1, MultiFormRoot)
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, MultiFormRoot)
         .with_context(submitted_ctx)
         .with_context(Rc::clone(&ctrl_slot));
     let mut web = new_web_backend();
@@ -146,14 +147,9 @@ fn multi_field_form_settles_without_loop_and_controller_swap_rebinds_cleanly() {
     );
 
     let form_id = find_by_test_id(surface.store(), "multi-form");
-    let submit_ev = nve_abi::NativeEvent {
-        surface_id: 1,
-        node_id: form_id,
-        timestamp_us: 0,
-        kind: nve_abi::NativeEventKind::Submit,
-        payload: nve_abi::EventPayload::Text(String::new()),
-    };
-    assert!(surface.dispatch_events(std::slice::from_ref(&submit_ev)));
+    let mut submit_ev = nve_abi::EventBatchBuf::new();
+    submit_ev.push_submit(SurfaceId::ROOT, form_id, nve_abi::TimestampUs::ZERO, "");
+    assert!(surface.dispatch_events(submit_ev.as_validated()));
     let _ = render_once(&mut surface, &mut web, &mut frame);
     assert_eq!(*submitted.lock().unwrap(), vec!["first-a".to_owned()]);
 
@@ -170,7 +166,7 @@ fn multi_field_form_settles_without_loop_and_controller_swap_rebinds_cleanly() {
         ssr2.contains("value=\"swapped-a\""),
         "swapped controller value must render: {ssr2}"
     );
-    assert!(surface.dispatch_events(&[submit_ev]));
+    assert!(surface.dispatch_events(submit_ev.as_validated()));
     let _ = render_once(&mut surface, &mut web, &mut frame);
     assert_eq!(
         *submitted.lock().unwrap(),

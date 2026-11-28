@@ -12,6 +12,7 @@
 //! `disabled -> enabled`, `focused -> blurred`, `checked -> unchecked`, or `error -> valid`
 //! deterministically reset every prior property with zero stale styles.
 
+mod shadow;
 mod typed;
 
 use nve_dioxus::TypedStyle;
@@ -54,7 +55,7 @@ pub struct TextStyle<'a> {
 }
 
 /// Pre-allocated inline style builder producing canonical CSS/RN declarations accepted directly
-/// by `nve-components::apply_typed_attr_with_ext`, or convertible to [`TypedStyle`] via
+/// by `nve_tables::apply_css_attr_to_tx`, or convertible to [`TypedStyle`] via
 /// [`StyleBuf::into_typed`].
 #[derive(Debug, Clone, Default)]
 pub struct StyleBuf {

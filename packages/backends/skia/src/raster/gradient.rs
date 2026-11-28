@@ -4,10 +4,10 @@
 use std::borrow::Cow;
 
 use nve_abi::ColorRgba;
-use nve_components::paint::{
+use nve_tables::paint::{
     normalize_stops, sample_normalized_stops, stops_are_normalized, BackgroundFill, GradientStop,
 };
-use nve_components::transform::affine_inverse_map_point;
+use nve_tables::transform::affine_inverse_map_point;
 use nve_engine::LayoutRect;
 
 use super::clip::{rounded_rect_sdf, ClipStack};

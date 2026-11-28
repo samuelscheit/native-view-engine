@@ -4,6 +4,7 @@
  * Node's type stripping and by any bundler.
  */
 export * from './bin_codec.ts';
+export * from './event_batch.ts';
 export * from './generated/nve_abi.generated.ts';
 export * from './generated/nve_tables.generated.ts';
 export * from './hybrid_runtime.ts';

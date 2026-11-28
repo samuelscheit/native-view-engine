@@ -80,6 +80,43 @@ final class SceneBuilder {
     row[f.word] = (row[f.word] & ~mask & 0xFFFFFFFF) | ((value << f.shift) & mask);
   }
 
+  /// Writes an optional field's encoded bits according to [f.opt] (`null` clears it).
+  void optBits(TableShape shape, int index, FieldSpec f, int? value) {
+    switch (f.opt) {
+      case OptEncoding.required:
+      case OptEncoding.zeroNiche:
+        bits(shape, index, f, value ?? 0);
+      case OptEncoding.bit0Present:
+        bits(shape, index, f, value == null ? 0 : ((value << 1) | 1));
+      case OptEncoding.plusOne:
+        bits(shape, index, f, value == null ? 0 : value + 1);
+      case OptEncoding.wideBit:
+        if (value == null) {
+          bits(shape, index, f, 0);
+        } else {
+          bits(shape, index, f, 1);
+          _row(shape, index)[f.valWord] = value & 0xFFFFFFFF;
+        }
+      case OptEncoding.tagXor:
+        throw UnsupportedError('use length/gridLine helper for tagXor fields');
+    }
+  }
+
+  /// Writes a table's `EventSet` mask at [eventsWord] (attaching the table to [index]).
+  void events(TableShape shape, int index, int eventsWord, int mask) {
+    _row(shape, index)[eventsWord] = mask & 0xFFFFFFFF;
+  }
+
+  /// Writes the `__explicit` override bitmask (word 0) of an inherited table row for [fields].
+  void explicit(TableShape shape, int index, Iterable<FieldSpec> fields) {
+    var mask = 0;
+    for (final f in fields) {
+      assert(f.hasExplicitBit, 'field has no explicitBit');
+      mask |= 1 << f.explicitBit;
+    }
+    _row(shape, index)[0] = mask & 0xFFFFFFFF;
+  }
+
   void f32(TableShape shape, int index, FieldSpec f, double value) =>
       bits(shape, index, f, (ByteData(4)..setFloat32(0, value, Endian.little)).getUint32(0, Endian.little));
 
@@ -190,23 +227,15 @@ Future<Uint8List> rasterize(int width, int height, void Function(Canvas canvas) 
   return (rgba[off], rgba[off + 1], rgba[off + 2], rgba[off + 3]);
 }
 
-/// Minimal binary `NVE_DRAW1` encoder matching `packages/core/components/src/canvas_ir.rs`.
+/// Minimal binary flat `nve.res.draw_list` (`u32`-word) encoder matching
+/// `packages/modules/canvas/src/flat.rs`.
 class DrawListEncoder {
   DrawListEncoder() {
-    _bytes.add(nveDrawMagic);
-    _writeU16(nveDrawVersion);
-    _writeU32(0); // opCount placeholder
+    _writeU32(0); // word 0: opCount placeholder
   }
 
   final BytesBuilder _bytes = BytesBuilder(copy: false);
   int _opCount = 0;
-
-  void _writeU8(int v) => _bytes.addByte(v & 0xFF);
-
-  void _writeU16(int v) {
-    final bd = ByteData(2)..setUint16(0, v, Endian.little);
-    _bytes.add(bd.buffer.asUint8List());
-  }
 
   void _writeU32(int v) {
     final bd = ByteData(4)..setUint32(0, v, Endian.little);
@@ -219,13 +248,13 @@ class DrawListEncoder {
   }
 
   void clear(int rgba) {
-    _writeU8(NveDrawOpcode.clear);
+    _writeU32(NveDrawOpcode.clear);
     _writeU32(rgba);
     _opCount++;
   }
 
   void fillRect(double x, double y, double w, double h, int rgba) {
-    _writeU8(NveDrawOpcode.fillRect);
+    _writeU32(NveDrawOpcode.fillRect);
     _writeF32(x);
     _writeF32(y);
     _writeF32(w);
@@ -235,7 +264,7 @@ class DrawListEncoder {
   }
 
   void fillRoundedRect(double x, double y, double w, double h, double radius, int rgba) {
-    _writeU8(NveDrawOpcode.fillRoundedRect);
+    _writeU32(NveDrawOpcode.fillRoundedRect);
     _writeF32(x);
     _writeF32(y);
     _writeF32(w);
@@ -246,7 +275,7 @@ class DrawListEncoder {
   }
 
   void fillCircle(double cx, double cy, double radius, int rgba) {
-    _writeU8(NveDrawOpcode.fillCircle);
+    _writeU32(NveDrawOpcode.fillCircle);
     _writeF32(cx);
     _writeF32(cy);
     _writeF32(radius);
@@ -255,7 +284,7 @@ class DrawListEncoder {
   }
 
   void strokeLine(double x0, double y0, double x1, double y1, double width, int rgba) {
-    _writeU8(NveDrawOpcode.strokeLine);
+    _writeU32(NveDrawOpcode.strokeLine);
     _writeF32(x0);
     _writeF32(y0);
     _writeF32(x1);
@@ -266,7 +295,7 @@ class DrawListEncoder {
   }
 
   void strokePolyline(List<(double, double)> points, double width, int rgba) {
-    _writeU8(NveDrawOpcode.strokePolyline);
+    _writeU32(NveDrawOpcode.strokePolyline);
     _writeF32(width);
     _writeU32(rgba);
     _writeU32(points.length);
@@ -278,7 +307,7 @@ class DrawListEncoder {
   }
 
   void clipRect(double x, double y, double w, double h) {
-    _writeU8(NveDrawOpcode.clipRect);
+    _writeU32(NveDrawOpcode.clipRect);
     _writeF32(x);
     _writeF32(y);
     _writeF32(w);
@@ -287,13 +316,13 @@ class DrawListEncoder {
   }
 
   void restoreClip() {
-    _writeU8(NveDrawOpcode.restoreClip);
+    _writeU32(NveDrawOpcode.restoreClip);
     _opCount++;
   }
 
   Uint8List finish() {
     final out = _bytes.toBytes();
-    ByteData.sublistView(out).setUint32(11, _opCount, Endian.little);
+    ByteData.sublistView(out).setUint32(0, _opCount, Endian.little);
     return out;
   }
 }

@@ -2,10 +2,10 @@
 
 use crate::id::{NodeId, NodeIndex};
 use crate::store::{ANCESTOR_MARK, CHILD_SEEN, CHILDREN_DIRTY, NodeStore};
-use crate::tx::{Transaction, touch};
+use crate::tx::{touch, TxCore};
 use nve_abi::table::effect;
 
-impl Transaction<'_> {
+impl TxCore<'_> {
     #[inline]
     fn mark_children(&mut self, parent: NodeIndex) {
         let s = &mut *self.store;

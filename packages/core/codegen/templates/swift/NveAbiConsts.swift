@@ -5,5 +5,9 @@
 
 /// {{ spell::one_line(doc) }}
 {%- endif %}
+{%- if k.ty == "u64" %}
+public let {{ spell::camel(k.name) }}: UInt64 = {{ spell::uint64(k.value, k.hex) }}
+{%- else %}
 public let {{ spell::camel(k.name) }}: UInt32 = {{ spell::uint(k.value, k.hex) }}
+{%- endif %}
 {%- endfor %}

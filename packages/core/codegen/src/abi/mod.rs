@@ -3,7 +3,7 @@
 //! next to the static runtime it plugs into (`packages/core/host-{cxx,swift,java,dart,ts}`).
 //!
 //! Inputs are borrowed: `nve-abi`'s `const` [`AbiFileDescriptor`]s and the `&'static TableDesc`s of
-//! whichever table crate the caller links (`nve-cli` passes `nve_components::CORE_TABLE_DESCS`), so
+//! whichever table crate the caller links (`nve-cli` passes `nve_tables::CORE_TABLE_DESCS`), so
 //! this crate never depends on a table crate. Templates are checked by `rustc` at compile time.
 
 pub mod java_host;
@@ -11,6 +11,7 @@ pub mod jni_frame;
 pub mod layout;
 pub mod model;
 pub mod spell;
+pub mod tables;
 mod validate;
 
 use askama::Template;
@@ -22,9 +23,8 @@ use nve_abi::table::{TableDesc, ValueSetDesc};
 
 use crate::error::CodegenError;
 use crate::schema::export::GeneratedFile;
-use model::{
-    AbiModel, HashVector, RuntimeAbiModel, TableModel, hash_vectors, tables_model, value_sets,
-};
+use model::{AbiModel, HashVector, RuntimeAbiModel, hash_vectors};
+use tables::{TableModel, tables_model, value_sets};
 use jni_frame::JniFrameModel;
 use spell::{c, dart, swift, ts};
 

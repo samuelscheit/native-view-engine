@@ -1,16 +1,16 @@
 //! Unit tests for Progressive & Island DOM Hydration (`HydrateTrigger`,
 //! `IslandHydrationScheduler`, event capture + replay, and Studio Workspace SSR byte reduction).
 
-use nve_abi::{EventPayload, NativeEvent, NativeEventKind, NodeId};
+use nve_abi::{NodeId, SurfaceId, TimestampUs};
 use nve_backend_web::{
     CapturedPreHydrationEvent, MemorySnapshotStorage, WebBackend, WebSnapshotStore,
     PRE_HYDRATION_REPLAY_SCRIPT_TAG, SNAPSHOT_BOOTSTRAP_MAX_BYTES,
     WEB_SHELL_SNAPSHOT_BOOT_SCRIPT_TAG,
 };
-use nve_components::tables::{register_core_tables, DebugId};
+use nve_tables::tables::{register_core_tables, DebugId};
 use nve_engine::Viewport;
 use nve_example_kitchen_sink::{KITCHEN_SINK_STATE_MAGIC, KITCHEN_SINK_STATE_VERSION};
-use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
+use nve_store::{ChangeSet, NodeStore};
 use nve_studio_workspace::STUDIO_SNAPSHOT_SCHEMA_VERSION;
 use nve_web_html::{register_web_html_tables, HtmlDataAttrs};
 
@@ -49,7 +49,7 @@ fn island_scheduler_discovers_all_four_triggers_and_replays_interactions() {
     let mut changes = ChangeSet::default();
     {
         let mut tx = store.tx();
-        let root = StoreNodeId::ROOT;
+        let root = NodeId::ROOT;
         let _ = tx.create_at(root);
         let mut children = Vec::new();
         for (id, name, trigger) in [
@@ -59,7 +59,7 @@ fn island_scheduler_discovers_all_four_triggers_and_replays_interactions() {
             (5, "analytics-island", Some("idle")),
             (6, "default-load-island", None),
         ] {
-            let nid = StoreNodeId(id);
+            let nid = NodeId::new(id, 0);
             let _ = tx.create_at(nid);
             children.push(nid);
             let mut pairs = vec![("data-nve-island".to_owned(), name.to_owned())];
@@ -101,7 +101,7 @@ fn island_scheduler_discovers_all_four_triggers_and_replays_interactions() {
     let pre_focus = CapturedInteraction {
         island_id: "search-island".into(),
         event_type: "focusin".into(),
-        target_node_id: Some(4),
+        target_node_id: Some(NodeId::new(4, 0)),
         client_x: 0,
         client_y: 0,
         key: None,
@@ -110,7 +110,7 @@ fn island_scheduler_discovers_all_four_triggers_and_replays_interactions() {
     let click = CapturedInteraction {
         island_id: "search-island".into(),
         event_type: "click".into(),
-        target_node_id: Some(4),
+        target_node_id: Some(NodeId::new(4, 0)),
         client_x: 120,
         client_y: 44,
         key: None,
@@ -136,7 +136,7 @@ fn studio_workspace_frame0_ssr_achieves_massive_css_reduction_and_zero_mismatch_
         height: 800.0,
         scale_factor: 1.0,
     };
-    let mut server = WebAppSession::new_studio_workspace(1, WebBackend::new(), vp);
+    let mut server = WebAppSession::new_studio_workspace(SurfaceId::ROOT, WebBackend::new(), vp);
     server.render_initial().unwrap();
 
     let ssr = server.render_ssr();
@@ -148,7 +148,8 @@ fn studio_workspace_frame0_ssr_achieves_massive_css_reduction_and_zero_mismatch_
     );
 
     // Zero-flicker hydration over Studio Frame 0 must produce 0 mismatches & 0 duplicate rules.
-    let mut client = WebAppSession::new_studio_workspace(1, WebBackend::hydrate_from_ssr(&ssr), vp);
+    let mut client =
+        WebAppSession::new_studio_workspace(SurfaceId::ROOT, WebBackend::hydrate_from_ssr(&ssr), vp);
     client.render_initial().unwrap();
     let report = client.backend().hydration_report();
     assert!(report.hydrated);
@@ -197,7 +198,7 @@ fn find_node_by_testid(store: &NodeStore, testid: &str) -> Option<NodeId> {
         store
             .try_row::<DebugId>(id)
             .filter(|d| d.test_id() == testid)
-            .map(|_| id.raw())
+            .map(|_| id)
     })
 }
 
@@ -208,18 +209,14 @@ fn mutated_studio_canonical_snapshot_roundtrips_with_zero_mismatch_hydration_and
         height: 800.0,
         scale_factor: 1.0,
     };
-    let mut session1 = WebAppSession::new_studio_workspace(1, WebBackend::new(), vp);
+    let mut session1 = WebAppSession::new_studio_workspace(SurfaceId::ROOT, WebBackend::new(), vp);
     session1.render_initial().unwrap();
 
     // 1. Toggle AET-101 status -> Done (2)
     let status_btn = find_node_by_testid(session1.store(), "task-status-1")
         .expect("task-status-1 present on initial Board");
-    session1.backend_mut().push_event(NativeEvent {
-        surface_id: 1,
-        node_id: status_btn,
-        timestamp_us: 1,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 10.0, y: 10.0 },
+    session1.backend_mut().with_pending_events(|evs| {
+        evs.push_press(SurfaceId::ROOT, status_btn, TimestampUs(1), 10.0, 10.0);
     });
     session1.pump_events().unwrap();
     assert!(session1.render_html().contains("Done (2)"));
@@ -227,12 +224,8 @@ fn mutated_studio_canonical_snapshot_roundtrips_with_zero_mismatch_hydration_and
     // 2. Switch active view to Docs (`nav-docs`)
     let docs_btn = find_node_by_testid(session1.store(), "nav-docs")
         .expect("nav-docs present in sidebar");
-    session1.backend_mut().push_event(NativeEvent {
-        surface_id: 1,
-        node_id: docs_btn,
-        timestamp_us: 2,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 10.0, y: 10.0 },
+    session1.backend_mut().with_pending_events(|evs| {
+        evs.push_press(SurfaceId::ROOT, docs_btn, TimestampUs(2), 10.0, 10.0);
     });
     session1.pump_events().unwrap();
     assert!(session1.render_html().contains("RFC-042: Zero-Copy NveSceneView"));
@@ -270,7 +263,7 @@ fn mutated_studio_canonical_snapshot_roundtrips_with_zero_mismatch_hydration_and
     }]);
 
     let (mut session2, restored) = WebAppSession::new_studio_workspace_with_state(
-        1,
+        SurfaceId::ROOT,
         hydrated_backend,
         vp,
         Some(&cached_state),
@@ -299,7 +292,7 @@ fn mutated_studio_canonical_snapshot_roundtrips_with_zero_mismatch_hydration_and
 
     // Corrupt/truncated binary state falls back cleanly to default Board with zero panic.
     let (mut corrupt_session, corrupt_restored) = WebAppSession::new_studio_workspace_with_state(
-        1,
+        SurfaceId::ROOT,
         WebBackend::new(),
         vp,
         Some(b"NWS1-corrupt-truncated"),
@@ -312,19 +305,15 @@ fn mutated_studio_canonical_snapshot_roundtrips_with_zero_mismatch_hydration_and
 #[test]
 fn kitchen_sink_canonical_snapshot_roundtrips_binary_state_with_zero_mismatch_hydration() {
     let vp = Viewport::default();
-    let mut session1 = WebAppSession::new_kitchen_sink(1, WebBackend::new(), vp);
+    let mut session1 = WebAppSession::new_kitchen_sink(SurfaceId::ROOT, WebBackend::new(), vp);
     session1.render_initial().unwrap();
 
     let inc_btn = find_node_by_testid(session1.store(), "ks-counter-inc")
         .expect("ks-counter-inc button must exist in Kitchen Sink Frame 0");
 
     for i in 1..=3 {
-        session1.backend_mut().push_event(NativeEvent {
-            surface_id: 1,
-            node_id: inc_btn,
-            timestamp_us: i,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 10.0, y: 10.0 },
+        session1.backend_mut().with_pending_events(|evs| {
+            evs.push_press(SurfaceId::ROOT, inc_btn, TimestampUs(i), 10.0, 10.0);
         });
         session1.pump_events().unwrap();
     }
@@ -347,7 +336,7 @@ fn kitchen_sink_canonical_snapshot_roundtrips_binary_state_with_zero_mismatch_hy
     let cached_state = store.load_state().unwrap();
 
     let (mut session2, restored) = WebAppSession::new_kitchen_sink_with_state(
-        1,
+        SurfaceId::ROOT,
         WebBackend::hydrate_from_ssr(&cached_frame.to_ssr_output()),
         vp,
         Some(&cached_state),
@@ -372,5 +361,5 @@ fn extract_testid_node_id(html: &str, testid: &str) -> Option<NodeId> {
     let id_attr = "data-nve-id=\"";
     let id_pos = tag.find(id_attr)? + id_attr.len();
     let end = tag[id_pos..].find('"')?;
-    tag[id_pos..id_pos + end].parse().ok()
+    tag[id_pos..id_pos + end].parse::<u32>().ok().map(|i| NodeId::new(i, 0))
 }

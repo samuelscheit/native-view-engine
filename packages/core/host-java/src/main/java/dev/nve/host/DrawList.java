@@ -4,16 +4,17 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * Zero-copy {@code NVE_DRAW1} vector draw-list codec, byte-for-byte with
- * {@code packages/core/components/src/canvas_ir.rs}: one validator and one streaming decoder that
+ * Zero-copy {@code nve.res.draw_list} ({@code FlatResource}) vector draw-list codec, byte-for-byte
+ * with {@code packages/modules/canvas/src/flat.rs}: one validator and one streaming decoder that
  * every JVM renderer (Android {@code NveCanvasView}, Compose {@code NveDrawListPainter}) paints
  * through a {@link Sink}.
  *
- * <p>Wire layout (integers and IEEE-754 floats little-endian):
+ * <p>Wire layout (4-byte-aligned little-endian {@code u32} words; IEEE-754 {@code f32} bit patterns
+ * stored in {@code u32} words; total byte length {@code >= 4} and {@code (length & 3) == 0}):
  * <ul>
- *   <li>{@code [0..9)} ASCII magic {@code "NVE_DRAW1"}, {@code [9..11)} {@code u16} version
- *       ({@code 1}), {@code [11..15)} {@code u32} op count ({@code <= MAX_DRAW_OPS})
- *   <li>{@code [15..)} tagged ops: {@code 1 Clear{rgba}}, {@code 2 FillRect{x,y,w,h,rgba}},
+ *   <li>Word 0 ({@code [0..4)}): {@code u32} op count ({@code <= MAX_DRAW_OPS})
+ *   <li>Word 1+ ({@code [4..)}): {@code opCount} ops, each starting with a 4-byte {@code u32}
+ *       opcode: {@code 1 Clear{rgba}}, {@code 2 FillRect{x,y,w,h,rgba}},
  *       {@code 3 FillRoundedRect{x,y,w,h,radius,rgba}}, {@code 4 FillCircle{cx,cy,radius,rgba}},
  *       {@code 5 StrokeLine{x0,y0,x1,y1,width,rgba}},
  *       {@code 6 StrokePolyline{width,rgba,count,(x,y)[count]}}, {@code 7 ClipRect{x,y,w,h}},
@@ -26,8 +27,10 @@ import java.nio.ByteOrder;
 public final class DrawList {
     private DrawList() {}
 
-    public static final int HEADER_SIZE = 15;
-    public static final int FORMAT_VERSION = 1;
+    /** Resource kind of vector draw lists ({@code nve.res.draw_list}). */
+    public static final Key64 KIND = Key64.of("nve.res.draw_list");
+
+    public static final int HEADER_SIZE = 4;
     public static final int MAX_DRAW_OPS = 65_536;
     public static final int MAX_POLYLINE_POINTS = 16_384;
 
@@ -40,13 +43,9 @@ public final class DrawList {
     public static final int OP_CLIP_RECT = 7;
     public static final int OP_RESTORE_CLIP = 8;
 
-    private static final byte[] MAGIC = {'N', 'V', 'E', '_', 'D', 'R', 'A', 'W', '1'};
-
     /** Why {@link #validate} rejected a draw list. */
     public enum Error {
         TRUNCATED,
-        BAD_MAGIC,
-        UNSUPPORTED_VERSION,
         OP_COUNT_EXCEEDS_LIMIT,
         POLYLINE_POINTS_EXCEEDS_LIMIT,
         UNKNOWN_OPCODE,
@@ -83,40 +82,28 @@ public final class DrawList {
         void onRestoreClip();
     }
 
-    /**
-     * {@code true} when {@code buf[offset .. offset + length)} lies inside {@code buf}'s limit,
-     * holds a full header, and starts with the magic (overflow-safe for any int arguments).
-     */
-    public static boolean hasMagic(ByteBuffer buf, int offset, int length) {
-        if (!inBounds(buf, offset, length) || length < HEADER_SIZE) return false;
-        for (int i = 0; i < MAGIC.length; i++) {
-            if (buf.get(offset + i) != MAGIC[i]) return false;
-        }
-        return true;
-    }
-
     /** Validates {@code bytes} whole; {@code null} when it is a well-formed draw list. */
     public static Error validate(byte[] bytes) {
+        if (bytes == null) return Error.TRUNCATED;
         return validate(ByteBuffer.wrap(bytes), 0, bytes.length);
     }
 
     /**
-     * Strict validation of {@code buf[offset .. offset + length)}: bounds, magic, version, op and
-     * polyline-point limits, known opcodes, finite floats, and no trailing bytes. {@code null}
-     * when well-formed.
+     * Strict validation of {@code buf[offset .. offset + length)}: bounds, 4-byte-aligned word
+     * header and ops, op and polyline-point limits, known {@code u32} opcodes, finite floats, and
+     * no trailing bytes. {@code null} when well-formed.
      */
     public static Error validate(ByteBuffer buf, int offset, int length) {
         if (!inBounds(buf, offset, length) || length < HEADER_SIZE) return Error.TRUNCATED;
-        if (!hasMagic(buf, offset, length)) return Error.BAD_MAGIC;
-        if (u16(buf, offset + 9) != FORMAT_VERSION) return Error.UNSUPPORTED_VERSION;
-        final long opCount = u32(buf, offset + 11);
+        final long opCount = u32(buf, offset);
         if (opCount > MAX_DRAW_OPS) return Error.OP_COUNT_EXCEEDS_LIMIT;
         final int end = offset + length;
         int pos = offset + HEADER_SIZE;
-        if (end - pos < opCount) return Error.TRUNCATED;  // every op is at least its tag byte
+        if (end - pos < opCount * 4L) return Error.TRUNCATED;  // every op is at least its u32 opcode word
         for (long i = 0; i < opCount; i++) {
-            if (pos >= end) return Error.TRUNCATED;
-            final int op = buf.get(pos++) & 0xFF;
+            if (end - pos < 4) return Error.TRUNCATED;
+            final int op = i32(buf, pos);
+            pos += 4;
             final int floats;
             final int size;
             switch (op) {
@@ -162,12 +149,13 @@ public final class DrawList {
      * {@link #validate}d these exact bytes (e.g. once when they were copied, then on every paint).
      */
     public static void streamValidated(ByteBuffer buf, int offset, Sink sink) {
-        final int opCount = (int) u32(buf, offset + 11);
+        final int opCount = (int) u32(buf, offset);
         int pos = offset + HEADER_SIZE;
         int clips = 0;
         try {
             for (int i = 0; i < opCount; i++) {
-                final int op = buf.get(pos++) & 0xFF;
+                final int op = i32(buf, pos);
+                pos += 4;
                 switch (op) {
                     case OP_CLEAR:
                         sink.onClear(i32(buf, pos));
@@ -223,11 +211,6 @@ public final class DrawList {
 
     private static boolean inBounds(ByteBuffer buf, int offset, int length) {
         return buf != null && offset >= 0 && length >= 0 && length <= buf.limit() - offset;
-    }
-
-    private static int u16(ByteBuffer b, int p) {
-        final short v = b.getShort(p);
-        return (b.order() == ByteOrder.LITTLE_ENDIAN ? v : Short.reverseBytes(v)) & 0xFFFF;
     }
 
     private static int i32(ByteBuffer b, int p) {

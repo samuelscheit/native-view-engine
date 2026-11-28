@@ -2,10 +2,10 @@
 //! publication: no box, so no rect, transform, scroll port, clip, or box paint, while events on
 //! its descendants' boxes still bubble to it.
 
-use nve_abi::{ColorRgba, EventMask};
-use nve_components::interaction::{InteractionState, StateStyleRule};
-use nve_components::style_patch::StylePatch;
-use nve_components::tables::{
+use nve_abi::{ColorRgba, EventSet, InteractionEvent, SurfaceId};
+use nve_tables::interaction::{InteractionState, StateStyleRule};
+use nve_tables::{RowPatch, StylePatchExt};
+use nve_tables::tables::{
     Display, FlexDirection, Interaction, Layout, Overflow, Position, StateRules, Transform,
     Visibility, Visual, core_realization_order,
 };
@@ -42,7 +42,7 @@ fn sized(tx: &mut Transaction<'_>, w: f32, h: f32) -> NodeId {
 
 fn press(tx: &mut Transaction<'_>, id: NodeId) {
     tx.edit::<Interaction>(id)
-        .event_mask(EventMask::PRESS as u32);
+        .listeners(EventSet::one(InteractionEvent::Press));
 }
 
 fn fixture() -> Fixture {
@@ -72,7 +72,7 @@ fn fixture() -> Fixture {
     tx.set_children(wrapper, &[plain, pressable]);
     tx.commit_into(&mut changes);
     let mut backend = HeadlessBackend::new();
-    backend.set_viewport(1, VP);
+    backend.set_viewport(SurfaceId::ROOT, VP);
     assert!(backend.commit(&store, &changes).is_ok());
     Fixture {
         store,
@@ -91,26 +91,26 @@ fn events_on_descendant_boxes_bubble_to_a_contents_node() {
     // `plain` (no handler) at (20, 10): the hit bubbles to the box-less wrapper.
     assert_eq!(
         f.backend.hit_test(&f.store, 30.0, 15.0),
-        Some(f.wrapper.raw())
+        Some(f.wrapper)
     );
     // `pressable` handles its own hits.
     assert_eq!(
         f.backend.hit_test(&f.store, 80.0, 15.0),
-        Some(f.pressable.raw())
+        Some(f.pressable)
     );
     // Inside `row` but on no box of the wrapper's subtree: nothing (the wrapper has no box).
     assert_eq!(f.backend.hit_test(&f.store, 200.0, 15.0), None);
     // Interaction-state hit testing shares the walk.
     assert_eq!(
         f.backend.hit_test_interaction(&f.store, 30.0, 15.0),
-        Some(f.wrapper.raw())
+        Some(f.wrapper)
     );
 
     // A stale scroll offset on the wrapper is ignored (no scroll port).
-    f.backend.set_scroll_offset(f.wrapper.raw(), 500.0, 500.0);
+    f.backend.set_scroll_offset(f.wrapper, 500.0, 500.0);
     assert_eq!(
         f.backend.hit_test(&f.store, 30.0, 15.0),
-        Some(f.wrapper.raw())
+        Some(f.wrapper)
     );
 
     // A hidden descendant box covers nothing, so nothing bubbles.
@@ -127,10 +127,10 @@ fn contents_nodes_have_no_box_paint_or_clip() {
     let f = fixture();
     // `display: contents` boxes paint nothing and never clip, so hosts realize no view for them.
     for id in [f.wrapper, f.row] {
-        assert!(nve_components::tables::box_visual(&f.store, id).is_none(), "{id:?} paints a box");
-        assert!(!nve_components::tables::node_clips_overflow(&f.store, id), "{id:?} clips");
+        assert!(nve_tables::tables::box_visual(&f.store, id).is_none(), "{id:?} paints a box");
+        assert!(!nve_tables::tables::node_clips_overflow(&f.store, id), "{id:?} clips");
     }
-    let wrapper = f.backend.layout_of(f.wrapper.raw()).expect("wrapper laid out");
+    let wrapper = f.backend.layout_of(f.wrapper).expect("wrapper laid out");
     assert_eq!((wrapper.x, wrapper.y, wrapper.width, wrapper.height), (20.0, 10.0, 0.0, 0.0));
 }
 
@@ -148,7 +148,7 @@ fn sticky_geometry_skips_contents_ancestors() {
         .inset_top(Length::points(0.0));
     tx.commit_into(&mut f.changes);
     assert!(f.backend.commit(&f.store, &f.changes).is_ok());
-    f.backend.set_scroll_offset(row.raw(), 0.0, 15.0);
+    f.backend.set_scroll_offset(row, 0.0, 15.0);
 
     // A contents node never sticks.
     assert_eq!(
@@ -166,7 +166,7 @@ fn hover_state_rules_and_transforms_never_give_a_contents_node_a_box() {
     let wrapper = f.wrapper;
     let mut tx = f.store.tx();
     let hover_text = ColorRgba::rgb(220, 38, 38);
-    let hover = StylePatch::new()
+    let hover = RowPatch::new()
         .bg(ColorRgba::rgb(30, 64, 175))
         .opacity(0.0)
         .text_color(hover_text);
@@ -181,7 +181,7 @@ fn hover_state_rules_and_transforms_never_give_a_contents_node_a_box() {
     let _ = f.backend.dispatch_pointer_move(&f.store, 30.0, 15.0);
     assert!(
         f.backend
-            .interaction_state(wrapper.raw())
+            .interaction_state(wrapper)
             .contains(InteractionState::HOVER)
     );
     let visual = f.backend.effective_visual(&f.store, wrapper);
@@ -209,7 +209,7 @@ fn hits_bubble_through_hidden_contents_ancestors() {
     // `plain` is visible again inside the hidden wrapper: its hit bubbles to the wrapper.
     assert_eq!(
         f.backend.hit_test(&f.store, 30.0, 15.0),
-        Some(wrapper.raw())
+        Some(wrapper)
     );
 }
 
@@ -229,15 +229,15 @@ fn hits_on_overflowing_children_bubble_to_unclipped_boxes_only() {
     tx.set_children(parent, &[child]);
     tx.commit_into(&mut changes);
     let mut backend = HeadlessBackend::new();
-    backend.set_viewport(1, VP);
+    backend.set_viewport(SurfaceId::ROOT, VP);
     assert!(backend.commit(&store, &changes).is_ok());
     assert_eq!(
-        backend.layout_of(child.raw()).map(|r| (r.y, r.height)),
+        backend.layout_of(child).map(|r| (r.y, r.height)),
         Some((40.0, 20.0))
     );
     // `child` overflows `parent` (y 40..60): its hit bubbles to the parent's handler.
-    assert_eq!(backend.hit_test(&store, 10.0, 50.0), Some(parent.raw()));
-    assert_eq!(backend.hit_test(&store, 10.0, 10.0), Some(parent.raw()));
+    assert_eq!(backend.hit_test(&store, 10.0, 50.0), Some(parent));
+    assert_eq!(backend.hit_test(&store, 10.0, 10.0), Some(parent));
     assert_eq!(backend.hit_test(&store, 80.0, 50.0), None);
 
     let mut tx = store.tx();
@@ -278,7 +278,7 @@ impl OverlayFixture {
         arrange(&mut tx, stack, under, overlay);
         tx.commit_into(&mut changes);
         let mut backend = HeadlessBackend::new();
-        backend.set_viewport(1, VP);
+        backend.set_viewport(SurfaceId::ROOT, VP);
         assert!(backend.commit(&store, &changes).is_ok());
         Self {
             store,
@@ -327,12 +327,12 @@ fn a_handler_less_overlay_occludes_siblings_painted_below_it() {
     // Covered by the overlay: nothing below it receives the hit.
     assert_eq!(f.hit(10.0, 10.0), None);
     // Beside the overlay: `under` is exposed.
-    assert_eq!(f.hit(150.0, 10.0), Some(under.raw()));
+    assert_eq!(f.hit(150.0, 10.0), Some(under));
 
     // The covered hit bubbles from the overlay to its ancestors, never sideways.
     f.edit(|tx| press(tx, stack));
-    assert_eq!(f.hit(10.0, 10.0), Some(stack.raw()));
-    assert_eq!(f.hit(150.0, 10.0), Some(under.raw()));
+    assert_eq!(f.hit(10.0, 10.0), Some(stack));
+    assert_eq!(f.hit(150.0, 10.0), Some(under));
 
     // `z-index` reorders painting, and so occlusion: raised above the overlay, `under` is hit
     // through it; a negative level drops the overlay below `under` the same way.
@@ -341,7 +341,7 @@ fn a_handler_less_overlay_occludes_siblings_painted_below_it() {
             tx.edit::<Visual>(node).z_index(z);
         });
         let expected = if z == 0 { stack } else { under };
-        assert_eq!(f.hit(10.0, 10.0), Some(expected.raw()), "{node:?} at z {z}");
+        assert_eq!(f.hit(10.0, 10.0), Some(expected), "{node:?} at z {z}");
     }
 }
 
@@ -354,7 +354,7 @@ fn an_invisible_overlay_occludes_nothing() {
     f.edit(|tx| {
         tx.edit::<Visual>(overlay).visibility(Visibility::Hidden);
     });
-    assert_eq!(f.hit(10.0, 10.0), Some(under.raw()));
+    assert_eq!(f.hit(10.0, 10.0), Some(under));
 }
 
 #[test]
@@ -364,12 +364,12 @@ fn an_overlay_in_a_contents_wrapper_bubbles_to_the_wrapper_never_to_a_lower_sibl
         wrapper = contents_wrapper(tx, overlay);
         tx.set_children(stack, &[under, wrapper]);
     });
-    assert_eq!(f.hit(10.0, 10.0), Some(wrapper.raw()));
-    assert_eq!(f.hit(150.0, 10.0), Some(f.under.raw()));
+    assert_eq!(f.hit(10.0, 10.0), Some(wrapper));
+    assert_eq!(f.hit(150.0, 10.0), Some(f.under));
 
     // Without the wrapper's handler the hit still stops at the overlay.
     f.edit(|tx| {
-        tx.edit::<Interaction>(wrapper).event_mask(0);
+        tx.edit::<Interaction>(wrapper).listeners(EventSet::EMPTY);
     });
     assert_eq!(f.hit(10.0, 10.0), None);
 }
@@ -386,7 +386,7 @@ fn a_contents_wrapper_z_index_never_reorders_its_children() {
     f.edit(|tx| {
         tx.edit::<Visual>(wrapper).z_index(-1);
     });
-    assert_eq!(f.hit(10.0, 10.0), Some(wrapper.raw()));
+    assert_eq!(f.hit(10.0, 10.0), Some(wrapper));
 
     // Painted first, the wrapped overlay stays below `under` despite `z_index: 1`.
     let mut wrapper = NodeId::ROOT;
@@ -395,10 +395,10 @@ fn a_contents_wrapper_z_index_never_reorders_its_children() {
         tx.edit::<Visual>(wrapper).z_index(1);
         tx.set_children(stack, &[wrapper, under]);
     });
-    assert_eq!(f.hit(10.0, 10.0), Some(f.under.raw()));
+    assert_eq!(f.hit(10.0, 10.0), Some(f.under));
     assert_eq!(
         f.hit(10.0, 70.0),
-        Some(wrapper.raw()),
+        Some(wrapper),
         "below `under`, the overlay is exposed"
     );
 }
@@ -449,10 +449,10 @@ fn long_mixed_z_sibling_lists_hit_the_topmost_box_through_nested_scratch() {
     tx.set_children(stack, &children);
     tx.commit_into(&mut changes);
     let mut backend = HeadlessBackend::new();
-    backend.set_viewport(1, VP);
+    backend.set_viewport(SurfaceId::ROOT, VP);
     assert!(backend.commit(&store, &changes).is_ok());
 
-    let topmost = Some(children[1 + 89].raw());
+    let topmost = Some(children[1 + 89]);
     for query in 0..2 {
         assert_eq!(backend.hit_test(&store, 5.0, 5.0), topmost, "query {query}");
         assert_eq!(backend.hit_test_interaction(&store, 5.0, 5.0), topmost);
@@ -465,7 +465,7 @@ fn long_mixed_z_sibling_lists_hit_the_topmost_box_through_nested_scratch() {
     let inner_top = (0..100)
         .filter(|j| j % 10 == 0)
         .max_by_key(|&j| ((j * 5) % 11, j))
-        .map(|j| inner[j].raw());
+        .map(|j| inner[j]);
     assert_eq!(
         backend.hit_test(&store, inner_point.0, inner_point.1),
         inner_top
@@ -514,9 +514,9 @@ fn a_max_depth_chain_hit_tests_on_a_small_stack() {
             press(&mut tx, parent);
             tx.commit_into(&mut changes);
             let mut backend = HeadlessBackend::with_layout(UniformRects);
-            backend.set_viewport(1, VP);
+            backend.set_viewport(SurfaceId::ROOT, VP);
             assert!(backend.commit(&store, &changes).is_ok());
-            (backend.hit_test(&store, 5.0, 5.0), parent.raw())
+            (backend.hit_test(&store, 5.0, 5.0), parent)
         })
         .expect("spawn")
         .join()

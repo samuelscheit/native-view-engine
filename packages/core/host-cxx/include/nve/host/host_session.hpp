@@ -2,16 +2,18 @@
 //
 // `HostSession` owns a `RuntimeSession`, the app it runs (an in-process `nve_get_interface`, a
 // runtime-loaded `cdylib` with state-preserving hot reload, or a paired remote via `pair_connect`),
-// the wake marshaling to the host's UI thread, typed input-event dispatch, and app-state files
-// (the runtime's checksummed, crash-atomic `StateFile`).
+// the wake marshaling to the host's UI thread, typed 64-byte `NveEvent` input dispatch, and
+// app-state files (the runtime's checksummed, crash-atomic `StateFile`).
 // Every call except `post_wake` runs on the thread that created the session (the runtime's owner
 // thread); a host drives it with `pump()` from its UI loop whenever the wake callback fires.
 #pragma once
 
+#include <bit>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -45,47 +47,71 @@ enum class ModuleError : uint8_t {
   }
 }
 
-/// Builds `NveDirectEvent`s for one surface (payloads follow `NveEventPayloadTag`).
+/// Builds uniform 64-byte pointer-free `NveEvent`s for one surface.
 struct EventFactory {
   uint32_t surface_id = 1u;
 
-  [[nodiscard]] NveDirectEvent base(uint32_t node_id, NveEventKind kind, NveEventPayloadTag tag) const noexcept {
-    NveDirectEvent ev{};
-    ev.surface_id = surface_id;
-    ev.node_id = node_id;
-    ev.timestamp_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-                                                std::chrono::steady_clock::now().time_since_epoch())
-                                                .count());
-    ev.kind = static_cast<uint8_t>(kind);
-    ev.payload_tag = static_cast<uint8_t>(tag);
-    ev.value.tag = NVE_VAL_NULL;
+  [[nodiscard]] static uint64_t now_us() noexcept {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                     std::chrono::steady_clock::now().time_since_epoch())
+                                     .count());
+  }
+
+  [[nodiscard]] NveEvent base(uint64_t table, uint32_t node_id, uint32_t event_id, uint32_t flags = 0u) const noexcept {
+    NveEvent ev{};
+    ev.timestamp = now_us();
+    ev.table = table;
+    ev.surface = surface_id;
+    ev.node = node_id;
+    ev.event = event_id;
+    ev.flags = flags;
     return ev;
   }
-  /// Point event (`Press`, `Pointer*`) at node-local `(x, y)`.
-  [[nodiscard]] NveDirectEvent pointer(uint32_t node, NveEventKind kind, float x, float y) const noexcept {
-    NveDirectEvent ev = base(node, kind, NVE_EVENT_PAYLOAD_POINT);
-    ev.x = x;
-    ev.y = y;
+
+  /// Pointer event (`Press`, `LongPress`, `Pointer*`) at node-local `(x, y)`.
+  [[nodiscard]] NveEvent pointer(uint32_t node, NveInteractionEvent kind, float x, float y, uint32_t pointer_id = 0u,
+                                 uint32_t flags = 0u) const noexcept {
+    NveEvent ev = base(NVE_TABLE_INTERACTION, node, static_cast<uint32_t>(kind), flags & ~kEventInternalFramingMask);
+    ev.payload[0] = std::bit_cast<uint32_t>(x);
+    ev.payload[1] = std::bit_cast<uint32_t>(y);
+    ev.payload[2] = pointer_id;
     return ev;
   }
-  [[nodiscard]] NveDirectEvent press(uint32_t node, float x, float y) const noexcept {
-    return pointer(node, NVE_EVENT_PRESS, x, y);
+
+  [[nodiscard]] NveEvent press(uint32_t node, float x, float y) const noexcept {
+    return pointer(node, NVE_INTERACTION_EVENT_PRESS, x, y);
   }
-  /// `text` must outlive the dispatch.
-  [[nodiscard]] NveDirectEvent text(uint32_t node, NveEventKind kind, std::string_view text) const noexcept {
-    NveDirectEvent ev = base(node, kind, NVE_EVENT_PAYLOAD_TEXT);
-    ev.text = NveStrSlice{reinterpret_cast<const uint8_t*>(text.data()), text.size()};
+
+  [[nodiscard]] NveEvent long_press(uint32_t node, float x, float y) const noexcept {
+    return pointer(node, NVE_INTERACTION_EVENT_LONG_PRESS, x, y);
+  }
+
+  [[nodiscard]] NveEvent focus(uint32_t node, bool focused) const noexcept {
+    return base(NVE_TABLE_INTERACTION, node, focused ? NVE_INTERACTION_EVENT_FOCUS : NVE_INTERACTION_EVENT_BLUR);
+  }
+
+  [[nodiscard]] NveEvent wheel(uint32_t node, float delta_x, float delta_y, uint32_t flags = 0u) const noexcept {
+    NveEvent ev = base(NVE_TABLE_INTERACTION, node, NVE_INTERACTION_EVENT_WHEEL, flags & ~kEventInternalFramingMask);
+    ev.payload[0] = std::bit_cast<uint32_t>(delta_x);
+    ev.payload[1] = std::bit_cast<uint32_t>(delta_y);
     return ev;
   }
-  [[nodiscard]] NveDirectEvent focus(uint32_t node, bool focused) const noexcept {
-    return base(node, focused ? NVE_EVENT_FOCUS : NVE_EVENT_BLUR, NVE_EVENT_PAYLOAD_EMPTY);
+
+  [[nodiscard]] NveEvent scroll(uint32_t node, float x, float y, float content_w, float content_h) const noexcept {
+    NveEvent ev = base(NVE_TABLE_SCROLL, node, NVE_SCROLL_EVENT_SCROLL);
+    ev.payload[0] = std::bit_cast<uint32_t>(x);
+    ev.payload[1] = std::bit_cast<uint32_t>(y);
+    ev.payload[2] = std::bit_cast<uint32_t>(content_w);
+    ev.payload[3] = std::bit_cast<uint32_t>(content_h);
+    return ev;
   }
-  [[nodiscard]] NveDirectEvent scroll(uint32_t node, float x, float y, float content_w, float content_h) const noexcept {
-    NveDirectEvent ev = base(node, NVE_EVENT_SCROLL, NVE_EVENT_PAYLOAD_SCROLL);
-    ev.x = x;
-    ev.y = y;
-    ev.width = content_w;
-    ev.height = content_h;
+
+  [[nodiscard]] NveEvent layout(uint32_t node, float x, float y, float width, float height) const noexcept {
+    NveEvent ev = base(NVE_TABLE_LAYOUT, node, NVE_LAYOUT_EVENT_LAYOUT);
+    ev.payload[0] = std::bit_cast<uint32_t>(x);
+    ev.payload[1] = std::bit_cast<uint32_t>(y);
+    ev.payload[2] = std::bit_cast<uint32_t>(width);
+    ev.payload[3] = std::bit_cast<uint32_t>(height);
     return ev;
   }
 };
@@ -94,8 +120,8 @@ class HostSession {
  public:
   /// Posts "call `pump()` soon" to the host UI thread. Invoked on ANY thread; must not block.
   using WakePoster = std::function<void()>;
-  /// Receives the app's outbound (`NveComponentApi::drain_emitted_events`) events after each pump.
-  using EventSink = std::function<void(std::span<const NveDirectEvent>)>;
+  /// Receives the app's outbound (`NveComponentApi::drain_emitted_events`) batch after each pump.
+  using EventSink = std::function<void(NveEventBatch)>;
 
   /// Creates a runtime surface (`libnve_runtime` linked into the host).
   [[nodiscard]] static std::unique_ptr<HostSession> create(const NveRuntimeConfig& cfg, std::string* out_error = nullptr) {
@@ -178,7 +204,7 @@ class HostSession {
   /// outbound events; `true` when the scene changed.
   ///
   /// The sink may re-enter the session (dispatch, pump, attach, reload, `set_event_sink`): it
-  /// gets an owned deep copy of the batch that no nested pump reuses, through a copy of the sink
+  /// gets an owned copy of the batch that no nested pump reuses, through a copy of the sink
   /// that replacing it cannot destroy mid-call. It may even destroy the session: `pump` (and the
   /// `dispatch` / `set_props` / `apply_hot_patch` that called it) then touches no member again.
   /// Steady state allocates nothing: the batch slabs are reused.
@@ -186,12 +212,13 @@ class HostSession {
     bool changed = false;
     const bool ok = runtime_.tick(dt_s, &changed) == NVE_RUNTIME_OK;
     NveEventBatch out{};
-    if (sink_ && runtime_.drain_emitted_events(&out) == NVE_RUNTIME_OK && out.ptr != nullptr && out.len != 0u) {
+    if (sink_ && runtime_.drain_emitted_events(&out) == NVE_RUNTIME_OK && out.events != nullptr &&
+        out.event_count != 0u) {
       OwnedEvents batch = std::exchange(drained_, OwnedEvents{});  // a nested pump gets its own
-      batch.assign(std::span<const NveDirectEvent>(out.ptr, out.len));
+      batch.assign(out);
       const std::shared_ptr<bool> alive = alive_;
       const std::shared_ptr<const EventSink> sink = sink_;  // survives `set_event_sink` / `~HostSession`
-      (*sink)(batch.events());
+      (*sink)(batch.batch());
       if (!*alive) return ok && changed;  // the sink destroyed the session
       batch.clear();
       drained_ = std::move(batch);  // keeps the slabs' capacity for the next batch
@@ -217,11 +244,56 @@ class HostSession {
     return changed;
   }
 
-  /// Dispatches one event and pumps; `true` when the scene changed.
-  bool dispatch(const NveDirectEvent& ev) {
+  /// Dispatches one event batch and pumps; `true` when the scene changed.
+  bool dispatch(NveEventBatch batch) {
     bool changed = false;
-    if (runtime_.dispatch_events(NveEventBatch{&ev, 1u, 0u}, &changed) != NVE_RUNTIME_OK) return false;
+    if (runtime_.dispatch_events(batch, &changed) != NVE_RUNTIME_OK) return false;
     return pump() || changed;
+  }
+
+  /// Dispatches an `OwnedEvents` batch and pumps; `true` when the scene changed.
+  bool dispatch(const OwnedEvents& batch) { return dispatch(batch.batch()); }
+
+  /// Dispatches one byte-free event (`press`, `pointer`, `focus`, `wheel`, `scroll`, `layout`)
+  /// with 64-byte stack alignment (zero heap allocations) and pumps.
+  bool dispatch(const NveEvent& ev) {
+    alignas(NVE_EVENT_ALIGN) const NveEvent aligned = ev;
+    return dispatch(NveEventBatch{&aligned, nullptr, 1u, 0u});
+  }
+
+  /// Dispatches one UTF-8 `TextInput` event (`Change`, `Submit`, `Composition*`) zero-alloc and pumps.
+  bool dispatch_text(uint32_t node, NveTextInputEvent kind, std::string_view text) {
+    if (text.size() > std::numeric_limits<uint32_t>::max()) return false;
+    alignas(NVE_EVENT_ALIGN) NveEvent ev =
+        events_.base(NVE_TABLE_TEXT_INPUT, node, static_cast<uint32_t>(kind), NVE_EVENT_FLAG_UTF8_BYTES);
+    const auto len = static_cast<uint32_t>(text.size());
+    ev.bytes = RawEventBytes{0u, len};
+    return dispatch(NveEventBatch{&ev, len != 0u ? reinterpret_cast<const uint8_t*>(text.data()) : nullptr, 1u, len});
+  }
+
+  /// Dispatches one keyboard event (`KeyDown` / `KeyUp`) and pumps; zero-alloc for `key <= 16 B`.
+  bool dispatch_key(uint32_t node, NveInteractionEvent kind, std::string_view key, std::string_view code = {},
+                    uint32_t flags = 0u, uint32_t key_code = 0u) {
+    if (key.size() <= NVE_EVENT_INLINE_KEY_CAP && code.size() <= std::numeric_limits<uint32_t>::max()) {
+      alignas(NVE_EVENT_ALIGN) NveEvent ev = events_.base(NVE_TABLE_INTERACTION, node, static_cast<uint32_t>(kind));
+      ev.payload[0] = key_code;
+      (void)pack_inline_key(ev.payload, key);
+      const auto clen = static_cast<uint32_t>(code.size());
+      ev.flags = (flags & ~kEventInternalFramingMask) | NVE_EVENT_FLAG_INLINE_KEY_UTF8 |
+                 (clen != 0u ? NVE_EVENT_FLAG_UTF8_BYTES : 0u);
+      ev.bytes = RawEventBytes{0u, clen};
+      return dispatch(NveEventBatch{&ev, clen != 0u ? reinterpret_cast<const uint8_t*>(code.data()) : nullptr, 1u, clen});
+    }
+    OwnedEvents tmp;
+    if (!tmp.push_key(events_.surface_id, node, EventFactory::now_us(), kind, key, code, flags, key_code)) return false;
+    return dispatch(tmp);
+  }
+
+  /// Dispatches one `nve.custom` named event and pumps.
+  bool dispatch_custom(uint32_t node, std::string_view name, std::span<const uint8_t> data = {}) {
+    OwnedEvents tmp;
+    if (!tmp.push_custom(events_.surface_id, node, EventFactory::now_us(), name, data)) return false;
+    return dispatch(tmp);
   }
 
   /// The app's `NveDevApi::snapshot_state` bytes (empty when unsupported).

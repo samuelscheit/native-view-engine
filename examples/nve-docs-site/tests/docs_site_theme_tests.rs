@@ -2,9 +2,9 @@
 //! browser, native module), the user's mode shared with the host across rebuilds, appearance-correct
 //! static SSR, and rendered text contrast on real pages in all four polarities.
 
-use nve_abi::NodeId;
+use nve_abi::{EventBatchBuf, FrameId, NodeId, SurfaceId, TimestampUs};
 use nve_backend_headless::HeadlessBackend;
-use nve_components::tables::DebugId;
+use nve_tables::tables::DebugId;
 use nve_dioxus::DioxusSurface;
 use nve_docs::DocsViewport;
 use nve_docs_site::ssr::{APPEARANCE_STYLE_ATTR, THEME_MODE_BOOT_SCRIPT, appearance_overrides, appearance_token};
@@ -13,7 +13,6 @@ use nve_docs_site::{
     render_docs_ssr,
 };
 use nve_engine::NveApp;
-use nve_store::NodeId as StoreNodeId;
 use nve_system_env::{ColorScheme, ContrastLevel, ThemeSnapshot};
 use nve_ui::audit::text_contrast_violations;
 use nve_ui::{AppBrand, Appearance, ColorHex, Polarity, Theme, ThemeMode};
@@ -22,11 +21,11 @@ use nve_web_html::{DataAttrList, HtmlDataAttrs};
 /// A `data-*` attribute of the rendered `docs-root` (what the user sees; hosts read the host).
 fn rendered_root_attr(surface: &DioxusSurface, key: &str) -> Option<String> {
     let store = surface.store();
-    let mut stack = vec![StoreNodeId::ROOT];
+    let mut stack = vec![NodeId::ROOT];
     while let Some(id) = stack.pop() {
         if store.try_row::<DebugId>(id).is_some_and(|d| d.test_id() == "docs-root") {
             let list = store.resource::<DataAttrList>(store.try_row::<HtmlDataAttrs>(id)?.entries())?;
-            return list.0.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+            return list.iter().find(|(k, _)| *k == key).map(|(_, v)| v.to_owned());
         }
         stack.extend_from_slice(store.children(id));
     }
@@ -38,7 +37,6 @@ fn find(surface: &DioxusSurface, test_id: &str) -> NodeId {
     store
         .live_nodes()
         .find(|&id| store.try_row::<DebugId>(id).is_some_and(|d| d.test_id() == test_id))
-        .map(|id| id.raw())
         .expect(test_id)
 }
 
@@ -57,7 +55,7 @@ impl Site {
 
     fn render(&mut self) {
         self.frame += 1;
-        self.surface.commit_to(self.frame, &mut self.backend).expect("headless commit_to");
+        self.surface.commit_to(FrameId(self.frame), &mut self.backend).expect("headless commit_to");
     }
 
     fn theme_attr(&self) -> Option<String> {
@@ -65,14 +63,15 @@ impl Site {
     }
 
     fn press(&mut self, test_id: &str) {
-        let ev = nve_abi::NativeEvent {
-            surface_id: 1,
-            node_id: find(&self.surface, test_id),
-            timestamp_us: self.frame * 16_000,
-            kind: nve_abi::NativeEventKind::Press,
-            payload: nve_abi::EventPayload::Point { x: 8.0, y: 8.0 },
-        };
-        assert!(self.surface.dispatch_events(&[ev]), "{test_id} press handled");
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(
+            SurfaceId::ROOT,
+            find(&self.surface, test_id),
+            TimestampUs(self.frame * 16_000),
+            8.0,
+            8.0,
+        );
+        assert!(self.surface.dispatch_events(batch.as_validated()), "{test_id} press handled");
         self.render();
     }
 }
@@ -82,14 +81,14 @@ fn os_theme(scheme: ColorScheme, contrast: ContrastLevel) -> ThemeSnapshot {
 }
 
 fn mount(host: &DocsHost, route: &str) -> Site {
-    Site::new(host.mount(1, embedded_compiled_site(), route, "", DocsViewport::desktop_default()))
+    Site::new(host.mount(SurfaceId::ROOT, embedded_compiled_site(), route, "", DocsViewport::desktop_default()))
 }
 
 #[test]
 fn headless_hosts_honor_default_dark_when_the_os_reports_no_scheme() {
     for (default_dark, attr) in [(true, "dark"), (false, "light")] {
         let site = Site::new(create_nve_docs_surface_full(
-            1,
+            SurfaceId::ROOT,
             embedded_compiled_site(),
             "/",
             "",
@@ -127,8 +126,8 @@ fn live_os_changes_retheme_and_rebuilds_keep_the_user_mode() {
 #[test]
 fn native_module_follows_host_theme_events_without_rebuilding() {
     let host = DocsHost::new(os_theme(ColorScheme::Light, ContrastLevel::Standard), ThemeMode::System, true);
-    let mut module = DocsSiteModule::with_host(1, host);
-    let _ = module.render(1);
+    let mut module = DocsSiteModule::with_host(SurfaceId::ROOT, host);
+    let _ = module.render(FrameId(1));
     let root = find(module.surface(), "docs-root");
     for (frame, (scheme, contrast, polarity, attr)) in [
         (ColorScheme::Dark, ContrastLevel::Standard, Polarity::Dark, "dark"),
@@ -141,7 +140,7 @@ fn native_module_follows_host_theme_events_without_rebuilding() {
     {
         let payload = os_theme(scheme, contrast).to_repr_c_bytes();
         assert!(module.dispatch_host_events(&payload), "{polarity:?} payload accepted");
-        let _ = module.render(frame as u64 + 2);
+        let _ = module.render(FrameId(frame as u64 + 2));
         assert_eq!(rendered_root_attr(module.surface(), "theme").as_deref(), Some(attr), "{polarity:?}");
         assert_eq!(find(module.surface(), "docs-root"), root, "{polarity:?}: re-themed in place, not rebuilt");
         assert_eq!(module.host().theme(), Theme::preset(polarity, AppBrand::Docs), "{polarity:?}");

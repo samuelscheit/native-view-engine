@@ -1,5 +1,6 @@
 #import "NveAppleSceneReconciler.h"
 
+#include <nve/host/core_resources.hpp>
 #include <nve/host/retained_tree.hpp>
 
 #include <algorithm>
@@ -13,20 +14,15 @@ using nve::host::NodeGeometry;
 
 namespace {
 
-/// Decodes `nve.res.image_src` (tag 0: URL, tag 1: encoded bytes) into a platform image.
+/// Decodes `nve.res.image_src` (flat-word `Url` or `EncodedBytes`) into a platform image.
 id image_from_source(NSData *bytes) {
-  if (bytes.length < 5u) return nil;
-  const uint8_t *p = static_cast<const uint8_t *>(bytes.bytes);
-  const uint32_t len = uint32_t{p[1]} | (uint32_t{p[2]} << 8u) | (uint32_t{p[3]} << 16u) | (uint32_t{p[4]} << 24u);
-  if (static_cast<NSUInteger>(len) + 5u != bytes.length) return nil;
-  if (p[0] == 0u) {
-    return nve::apple::shared_image_cache().image_for_source(
-        std::string_view(reinterpret_cast<const char *>(p + 5), len));
-  }
-  if (p[0] == 1u) {
-    return nve::apple::decode_image_data([bytes subdataWithRange:NSMakeRange(5, len)]);
-  }
-  return nil;
+  if (bytes == nil || bytes.length == 0u) return nil;
+  const std::span<const uint8_t> raw(static_cast<const uint8_t *>(bytes.bytes), bytes.length);
+  const std::optional<nve::host::ImageSource> src = nve::host::decode_image_src(raw);
+  if (!src) return nil;
+  if (src->is_url()) return nve::apple::shared_image_cache().image_for_source(src->url);
+  if (src->encoded.empty()) return nil;
+  return nve::apple::decode_image_data([NSData dataWithBytes:src->encoded.data() length:src->encoded.size()]);
 }
 
 CGRect cg_rect(const NveLayoutRect &r) { return CGRectMake(r.x, r.y, r.width, r.height); }

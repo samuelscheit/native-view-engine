@@ -1,9 +1,10 @@
 // Mock `nve_get_interface` app for the JVM JNI suites: renders real `NVE2` fixture frames
-// (`nve-host-fixtures`) and logs every dispatched `NveDirectEvent` to `$NVE_MOCK_EVENT_LOG`.
+// (`nve-host-fixtures`) and logs every dispatched `NveEvent` to `$NVE_MOCK_EVENT_LOG`.
 //
 // Build-time knobs: `NVE_MOCK_FRAME` (first frame), optional `NVE_MOCK_NEXT_FRAME` (rendered after
 // the first dispatched batch), `NVE_MOCK_BAD_IFACE` (exports an interface getter returning null).
 #include <nve/generated/nve_abi.generated.h>
+#include <nve/host/owned_events.hpp>
 
 #include <cstdio>
 #include <cstdlib>
@@ -50,16 +51,30 @@ std::string slice(const uint8_t* p, size_t n) {
   return out;
 }
 
-void log_event(const NveDirectEvent& ev) {
+void log_event(const NveEvent& ev, NveEventBatch batch) {
   const char* path = std::getenv("NVE_MOCK_EVENT_LOG");
   if (path == nullptr) return;
   if (FILE* f = std::fopen(path, "a")) {
-    const size_t value_len = ev.value.tag == NVE_VAL_BYTES ? ev.value.data.bytes_val.len : 0u;
-    const unsigned long long i64 = ev.value.tag == NVE_VAL_I64 ? static_cast<unsigned long long>(ev.value.data.i64_val) : 0u;
-    std::fprintf(f, "surface=%u node=%u ts=%llu kind=%u tag=%u mods=%u flags=%u key=%u x=%g y=%g w=%g h=%g text=%s name=%s value=%zu i64=%llx\n",
-                 ev.surface_id, ev.node_id, static_cast<unsigned long long>(ev.timestamp_us), ev.kind,
-                 ev.payload_tag, ev.modifiers, ev.event_flags, ev.key_code, ev.x, ev.y, ev.width, ev.height,
-                 slice(ev.text.ptr, ev.text.len).c_str(), slice(ev.name.ptr, ev.name.len).c_str(), value_len, i64);
+    const std::string_view text = nve::host::event_text(ev, batch);
+    const std::string_view key = nve::host::event_key(ev, batch);
+    const std::string_view code = nve::host::event_code(ev, batch);
+    const std::string_view cname = nve::host::event_custom_name(ev, batch);
+    const std::span<const uint8_t> cdata = nve::host::event_custom_data(ev, batch);
+    const std::span<const uint8_t> raw = nve::host::event_bytes(ev, batch);
+    std::fprintf(
+        f,
+        "surface=%u node=%u ts=%llu table=%016llx event=%u flags=%u "
+        "p0=%u p1=%u p2=%u f0=%g f1=%g f2=%g f3=%g "
+        "text=%s key=%s code=%s cname=%s cdata=%zu bytes=%s\n",
+        ev.surface, ev.node, static_cast<unsigned long long>(ev.timestamp),
+        static_cast<unsigned long long>(ev.table), ev.event, ev.flags, ev.payload[0], ev.payload[1], ev.payload[2],
+        nve::host::event_payload_f32(ev, 0u), nve::host::event_payload_f32(ev, 1u),
+        nve::host::event_payload_f32(ev, 2u), nve::host::event_payload_f32(ev, 3u),
+        slice(reinterpret_cast<const uint8_t*>(text.data()), text.size()).c_str(),
+        slice(reinterpret_cast<const uint8_t*>(key.data()), key.size()).c_str(),
+        slice(reinterpret_cast<const uint8_t*>(code.data()), code.size()).c_str(),
+        slice(reinterpret_cast<const uint8_t*>(cname.data()), cname.size()).c_str(), cdata.size(),
+        slice(raw.data(), raw.size()).c_str());
     std::fclose(f);
   }
 }
@@ -78,8 +93,8 @@ NveBufferSlice render(NveAppHandle h, uint64_t) {
 
 uint32_t dispatch(NveAppHandle h, NveEventBatch batch) {
   auto* app = static_cast<MockApp*>(h);
-  for (uint32_t i = 0u; i < batch.len; ++i) log_event(batch.ptr[i]);
-  if (batch.len == 0u || app->next.empty()) return 0u;
+  for (uint32_t i = 0u; i < batch.event_count; ++i) log_event(batch.events[i], batch);
+  if (batch.event_count == 0u || app->next.empty()) return 0u;
   app->pending = 2;
   return 1u;
 }

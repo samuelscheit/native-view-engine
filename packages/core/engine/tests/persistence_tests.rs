@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use std::path::Path;
 
-use nve_components::tables::{
-    Interaction, Layout, TextContent, Typography, Visual, core_realization_order,
+use nve_tables::tables::{
+    EventSet, Interaction, InteractionEvent, Layout, TextContent, Typography, Visual, core_realization_order,
     core_tables_schema_hash,
 };
 use nve_engine::{
@@ -129,7 +129,7 @@ fn build_store(node_count: usize) -> NodeStore {
             nm.edit::<TextContent>().text("Frame0 Label");
         }
         if i % 4 == 0 {
-            nm.edit::<Interaction>().event_mask(1);
+            nm.edit::<Interaction>().listeners(EventSet::one(InteractionEvent::Press));
         }
         kids.push(nm.id());
     }
@@ -757,17 +757,18 @@ fn hostile_padded_sparse_node_and_resource_frame0_rejected_without_oom() {
     // Hostile padded ResourceId(400_000) (~22.4 MiB > 17 MiB) using a REAL registered codec
     // (`ImageSrc`) on disk via `Frame0File::boot_into_replica` -> rejected by SessionBudget
     // (non-vacuous: same codec/blob at ResourceId(1) succeeds!), slots stay 1, file deleted.
-    use nve_components::tables::ImageSrc;
-    use nve_store::Resource;
-    nve_store::register_codec::<ImageSrc>();
-    let mut valid_blob = Vec::new();
-    ImageSrc::Url("https://example.invalid/a.png".into()).encode(&mut valid_blob);
+    use nve_store::FlatResource;
+    use nve_tables::tables::ImageSrc;
+    let mut valid_words = Vec::new();
+    assert!(ImageSrc::Url("https://example.invalid/a.png".into()).write_words(&mut valid_words));
+    let valid_blob = nve_store::words_as_le_bytes(&valid_words).to_vec();
     let build_res_nve2 = |rid: u32, with_pad: bool| {
         let mut def = Vec::new();
         def.extend_from_slice(&rid.to_le_bytes());
         def.extend_from_slice(&ImageSrc::KIND.lo().to_le_bytes());
         def.extend_from_slice(&ImageSrc::KIND.hi().to_le_bytes());
         def.extend_from_slice(&0u32.to_le_bytes());
+        def.extend_from_slice(&0u32.to_le_bytes()); // child_count
         def.extend_from_slice(&(valid_blob.len() as u32).to_le_bytes());
         def.extend_from_slice(&valid_blob);
         while !def.len().is_multiple_of(4) {
@@ -809,9 +810,9 @@ fn hostile_padded_sparse_node_and_resource_frame0_rejected_without_oom() {
         "direct WireDecoder resource rejection must keep bare NodeStore::nodes == 1"
     );
     assert_eq!(
-        bare_res.resources().slots(),
-        1,
-        "direct WireDecoder resource rejection must keep bare resources().slots() == 1"
+        bare_res.resources().words_live(),
+        0,
+        "direct WireDecoder resource rejection must keep bare resources() empty"
     );
 
     let hostile_res = sign_frame0_payload(&hostile_res_nve2, 0, meta);
@@ -822,9 +823,9 @@ fn hostile_padded_sparse_node_and_resource_frame0_rejected_without_oom() {
         Err(Frame0Miss::Corrupt(_))
     ));
     assert_eq!(
-        replica.store().resources().slots(),
-        1,
-        "rejected resource frame0 must keep resources().slots() == 1"
+        replica.store().resources().words_live(),
+        0,
+        "rejected resource frame0 must keep resources() empty"
     );
     assert!(
         !res_path.exists(),
@@ -982,7 +983,7 @@ fn frame0_keyframe_resets_replica_holding_only_non_root_nodes() {
         },
         core_realization_order(),
     );
-    // Build a frame == 1 packet containing ONLY non-root NodeId(5) (no ROOT).
+    // Build a frame == 1 packet containing ONLY non-root NodeId::new(5, 0) (no ROOT).
     let mut ops = Vec::new();
     ops.extend_from_slice(&(3u32 | (1u32 << 16)).to_le_bytes());
     ops.extend_from_slice(&1u32.to_le_bytes());
@@ -992,10 +993,10 @@ fn frame0_keyframe_resets_replica_holding_only_non_root_nodes() {
     replica
         .submit_nve2_frame(&non_root_f1)
         .expect("submit non-root frame 1");
-    assert!(replica.store().is_live(NodeId(5)));
+    assert!(replica.store().is_live(NodeId::new(5, 0)));
     assert!(!replica.store().is_live(NodeId::ROOT));
 
-    // Submitting a fresh frame == 1 keyframe with only ROOT must wipe non-root NodeId(5).
+    // Submitting a fresh frame == 1 keyframe with only ROOT must wipe non-root NodeId::new(5, 0).
     let root_store = build_store(2);
     let mut root_f1 = Vec::new();
     WireEncoder::default().encode_full(&root_store, &mut root_f1);
@@ -1003,5 +1004,5 @@ fn frame0_keyframe_resets_replica_holding_only_non_root_nodes() {
         .submit_nve2_frame(&root_f1)
         .expect("fresh keyframe resets non-root live replica");
     assert!(replica.store().is_live(NodeId::ROOT));
-    assert!(!replica.store().is_live(NodeId(5)));
+    assert!(!replica.store().is_live(NodeId::new(5, 0)));
 }

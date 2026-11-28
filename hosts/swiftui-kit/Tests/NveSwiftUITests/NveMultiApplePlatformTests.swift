@@ -1,6 +1,7 @@
 import CNveAbi
-import NveHost
 import Foundation
+import NveHost
+import NveHostAbi
 import NveSwiftUI
 import SwiftUI
 import XCTest
@@ -159,22 +160,22 @@ final class NveMultiApplePlatformTests: XCTestCase {
             XCTAssertNil(event.name)
             XCTAssertEqual(event.payload, .key(key: expectedKey))
 
-            // Direct `NveDirectEvent` batch roundtrip (what `dispatch_events` receives).
-            try NveDirectEventWriter.withBatch([event]) { batch in
-                XCTAssertEqual(NveDirectEventWriter.decodeBatch(batch), [event])
+            // Direct 64-byte `NveEventBatch` roundtrip (what `dispatch_events` receives).
+            try EventBatchBuilder(events: [event]).withRawBatch { batch in
+                XCTAssertEqual(try EventBatchReader.validate(batch: batch).decodeEvents(), [event])
             }
         }
 
-        // Typed KeyDown with modifiers + code roundtrips cleanly through EventRing and NveDirectEvent.
-        let modified = NveEvent(
+        // Typed KeyDown with modifiers + code roundtrips cleanly through NVEV v2 and NveEventBatch.
+        let modified = NveSwiftUI.NveEvent(
             surfaceId: 7,
             nodeId: 19,
             timestampUs: 999,
             kind: .keyDown,
             payload: .key(key: "ArrowRight", code: "ArrowRight", modifiers: 0x0D, keyCode: 39, isComposing: true)
         )
-        try NveDirectEventWriter.withBatch([modified]) { batch in
-            XCTAssertEqual(NveDirectEventWriter.decodeBatch(batch), [modified])
+        try EventBatchBuilder(events: [modified]).withRawBatch { batch in
+            XCTAssertEqual(try EventBatchReader.validate(batch: batch).decodeEvents(), [modified])
         }
 
         // 5% title-safe overscan on 1080p tvOS logical viewport (1920x1080) => 96pt H / 54pt V.

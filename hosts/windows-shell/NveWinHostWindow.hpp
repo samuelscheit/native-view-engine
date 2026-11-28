@@ -85,8 +85,9 @@ class D2DPaintCache {
   std::unordered_map<uint32_t, Layout> layouts_;
 };
 
-/// Paints all 8 `NVE_DRAW1` opcodes into `bounds` (validated first; clip stack balanced even for
-/// corrupt payloads or unbalanced clips). `factory` builds polylines / stroke styles (nullable).
+/// Paints all 8 flat `nve.res.draw_list` opcodes into `bounds` (validated first; clip stack
+/// balanced even for corrupt payloads or unbalanced clips). `factory` builds polylines / stroke
+/// styles (nullable).
 canvas::DrawListDecodeResult render_draw_list_to_d2d(ID2D1RenderTarget* rt, ID2D1SolidColorBrush* brush,
                                                      ID2D1Factory* factory, const D2D1_RECT_F& bounds,
                                                      std::span<const uint8_t> bytes) noexcept;

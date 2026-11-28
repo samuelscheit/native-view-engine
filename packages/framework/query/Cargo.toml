@@ -6,6 +6,7 @@ license.workspace = true
 description = "Sans-I/O data-oriented query/action cache with Tag64 invalidation, in-flight deduplication, rebaseable optimistic layers, and Slice 1c hydration hooks."
 
 [dependencies]
+nve-codec = { workspace = true }
 nve-rpc = { workspace = true }
 nve-hash = { workspace = true }
 bytes = { workspace = true }

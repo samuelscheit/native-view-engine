@@ -90,6 +90,7 @@ struct WinImageSource {
 
 /// Owned `nve.text_input` row (a secure field is single-line).
 struct WinTextInput {
+  uint32_t events = 0u;  // `NVE_TEXT_INPUT_EVENT_SET_*` bits
   std::string value;
   std::string placeholder;
   bool multiline = false;
@@ -118,11 +119,12 @@ struct WinNodeVisual {
   uint32_t canvas_res = 0u;
   WinImageSource image;
   uint8_t image_fit = NVE_IMAGE_FIT_COVER;
-  std::vector<uint8_t> draw_list;  // `NVE_DRAW1`
+  std::vector<uint8_t> draw_list;  // flat `u32`-word `nve.res.draw_list`
   uint64_t redraw_count = 0u;
   WinTextInput input;
   host::ScrollData scroll;
   host::InteractionData interaction;
+  uint32_t layout_events = 0u;  // `NVE_LAYOUT_EVENT_SET_*` bits
   std::string href;
   std::vector<uint32_t> children;     // packed `NodeId`s, scene order
   std::vector<uint32_t> paint_order;  // `children` stable-sorted by `z_index`
@@ -131,8 +133,17 @@ struct WinNodeVisual {
   float scroll_y = 0.0f;
   bool synced = false;
 
-  [[nodiscard]] bool wants(NveEventKind k) const noexcept {
-    return !interaction.disabled && (interaction.event_mask & host::event_bit(k)) != 0u;
+  [[nodiscard]] bool wants(NveInteractionEvent ev) const noexcept {
+    return !interaction.disabled && (interaction.events & host::event_set_bit(ev)) != 0u;
+  }
+  [[nodiscard]] bool wants(NveTextInputEvent ev) const noexcept {
+    return !interaction.disabled && (input.events & host::event_set_bit(ev)) != 0u;
+  }
+  [[nodiscard]] bool wants(NveScrollEvent ev) const noexcept {
+    return !interaction.disabled && (scroll.events & host::event_set_bit(ev)) != 0u;
+  }
+  [[nodiscard]] bool wants(NveLayoutEvent ev) const noexcept {
+    return !interaction.disabled && (layout_events & host::event_set_bit(ev)) != 0u;
   }
   [[nodiscard]] bool scrollable() const noexcept {
     return kind == host::NodeKind::Scroll || visual.overflow_x >= NVE_OVERFLOW_SCROLL ||

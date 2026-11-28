@@ -3,9 +3,9 @@
 use nve_abi::table::Word;
 
 use crate::id::{NodeId, NodeIndex, ResourceId, TableSet};
-use crate::resource::Resource;
+use crate::resource::FlatResource;
 use crate::row::RowRef;
-use crate::span_pool::StrSpan;
+use crate::span_pool::{StrArena, StrSpan};
 use crate::store::{NodeRow, NodeStore};
 use crate::table::{NveTable, TableSlot};
 
@@ -121,7 +121,12 @@ impl<'a> NodeRef<'a> {
     }
 
     #[inline(always)]
-    pub fn resource<R: Resource>(self, id: ResourceId) -> Option<&'a R> {
-        self.store.resources.get(id)
+    pub fn resource<R: FlatResource>(self, id: ResourceId) -> Option<R::View<'a>> {
+        self.store.resources.get::<R>(id)
+    }
+
+    #[inline(always)]
+    pub(crate) fn text_arena(self) -> &'a StrArena {
+        &self.store.text
     }
 }

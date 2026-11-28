@@ -161,7 +161,7 @@ fn text_inputs_ime_and_shortcuts_pass_through_and_back_releases_the_input() {
     };
     assert_eq!(backend.intercept_key(&composing), PASS);
     let shortcut = WebKeyEventInfo {
-        modifiers: nve_abi::NVE_KEY_MOD_CTRL,
+        modifiers: nve_abi::EventFlags::MOD_CTRL,
         ..key("ArrowRight", 39)
     };
     assert_eq!(backend.intercept_key(&shortcut), PASS);

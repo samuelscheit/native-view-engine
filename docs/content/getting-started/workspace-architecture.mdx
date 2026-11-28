@@ -18,7 +18,7 @@ The `native-view-engine` monorepo enforces a strict, layered dependency DAG. Low
            ┌──────────────────────┼──────────────────────┐
            ▼                      ▼                      ▼
    ┌───────────────┐      ┌───────────────┐      ┌───────────────┐
-   │nve-components │      │  nve-engine   │      │  nve-interop  │
+   │nve-tables │      │  nve-engine   │      │  nve-interop  │
    │NVE_DRAW1 IR   │      │NveApp, Layout │      │Surfaces, CRDT │
    │Style/Tag map  │      │Frame0 + State │      │NVT1/NVD1/NVW1 │
    └───────┬───────┘      └───────┬───────┘      └───────┬───────┘
@@ -53,7 +53,7 @@ The root `Cargo.toml` defines 33 workspace members split into core runtime (`pac
 | Crate | Path | Responsibility |
 | :--- | :--- | :--- |
 | `nve-abi` | `packages/core/abi` | `NVE1` binary `CommandBuffer` encoder/decoder, `NveDirectEvent` / `NveEventBatch`, the single `NveSceneView` (32-byte `NveNodeRow` + 16-byte `NveLayoutRect` slabs), `NveValue` bump-arena types, and `nve_get_interface(1..=5)`. |
-| `nve-components` | `packages/core/components` | HTML/RN tag resolver (`resolve_tag`), typed style/layout attribute parser (`apply_typed_attr_with_raw`), `ImageResizeMode`, and `NVE_DRAW1` vector canvas draw-list IR (`DrawListBuilder` / `DrawListDecoder`). |
+| `nve-tables` | `packages/core/components` | HTML/RN tag resolver (`resolve_tag`), typed style/layout attribute parser (`apply_typed_attr_with_raw`), `ImageResizeMode`, and `NVE_DRAW1` vector canvas draw-list IR (`DrawListBuilder` / `DrawListDecoder`). |
 | `nve-engine` | `packages/core/engine` | `NveApp` trait + `export_nve_app!` panic-safe C ABI macro, `StoreBackend`, `StoreWireReplica`, `SurfaceRunner`, 6-stage `FrameProfiler`, zero-`unsafe` `Frame0File` (`frame0.nve2`) + atomic `StateFile` (`state.nve`), `HotPatchMsg` (`NVP1`), and `cdylib` loader. |
 | `nve-layout` | `packages/core/layout` | Shared `StoreLayoutEngine` + `TextMeasurer` traits and the default direct `TaffyStoreLayout` engine used by headless, Skia, and the host runtime. |
 | `nve-layout-yoga` | `packages/modules/layout-yoga` | Opt-in real C++20 React Native Yoga (`yogacore`) `StoreLayoutEngine` module with `YGNodeSetMeasureFunc` callbacks to Rust `TextMeasurer` (gracefully degrades when `RN_REACT_COMMON_DIR` is unset). |

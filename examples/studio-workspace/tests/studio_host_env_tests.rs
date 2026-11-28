@@ -7,6 +7,7 @@ use std::sync::Arc;
 mod common;
 
 use common::register_studio_tables;
+use nve_abi::{FrameId, SurfaceId};
 use nve_backend_headless::HeadlessBackend;
 use nve_clipboard::{ClipboardClient, MemoryClipboard};
 use nve_engine::{NveApp, StoreBackend, StoreWireReplica, Viewport};
@@ -22,8 +23,8 @@ use nve_system_env::{
 fn native_entry_point_paints_the_os_appearance_before_a_host_binds() {
     let os = NativeSystemEnv::new();
     let (theme, locale) = (os.get_theme().expect("OS theme"), os.get_locale().expect("OS locale"));
-    let mut module = StudioWorkspaceModule::create(1);
-    let _ = module.render(1);
+    let mut module = StudioWorkspaceModule::create(SurfaceId::ROOT);
+    let _ = module.render(FrameId(1));
     let env = module.state_snapshot().system_env;
     assert_eq!(env.theme, theme, "the first frame resolves the OS appearance, not the Studio default");
     assert_eq!(env.locale.tag, locale.tag);
@@ -32,8 +33,8 @@ fn native_entry_point_paints_the_os_appearance_before_a_host_binds() {
 #[test]
 fn nve_iface_host_5_ffi_callbacks_clipboard_and_system_env_sync() {
     register_studio_tables();
-    let mut module = common::headless_module(1);
-    let first_frame = module.render(1).to_vec();
+    let mut module = common::headless_module(SurfaceId::ROOT);
+    let first_frame = module.render(FrameId(1)).to_vec();
     assert!(!module.host_services().is_ffi_bound());
 
     // Prepare a simulated native host behind `HostCallbackBridge` (`NVE_IFACE_HOST = 5`).
@@ -74,17 +75,17 @@ fn nve_iface_host_5_ffi_callbacks_clipboard_and_system_env_sync() {
 
     // Render frame 2 (a delta on the still-mounted surface) and verify the live UI reflects the
     // synced Light + de-DE traits.
-    let frame_bytes = module.render(2).to_vec();
+    let frame_bytes = module.render(FrameId(2)).to_vec();
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 1280.0,
             height: 800.0,
             scale_factor: 1.0,
         },
     );
-    let mut rep = StoreWireReplica::new(headless, nve_components::tables::core_realization_order());
+    let mut rep = StoreWireReplica::new(headless, nve_tables::tables::core_realization_order());
     rep.submit_nve2_frame(&first_frame).expect("frame 1");
     rep.submit_nve2_frame(&frame_bytes).expect("frame 2");
     let tree = rep.backend().render_ascii_tree(rep.store());
@@ -134,7 +135,7 @@ fn nve_iface_host_5_ffi_callbacks_clipboard_and_system_env_sync() {
     assert_eq!(updated.color_scheme(), ColorScheme::Dark);
     assert_eq!(updated.locale().as_str(), "ar-EG");
     assert!(updated.locale().is_rtl());
-    rep.submit_nve2_frame(module.render(3)).expect("frame 3");
+    rep.submit_nve2_frame(module.render(FrameId(3))).expect("frame 3");
     let tree = rep.backend().render_ascii_tree(rep.store());
     assert!(
         tree.contains("Dark | ar-EG"),

@@ -4,7 +4,10 @@
 
 use nve_abi::ColorRgba;
 use nve_canvas::{Canvas, DrawList};
-use nve_components::MotionClock;
+use nve_motion::{
+    write_transitions, EasingCurve, Motion, MotionClock, MotionKey, MotionPreference,
+    TransitionSpec,
+};
 use nve_dioxus::prelude::*;
 use nve_dioxus::table_attr_fn;
 use nve_ui::{ColorHex, 
@@ -28,13 +31,14 @@ const SPARKLINE_B: [f32; 16] = [
 fn sample_spring_curve(preset: SpringPreset, reduced_motion: bool) -> (f32, f32, f32) {
     let pref = MotionPreference::from_reduced_motion(reduced_motion);
     let mut clock = MotionClock::with_preference(pref);
-    clock.animate_spring("demo", preset.spec(), 0.0, 100.0);
+    const DEMO: MotionKey = MotionKey::named("demo");
+    clock.animate_spring(DEMO, preset.spec(), 0.0, 100.0);
     clock.tick(0.08);
-    let t80 = clock.value_named("demo").unwrap_or(100.0);
+    let t80 = clock.value(&DEMO).unwrap_or(100.0);
     clock.tick(0.12);
-    let t200 = clock.value_named("demo").unwrap_or(100.0);
+    let t200 = clock.value(&DEMO).unwrap_or(100.0);
     clock.tick(0.30);
-    let t500 = clock.value_named("demo").unwrap_or(100.0);
+    let t500 = clock.value(&DEMO).unwrap_or(100.0);
     (t80, t200, t500)
 }
 
@@ -116,12 +120,10 @@ pub fn MotionSection(handle: AppHandle) -> Element {
             } else {
                 theme.border.default
             },
-        )
-        .transition(
-            TransitionSpec::all(transition_ms)
-                .easing(EasingCurve::EaseOut)
-                .reduced_motion_instant(true),
         );
+    let motion_pill_transitions = [TransitionSpec::all(transition_ms)
+        .easing(EasingCurve::EaseOut)
+        .reduced_motion_instant(true)];
 
     let canvas_dl = build_canvas_draw_list(
         bar_mode(),
@@ -216,6 +218,10 @@ pub fn MotionSection(handle: AppHandle) -> Element {
                             view {
                                 test_id: "ks-motion-pill",
                                 nve_style: motion_pill_style,
+                                nve_table: nve_dioxus::table_attr::<Motion, _>(
+                                    motion_pill_transitions,
+                                    |tx, node, specs| write_transitions(tx, node, specs),
+                                ),
                                 text {
                                     style: "font-size: 12px; font-weight: 700; color: {text_primary};",
                                     if snap.motion_toggled { "Expanded Target State" } else { "Compact Rest State" }

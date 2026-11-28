@@ -7,12 +7,13 @@ use std::fmt;
 use nve_abi_macros::NveAbi;
 
 use crate::ffi::{NveAppHandle, NveBufferSlice};
+use crate::InterfaceId;
 
 #[cfg(test)]
 mod tests;
 
 /// Modular interface ID for the optional host-capability & channel-bus interface (`const NveHostApi*`).
-pub const NVE_IFACE_HOST: u32 = 5;
+pub const NVE_IFACE_HOST: InterfaceId = InterfaceId(5);
 
 /// Flag bit on `channel_publish` / `ChannelMessage` indicating retained state on `NveChannelBus`.
 pub const NVE_CHANNEL_FLAG_RETAIN: u32 = 1 << 0;

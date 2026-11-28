@@ -5,8 +5,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use nve_abi::{Xxh64Hasher, xxh64};
+use nve_codec::ByteReader;
 
-use super::{PersistenceError, le_u32, le_u64, write_file_atomic};
+use super::{PersistenceError, write_file_atomic};
 #[cfg(not(target_arch = "wasm32"))]
 use super::{ReadBoundedError, backup_corrupt_file, backup_rotated_file, read_file_bounded};
 
@@ -193,16 +194,27 @@ impl StateFile {
         if bytes.len() < STATE_FILE_HEADER_SIZE {
             return Err(PersistenceError::Corrupt("state file truncated"));
         }
-        let expected_hash = le_u64(&bytes[16..24]);
+        let mut r = ByteReader::new(&bytes[..STATE_FILE_HEADER_SIZE]);
+        let magic = r
+            .read_array::<8>()
+            .map_err(|_| PersistenceError::Corrupt("state file truncated"))?;
+        let schema = r
+            .read_u32()
+            .map_err(|_| PersistenceError::Corrupt("state file truncated"))?;
+        let payload_len = r
+            .read_u32()
+            .map_err(|_| PersistenceError::Corrupt("state file truncated"))?
+            as usize;
+        let expected_hash = r
+            .read_u64()
+            .map_err(|_| PersistenceError::Corrupt("state file truncated"))?;
         let payload = &bytes[STATE_FILE_HEADER_SIZE..];
         if state_envelope_xxh64(&bytes[0..16], payload) != expected_hash {
             return Err(PersistenceError::Corrupt("state envelope XXH64 mismatch"));
         }
-        if bytes[0..8] != STATE_FILE_MAGIC {
+        if magic != STATE_FILE_MAGIC {
             return Err(PersistenceError::Corrupt("invalid state file magic"));
         }
-        let schema = le_u32(&bytes[8..12]);
-        let payload_len = le_u32(&bytes[12..16]) as usize;
         if payload.len() != payload_len {
             return Err(PersistenceError::Corrupt("state payload length mismatch"));
         }

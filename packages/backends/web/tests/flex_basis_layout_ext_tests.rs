@@ -6,7 +6,7 @@
 mod support;
 
 use nve_backend_web::NVE_BASE_RESET_CSS;
-use nve_components::tables::Layout;
+use nve_tables::tables::Layout;
 use nve_store::{Length, NodeId, NodeStore};
 
 use support::*;
@@ -37,7 +37,7 @@ fn typed_flex_basis_hashes_emits_and_resets_without_raw_attrs() {
         }
         let auto = node(tx, 6);
         tx.edit::<Layout>(auto).flex_basis(Length::AUTO);
-        tx.set_children(NodeId::ROOT, &[NodeId(2), NodeId(3), NodeId(4), NodeId(5), auto]);
+        tx.set_children(NodeId::ROOT, &[nid(2), nid(3), nid(4), nid(5), auto]);
     });
 
     let ssr = web.render_ssr(&store);
@@ -59,8 +59,8 @@ fn typed_flex_basis_hashes_emits_and_resets_without_raw_attrs() {
     // Clearing the basis drops it from the node's class; re-basing reuses the existing class.
     let before = web.render_ssr(&store).html;
     commit(&mut web, &mut store, |tx| {
-        tx.edit::<Layout>(NodeId(2)).flex_basis(Length::AUTO);
-        tx.edit::<Layout>(NodeId(3)).flex_basis(Length::points(280.0));
+        tx.edit::<Layout>(nid(2)).flex_basis(Length::AUTO);
+        tx.edit::<Layout>(nid(3)).flex_basis(Length::points(280.0));
     });
     let after = web.render_ssr(&store);
     assert_ne!(before, after.html, "node classes change with the basis");

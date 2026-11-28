@@ -1,5 +1,5 @@
 // Direct2D painting of the retained `NveWinVisualTree` (shadows, backgrounds, images, canvas draw
-// lists, DirectWrite text, rounded clips, borders, opacity groups) and the `NVE_DRAW1` renderer.
+// lists, DirectWrite text, rounded clips, borders, opacity groups) and the flat draw-list renderer.
 // Values arrive sealed (`read_node`, `decode_box_shadows`): nothing here re-validates them.
 #include "NveWinD2DInternal.hpp"
 

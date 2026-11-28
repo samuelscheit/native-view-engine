@@ -2,10 +2,11 @@
 resolver = "2"
 members = [
     "packages/core/hash",
+    "packages/core/codec",
     "packages/core/abi",
     "packages/core/store",
     "packages/core/abi-macros",
-    "packages/core/components",
+    "packages/core/tables",
     "packages/core/engine",
     "packages/core/layout",
     "packages/core/runtime",
@@ -42,6 +43,9 @@ members = [
     "packages/modules/canvas/web",
     "packages/modules/canvas/skia",
     "packages/modules/clipboard",
+    "packages/modules/motion",
+    "packages/modules/motion/web",
+    "packages/modules/motion/skia",
     "packages/modules/svg",
     "packages/modules/svg/web",
     "packages/modules/svg/skia",
@@ -90,10 +94,11 @@ panic = "deny"
 
 [workspace.dependencies]
 nve-hash = { version = "0.1.0", path = "packages/core/hash" }
+nve-codec = { version = "0.1.0", path = "packages/core/codec" }
 nve-abi = { version = "0.1.0", path = "packages/core/abi" }
 nve-store = { version = "0.1.0", path = "packages/core/store" }
 nve-abi-macros = { version = "0.1.0", path = "packages/core/abi-macros" }
-nve-components = { version = "0.1.0", path = "packages/core/components" }
+nve-tables = { version = "0.1.0", path = "packages/core/tables" }
 nve-engine = { version = "0.1.0", path = "packages/core/engine" }
 nve-layout = { version = "0.1.0", path = "packages/core/layout" }
 nve-runtime = { version = "0.1.0", path = "packages/core/runtime" }
@@ -127,6 +132,9 @@ nve-canvas = { version = "0.1.0", path = "packages/modules/canvas" }
 nve-canvas-web = { version = "0.1.0", path = "packages/modules/canvas/web" }
 nve-canvas-skia = { version = "0.1.0", path = "packages/modules/canvas/skia" }
 nve-clipboard = { version = "0.1.0", path = "packages/modules/clipboard" }
+nve-motion = { version = "0.1.0", path = "packages/modules/motion" }
+nve-motion-web = { version = "0.1.0", path = "packages/modules/motion/web" }
+nve-motion-skia = { version = "0.1.0", path = "packages/modules/motion/skia" }
 nve-svg = { version = "0.1.0", path = "packages/modules/svg" }
 nve-svg-web = { version = "0.1.0", path = "packages/modules/svg/web" }
 nve-svg-skia = { version = "0.1.0", path = "packages/modules/svg/skia" }
@@ -198,6 +206,7 @@ wasm-bindgen = "0.2.130"
 js-sys = "0.3.107"
 web-sys = { version = "0.3.107", features = ["Document", "Element", "HtmlElement", "CssStyleDeclaration", "Window", "Text", "Node", "MouseEvent", "EventTarget", "Event", "WebSocket", "MessageEvent", "console"] }
 criterion = "0.8.2"
+trybuild = "1.0"
 
 # Fast incremental builds: keep workspace crates unoptimized while optimizing heavy deps once.
 [profile.dev]

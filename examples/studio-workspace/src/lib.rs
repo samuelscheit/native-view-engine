@@ -41,9 +41,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use nve_abi::{
-    FrameId, NativeEventKind, NveDirectEvent, NveEventBatchRef, NveGestureDisposition,
-    NveHostCallbacks, NveIntrinsicSize, NvePropsRef, NveSizeConstraints, NveValue, ROOT_NODE_ID,
-    SurfaceId,
+    EventBatchBuf, FrameId, InteractionEvent, LayoutEvent, NveGestureDisposition, NveHostCallbacks,
+    NveIntrinsicSize, NvePropsRef, NveSizeConstraints, ScrollEvent, SurfaceId, TextInputEvent,
+    TimestampUs, ValidatedEvents, ROOT_NODE_ID,
 };
 use nve_dioxus::DioxusSurface;
 use nve_engine::{HotPatchMsg, NveApp};
@@ -144,7 +144,7 @@ pub struct StudioWorkspaceModule {
     mounted: bool,
     last_reported_layout_engine: LayoutEngineMode,
     last_state_buf: Vec<u8>,
-    last_emitted_events: Vec<NveDirectEvent>,
+    last_emitted_events: EventBatchBuf,
     persist_store: Option<WorkspaceStore>,
     persist_open_error: Option<String>,
     last_persisted_frame_count: u64,
@@ -248,7 +248,7 @@ impl StudioWorkspaceModule {
             surface: create_surface(surface_id),
             mounted: false,
             last_state_buf: Vec::new(),
-            last_emitted_events: Vec::new(),
+            last_emitted_events: EventBatchBuf::new(),
             persist_store,
             persist_open_error,
         }
@@ -406,22 +406,22 @@ impl NveApp for StudioWorkspaceModule {
         }
     }
 
-    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
         let mut handled_host_event = false;
         for ev in events.iter() {
-            handled_host_event |= match (ev.kind(), ev.payload_tag()) {
-                (Some(NativeEventKind::Layout), 4)
-                    if ev.node_id() == ROOT_NODE_ID && ev.width() > 0.0 =>
-                {
-                    self.update_state(|state| {
-                        let prev_stream_h = state.current.stream.viewport_height;
-                        let mask = state.update_viewport_with_mask(ev.width(), ev.height());
-                        mask.any_breakpoint_changed()
-                            || (state.current.active_view == ActiveView::Stream100k
-                                && state.current.stream.viewport_height != prev_stream_h)
-                    })
-                }
-                (Some(NativeEventKind::Scroll), 2) => self.update_state(|state| {
+            handled_host_event |= if ev.layout_event() == Some(LayoutEvent::Layout)
+                && ev.node() == ROOT_NODE_ID
+                && ev.width() > 0.0
+            {
+                self.update_state(|state| {
+                    let prev_stream_h = state.current.stream.viewport_height;
+                    let mask = state.update_viewport_with_mask(ev.width(), ev.height());
+                    mask.any_breakpoint_changed()
+                        || (state.current.active_view == ActiveView::Stream100k
+                            && state.current.stream.viewport_height != prev_stream_h)
+                })
+            } else if ev.scroll_event() == Some(ScrollEvent::Scroll) {
+                self.update_state(|state| {
                     let streaming = state.current.active_view == ActiveView::Stream100k;
                     if streaming {
                         let y = ev.y();
@@ -432,17 +432,18 @@ impl NveApp for StudioWorkspaceModule {
                         });
                     }
                     streaming
-                }),
-                (Some(NativeEventKind::KeyDown), 6) if !ev.key().is_empty() => {
-                    self.update_state(|state| {
-                        dispatch_keydown(state, ev.key(), ev.has_primary_modifier())
-                    })
-                }
-                (Some(NativeEventKind::Submit), 0 | 3) => self.update_state(submit_active_composer),
-                _ => false,
+                })
+            } else if ev.interaction() == Some(InteractionEvent::KeyDown) && !ev.key().is_empty() {
+                self.update_state(|state| {
+                    dispatch_keydown(state, ev.key(), ev.has_primary_modifier())
+                })
+            } else if ev.text_input() == Some(TextInputEvent::Submit) {
+                self.update_state(submit_active_composer)
+            } else {
+                false
             };
         }
-        let handled_ui = self.surface.dispatch_direct_events(events);
+        let handled_ui = self.surface.dispatch_events(events);
         if handled_host_event || handled_ui {
             self.persist_if_dirty();
         }
@@ -514,7 +515,7 @@ impl NveApp for StudioWorkspaceModule {
         changed
     }
 
-    fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
+    fn drain_emitted_events(&mut self) -> ValidatedEvents<'_> {
         let current_engine = self
             .store
             .lock()
@@ -523,15 +524,15 @@ impl NveApp for StudioWorkspaceModule {
         self.last_emitted_events.clear();
         if current_engine != self.last_reported_layout_engine {
             self.last_reported_layout_engine = current_engine;
-            self.last_emitted_events.push(NveDirectEvent::custom(
+            self.last_emitted_events.push_custom(
                 self.surface_id,
                 ROOT_NODE_ID,
-                0,
+                TimestampUs::ZERO,
                 "layout_engine_changed",
-                NveValue::from_str(current_engine.as_str()),
-            ));
+                current_engine.as_str().as_bytes(),
+            );
         }
-        &self.last_emitted_events
+        self.last_emitted_events.as_validated()
     }
 
     fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> bool {

@@ -6,6 +6,7 @@
 
 use std::cell::RefCell;
 
+use nve_abi::EventFlags;
 use nve_store::NodeId;
 
 /// Borrowed view of one surface-scoped `keydown`, after IME suppression.
@@ -14,8 +15,8 @@ pub struct WebKeyEventInfo<'a> {
     pub key: &'a str,
     pub code: &'a str,
     pub key_code: u32,
-    /// `nve_abi::NVE_KEY_MOD_*` bits.
-    pub modifiers: u8,
+    /// Modifier bits (`EventFlags::MOD_*`).
+    pub modifiers: EventFlags,
     pub repeat: bool,
     pub is_composing: bool,
     /// Target is a text-editing control (`<input>` text-like, `<textarea>`, contenteditable).
@@ -41,7 +42,7 @@ impl<'a> WebKeyEventInfo<'a> {
             key,
             code,
             key_code,
-            modifiers: 0,
+            modifiers: EventFlags::EMPTY,
             repeat: false,
             is_composing: false,
             in_text_input: false,
@@ -57,9 +58,7 @@ impl<'a> WebKeyEventInfo<'a> {
     /// Ctrl, Meta, or Alt held: the key is an application / OS shortcut.
     #[inline]
     pub const fn has_command_modifier(&self) -> bool {
-        self.modifiers
-            & (nve_abi::NVE_KEY_MOD_META | nve_abi::NVE_KEY_MOD_CTRL | nve_abi::NVE_KEY_MOD_ALT)
-            != 0
+        self.modifiers.meta() || self.modifiers.ctrl() || self.modifiers.alt()
     }
 }
 
@@ -160,6 +159,12 @@ pub(crate) struct KeyInterceptors {
 }
 
 impl KeyInterceptors {
+    #[cfg(target_arch = "wasm32")]
+    #[inline]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.hooks.is_empty()
+    }
+
     pub(crate) fn push(&mut self, hook: KeyInterceptor) -> InterceptorId {
         let id = InterceptorId(self.next_id);
         self.next_id += 1;
@@ -238,19 +243,9 @@ pub(crate) fn is_text_like_input_type(input_type: &str) -> bool {
     .any(|t| input_type.eq_ignore_ascii_case(t))
 }
 
-/// `NodeId` from a raw `data-nve-id` / wire value; `0` (the null node) yields `None`.
-#[inline]
-pub(crate) const fn node_id_from_raw(raw: u32) -> Option<NodeId> {
-    if raw == 0 {
-        None
-    } else {
-        Some(NodeId::from_raw(raw))
-    }
-}
-
-/// Parses a `data-nve-id` attribute value; `"0"` (the null node) and garbage yield `None`.
+/// Parses a `data-nve-id` attribute value; the null node (index `0`) and garbage yield `None`.
 pub fn parse_dom_node_id(attr: &str) -> Option<NodeId> {
-    attr.parse::<u32>().ok().and_then(node_id_from_raw)
+    attr.parse::<u32>().ok().and_then(NodeId::from_raw)
 }
 
 /// Routes keys aimed at `<body>` / `<html>` (nothing focused) to one mounted surface: the last
@@ -292,18 +287,20 @@ mod wasm {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use nve_abi::{EventMask, EventPayload, NativeEvent, NativeEventKind, pack_key_modifiers};
+    use nve_abi::{EventFlags, InteractionEvent, NodeId, TextInputEvent};
+    use nve_tables::tables::{Interaction, TextInput};
     use wasm_bindgen::JsCast;
     use wasm_bindgen::closure::Closure;
 
     use super::{
         ARROW_OWNER_SELECTOR, ArrowAxes, BodyKeyRoute, KeyInterceptors, WebKeyDisposition,
-        WebKeyEventInfo, is_text_like_input_type, node_id_from_raw,
+        WebKeyEventInfo, is_text_like_input_type,
     };
     use crate::events::{
-        DomEventListener, collect_ancestors, notify_event, now_us, read_dom_input_value,
-        register_listener, target_to_element,
+        DomListenerGuard, collect_ancestors, now_us, read_dom_input_value, target_to_element,
     };
+    use crate::events_dom::EventSinks;
+    use crate::input_attrs::ImeCompositionGuard;
 
     thread_local! {
         static BODY_KEYS: RefCell<BodyKeyRoute<web_sys::Element>> =
@@ -353,34 +350,33 @@ mod wasm {
 
     /// Keydown on `window` (global shortcuts like Cmd+K / Escape reach ROOT even with nothing
     /// focused), scoped to this surface, then key interceptors, then Enter-submit / default
-    /// `KeyDown`. Keys aimed at `<body>` go to one surface only ([`BodyKeyRoute`]).
+    /// `KeyDown`. Keys aimed at `<body>` go to one surface only ([`BodyKeyRoute`]); the returned
+    /// root `focusin` guard claims that routing whenever focus enters this surface.
     pub(crate) fn attach_keydown(
-        listeners: &mut Vec<DomEventListener>,
         root: &web_sys::Element,
-        backend: &crate::WebBackend,
-    ) {
-        // Owned by this surface's listeners: dropping them (unmount) releases body-key routing.
+        sinks: &EventSinks,
+        ime: &Rc<ImeCompositionGuard>,
+        interceptors: &Rc<RefCell<KeyInterceptors>>,
+    ) -> [DomListenerGuard; 2] {
+        // Owned by these listeners: dropping them (detach / unmount) releases body-key routing.
         let surface = Rc::new(root.clone());
         body_keys_accept(&surface);
         let focus_surface = Rc::clone(&surface);
         let on_focus = Closure::<dyn FnMut(web_sys::Event)>::new(move |_: web_sys::Event| {
             BODY_KEYS.with(|route| route.borrow_mut().focus_entered(&focus_surface));
         });
-        register_listener(listeners, &root.clone().into(), "focusin", false, on_focus);
+        let focus_guard = DomListenerGuard::attach(root.clone().into(), "focusin", false, on_focus);
 
-        let evs = Rc::clone(&backend.pending_events);
-        let m = Rc::clone(&backend.node_event_meta);
-        let ime_g = Rc::clone(&backend.ime_guard);
-        let sid = Rc::clone(&backend.surface_id);
-        let notify = Rc::clone(&backend.on_event);
-        let interceptors = Rc::clone(&backend.key_interceptors);
+        let sinks = sinks.clone();
+        let ime = Rc::clone(ime);
+        let interceptors = Rc::clone(interceptors);
         let key_target: web_sys::EventTarget =
             web_sys::window().map_or_else(|| root.clone().into(), Into::into);
         let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
             let Some(ke) = ev.dyn_ref::<web_sys::KeyboardEvent>() else {
                 return;
             };
-            if ime_g.should_suppress_keydown(ke.is_composing(), ke.key_code()) {
+            if ime.should_suppress_keydown(ke.is_composing(), ke.key_code()) {
                 return;
             }
             let r: &web_sys::Element = &surface;
@@ -399,33 +395,32 @@ mod wasm {
             let chain = el
                 .as_ref()
                 .filter(|_| inside)
-                .map(|e| collect_ancestors(e, r, &m.borrow()))
+                .map(|e| collect_ancestors(e, r))
                 .unwrap_or_default();
             let key = ke.key();
             let in_this_surface =
                 inside || el.as_ref().is_none_or(is_document_level) && body_keys_accept(&surface);
             let code = ke.code();
-            let modifiers = pack_key_modifiers(
+            let mut flags = EventFlags::from_modifiers(
                 ke.meta_key(),
                 ke.ctrl_key(),
                 ke.shift_key(),
                 ke.alt_key(),
                 ke.repeat(),
             );
-            let timestamp_us = now_us();
 
             if in_this_surface {
                 let (in_text_input, is_multiline_input) =
                     el.as_ref().map_or((false, false), text_input_kind);
                 let info = WebKeyEventInfo {
-                    modifiers,
+                    modifiers: flags,
                     repeat: ke.repeat(),
                     is_composing: ke.is_composing(),
                     in_text_input,
                     is_multiline_input,
                     owned_arrows: el.as_ref().map_or(ArrowAxes::NONE, owned_arrows),
-                    target_node: chain.first().and_then(|(id, _, _)| node_id_from_raw(*id)),
-                    timestamp_us,
+                    target_node: chain.first().map(|&(id, _)| id),
+                    timestamp_us: now_us().0,
                     surface_root: Some(r),
                     ..WebKeyEventInfo::new(&key, &code, ke.key_code())
                 };
@@ -447,47 +442,31 @@ mod wasm {
             if key == "Enter"
                 && let Some(ref target_el) = el
                 && target_el.dyn_ref::<web_sys::HtmlInputElement>().is_some()
-                && let Some((submit_id, _, _)) = chain
-                    .iter()
-                    .find(|(_, meta, _)| (meta.mask & EventMask::SUBMIT) != 0)
+                && let Some(&(submit_id, _)) = sinks.find(&chain, |st, id| {
+                    st.listens::<TextInput>(id, TextInputEvent::Submit)
+                })
             {
                 ev.prevent_default();
-                evs.borrow_mut().push(NativeEvent {
-                    kind: NativeEventKind::Submit,
-                    surface_id: sid.get(),
-                    node_id: *submit_id,
-                    timestamp_us,
-                    payload: EventPayload::Text(read_dom_input_value(target_el)),
-                });
-                notify_event(&notify);
+                let value = read_dom_input_value(target_el);
+                sinks.emit(|q, sid, ts| q.push_submit(sid, submit_id, ts, &value));
                 return;
             }
             if !in_this_surface {
                 return;
             }
 
-            let target_id = chain
-                .iter()
-                .find(|(_, meta, _)| (meta.mask & EventMask::KEY_DOWN) != 0)
-                .map(|(id, _, _)| *id)
-                .or_else(|| chain.first().map(|(id, _, _)| *id))
-                .unwrap_or(nve_abi::ROOT_NODE_ID);
-            evs.borrow_mut().push(NativeEvent {
-                kind: NativeEventKind::KeyDown,
-                surface_id: sid.get(),
-                node_id: target_id,
-                timestamp_us,
-                payload: EventPayload::Key {
-                    key,
-                    code,
-                    modifiers,
-                    key_code: ke.key_code(),
-                    is_composing: ke.is_composing(),
-                },
+            let target_id = sinks
+                .find(&chain, |st, id| st.listens::<Interaction>(id, InteractionEvent::KeyDown))
+                .or_else(|| chain.first())
+                .map_or(NodeId::ROOT, |&(id, _)| id);
+            if ke.is_composing() {
+                flags = flags.union(EventFlags::COMPOSING);
+            }
+            let key_code = ke.key_code();
+            sinks.emit(|q, sid, ts| {
+                q.push_key_down(sid, target_id, ts, &key, &code, flags, key_code);
             });
-            notify_event(&notify);
         });
-        register_listener(listeners, &key_target, "keydown", false, cb);
+        [DomListenerGuard::attach(key_target, "keydown", false, cb), focus_guard]
     }
 }
-

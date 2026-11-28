@@ -82,3 +82,93 @@ invalid:
   - |
     struct BinWriter(Vec<u8>);
     fn read_u32() -> u32 { 0 }
+---
+id: rust-no-private-slice-byte-readers
+valid:
+  - |
+    fn read_u32(r: &mut nve_codec::ByteReader<'_>) -> Result<u32, nve_codec::CodecError> {
+        r.read_u32()
+    }
+  - |
+    #[cfg(test)]
+    mod tests {
+        fn read_u32(buf: &[u8], pos: &mut usize) -> Option<u32> {
+            let s = buf.get(*pos..*pos + 4)?;
+            *pos += 4;
+            Some(u32::from_le_bytes(s.try_into().ok()?))
+        }
+    }
+invalid:
+  - |
+    fn read_u32(buf: &[u8], pos: &mut usize) -> Option<u32> {
+        let s = buf.get(*pos..*pos + 4)?;
+        *pos += 4;
+        Some(u32::from_le_bytes(s.try_into().ok()?))
+    }
+  - |
+    pub fn decode_i32(buf: &[u8]) -> i32 {
+        i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]])
+    }
+  - |
+    struct Reader<'a>(&'a [u8]);
+    impl<'a> Reader<'a> {
+        fn f32(&mut self) -> f32 {
+            f32::from_le_bytes([self.0[0], self.0[1], self.0[2], self.0[3]])
+        }
+    }
+  - |
+    fn decode_closure(bytes: &[u8]) -> Option<u32> {
+        let read_u32 = |o: usize| u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
+        Some(read_u32(0))
+    }
+---
+id: rust-no-swallowed-codec-write
+valid:
+  - |
+    fn encode(w: &mut ByteWriter, s: &str) -> Result<(), CodecError> {
+        w.write_str(s)?;
+        w.write_len(1)?;
+        Ok(())
+    }
+  - |
+    fn format_text(out: &mut String) {
+        let _ = writeln!(out, "ok");
+    }
+  - |
+    fn fmt_write_str(f: &mut core::fmt::Formatter<'_>) {
+        let _ = f.write_str("hello");
+    }
+invalid:
+  - |
+    fn encode(w: &mut ByteWriter, s: &str) {
+        let _ = w.write_str(s);
+    }
+  - |
+    fn encode(w: &mut ByteWriter) {
+        let _ = w.patch_u32(0, 42);
+    }
+  - |
+    fn encode(w: &mut SliceWriter<'_>) {
+        let _ = w.write_u32(42);
+    }
+  - |
+    fn encode(w: &mut ByteWriter, s: &str) {
+        _ = w.write_str(s);
+    }
+  - |
+    fn encode(w: &mut ByteWriter, s: &str) {
+        let _r = w.write_str(s);
+    }
+  - |
+    fn encode(w: &mut SliceWriter<'_>) {
+        w.write_u32(42).ok();
+    }
+  - |
+    fn encode(v: &impl NveEncode, w: &mut ByteWriter) {
+        let _ = v.encode(w);
+    }
+  - |
+    fn encode(w: &mut SliceWriter<'_>) {
+        let res = w.write_u32(1);
+        debug_assert!(res.is_ok());
+    }

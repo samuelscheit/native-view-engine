@@ -8,6 +8,7 @@ use http::header::{
     HeaderValue, CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS,
 };
 use http::{Response, StatusCode};
+use nve_abi::SurfaceId;
 use nve_backend_web::WebBackend;
 use nve_dioxus::DioxusSurface;
 use nve_example_issues_api::{
@@ -218,7 +219,7 @@ pub async fn render_issues_page(
     let rendered = pool
         .render_streaming(page, StreamPlan::default(), client, move |c| {
             DioxusSurface::new_with_props(
-                1,
+                SurfaceId::ROOT,
                 IssuesApp,
                 IssuesAppProps {
                     client: c,

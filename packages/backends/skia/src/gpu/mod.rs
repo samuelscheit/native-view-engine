@@ -32,7 +32,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
 
-use nve_abi::ColorRgba;
+use nve_abi::{ColorRgba, EventBatchBuf};
 
 use crate::raster::{
     draw_hud_banner, rasterize_display_list_with_text_engine,
@@ -41,11 +41,11 @@ use crate::raster::{
 use crate::table_system::SkiaTableRegistry;
 use crate::text::CosmicTextEngine;
 use crate::DisplayList;
-use nve_store::{NodeStore, TableEventBus};
+use nve_store::NodeStore;
 
-/// Borrowed plugin context (`NodeStore` + `SkiaTableRegistry` + `TableEventBus`) threaded into
+/// Borrowed plugin context (`NodeStore` + `SkiaTableRegistry` + `EventBatchBuf`) threaded into
 /// Skia GPU/CPU/software frame presenters so `PaintOp::Plugin` (`Svg`, `Canvas`, 3P) renders.
-pub type SkiaPluginContext<'a> = (&'a NodeStore, &'a SkiaTableRegistry, &'a mut TableEventBus);
+pub type SkiaPluginContext<'a> = (&'a NodeStore, &'a SkiaTableRegistry, &'a mut EventBatchBuf);
 
 #[cfg(any(feature = "skia-metal", feature = "skia-vulkan", feature = "skia-d3d"))]
 pub use ganesh::{GaneshPresenter, NativeSwapchain};

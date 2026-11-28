@@ -20,10 +20,9 @@ pub mod registry;
 pub mod win32_str;
 
 pub use bridge::HostCallbackBridge;
-pub use codec::{
-    validate_url, BinReader, BinWriter, MAX_SEQ_ITEMS,
-};
+pub use codec::{validate_url, MAX_PAYLOAD_BYTES, MAX_SEQ_ITEMS};
 pub use error::ServiceError;
+pub use nve_codec::{ByteReader, ByteWriter, CodecError, NveCodec, NveDecode, NveEncode};
 pub use events::{TypedAsyncTable, TypedEventBus, TypedEventSubscription, TypedHostEvent};
 pub use ffi_client::{FfiHostServices, RequestTable, FFI_MAX_RESPONSE_BYTES, FFI_STACK_BUF_SIZE};
 pub use provider::{

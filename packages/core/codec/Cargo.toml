@@ -1,0 +1,19 @@
+[package]
+name = "nve-codec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Zero-unsafe, zero-runtime-dependency Tier-2 little-endian binary codec primitives and #[derive(NveCodec)]"
+
+[dependencies]
+nve-abi-macros = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "codec_bench"
+harness = false
+
+[lints]
+workspace = true

@@ -11,16 +11,22 @@
 
 mod support;
 
-use nve_abi::{EventMask, EventPayload, NativeEventKind};
+use nve_abi::{EventBatchBuf, InteractionEvent, TextInputEvent};
 use nve_backend_web::{
     CapturedPreHydrationEvent, PendingStreamSlot, StreamSlotState, StreamingDocumentOptions, StreamingSsrSession,
     WebBackend,
 };
-use nve_components::tables::{Accessibility, AriaRole, Interaction, TextContent, TextInput};
+use nve_tables::tables::{Accessibility, AriaRole, Interaction, TextContent, TextInput};
 use nve_engine::StoreBackend;
 use nve_store::{NodeId, NodeStore, Transaction};
 
 use support::*;
+
+fn drain(web: &mut WebBackend) -> EventBatchBuf {
+    let mut buf = EventBatchBuf::new();
+    web.drain_events(&mut buf);
+    buf
+}
 
 #[test]
 fn streaming_shell_delta_css_dedup_and_shifted_id_post_and_mid_stream_hydration() {
@@ -40,17 +46,17 @@ fn streaming_shell_delta_css_dedup_and_shifted_id_post_and_mid_stream_hydration(
         vec![
             PendingStreamSlot {
                 slot_id: "slot1".into(),
-                parent_node_id: NodeId(3)
+                parent_node_id: nid(3)
             },
             PendingStreamSlot {
                 slot_id: "slot2".into(),
-                parent_node_id: NodeId(6)
+                parent_node_id: nid(6)
             },
         ]
     );
-    assert_eq!(server.stream_slot_state(&store, NodeId(3), "slot1"), StreamSlotState::Pending);
-    assert_eq!(server.stream_slot_state(&store, NodeId(6), "slot2"), StreamSlotState::Pending);
-    assert_eq!(server.stream_slot_state(&store, NodeId(999), "slot1"), StreamSlotState::Unmounted);
+    assert_eq!(server.stream_slot_state(&store, nid(3), "slot1"), StreamSlotState::Pending);
+    assert_eq!(server.stream_slot_state(&store, nid(6), "slot2"), StreamSlotState::Pending);
+    assert_eq!(server.stream_slot_state(&store, nid(999), "slot1"), StreamSlotState::Unmounted);
     // Shell keeps `<div data-nve-id="4" ... data-nve-stream-slot="slot1">` INSIDE `<slot>`.
     assert!(
         shell_out
@@ -83,17 +89,17 @@ fn streaming_shell_delta_css_dedup_and_shifted_id_post_and_mid_stream_hydration(
 
     // Resolve slot2 FIRST (out-of-order!) using BOTH the already-sent shared style and a new one.
     commit(&mut server, &mut store, |tx| {
-        tx.remove(NodeId(7));
+        tx.remove(nid(7));
         let boxed = node(tx, 20);
         shared_style(tx, boxed); // already sent in shell -> must NOT re-emit!
         let t = text(tx, 21, "Slot 2 Resolved");
         delta_style(tx, t); // brand new -> MUST emit once!
         tx.set_children(boxed, &[t]);
-        tx.set_children(NodeId(6), &[boxed]);
+        tx.set_children(nid(6), &[boxed]);
     });
-    assert_eq!(server.stream_slot_state(&store, NodeId(6), "slot2"), StreamSlotState::Resolved);
-    assert_eq!(server.stream_slot_state(&store, NodeId(3), "slot1"), StreamSlotState::Pending);
-    let delta2 = server.render_ssr_subtree_delta(&store, NodeId(6), &mut shell_out.style_tracker);
+    assert_eq!(server.stream_slot_state(&store, nid(6), "slot2"), StreamSlotState::Resolved);
+    assert_eq!(server.stream_slot_state(&store, nid(3), "slot1"), StreamSlotState::Pending);
+    let delta2 = server.render_ssr_subtree_delta(&store, nid(6), &mut shell_out.style_tracker);
     assert_eq!(
         delta2.rule_hashes.len(),
         1,
@@ -118,7 +124,7 @@ fn streaming_shell_delta_css_dedup_and_shifted_id_post_and_mid_stream_hydration(
     let ssr_ids = [1, 2, 4, 5, 20, 21];
     let mid_instances: Vec<u64> = ssr_ids
         .iter()
-        .map(|&id| mid_client.native_dom_instance_id(id).unwrap())
+        .map(|&id| mid_client.native_dom_instance_id(nid(id)).unwrap())
         .collect();
 
     // Client Frame 0 with COMPLETELY SHIFTED NodeIds (+1000)!
@@ -146,7 +152,7 @@ fn streaming_shell_delta_css_dedup_and_shifted_id_post_and_mid_stream_hydration(
         .zip(&mid_instances)
     {
         assert_eq!(
-            mid_client.native_dom_instance_id(client_id),
+            mid_client.native_dom_instance_id(nid(client_id)),
             Some(*instance),
             "node {client_id}"
         );
@@ -158,18 +164,18 @@ fn streaming_shell_delta_css_dedup_and_shifted_id_post_and_mid_stream_hydration(
     let split_at = chunk2.find(ack2).expect("chunk2 carries its slot ack");
     let split_client =
         WebBackend::hydrate_from_streaming_html(&format!("{shell_html}{}", &chunk2[..split_at]));
-    assert!(split_client.native_dom_instance_id(8).is_some(), "fallback must stay adopted");
-    assert_eq!(split_client.native_dom_instance_id(21), None, "unacked chunk adopted early");
+    assert!(split_client.native_dom_instance_id(nid(8)).is_some(), "fallback must stay adopted");
+    assert_eq!(split_client.native_dom_instance_id(nid(21)), None, "unacked chunk adopted early");
 
     // --- TEST B: POST-STREAM OUT-OF-ORDER [slot2, slot1] HYDRATION WITH SHIFTED NodeIds ---
     commit(&mut server, &mut store, |tx| {
-        tx.remove(NodeId(4));
+        tx.remove(nid(4));
         let t = text(tx, 30, "Slot 1 Resolved Second");
         delta_style(tx, t);
-        tx.set_children(NodeId(3), &[t]);
+        tx.set_children(nid(3), &[t]);
     });
-    assert_eq!(server.stream_slot_state(&store, NodeId(3), "slot1"), StreamSlotState::Resolved);
-    let delta1 = server.render_ssr_subtree_delta(&store, NodeId(3), &mut shell_out.style_tracker);
+    assert_eq!(server.stream_slot_state(&store, nid(3), "slot1"), StreamSlotState::Resolved);
+    let delta1 = server.render_ssr_subtree_delta(&store, nid(3), &mut shell_out.style_tracker);
     assert!(
         delta1.rule_hashes.is_empty(),
         "style already sent in slot2 must dedup"
@@ -181,8 +187,8 @@ fn streaming_shell_delta_css_dedup_and_shifted_id_post_and_mid_stream_hydration(
 
     let full_html = format!("{shell_html}{chunk2}{chunk1}{trailer}");
     let mut full_client = WebBackend::hydrate_from_streaming_html(&full_html);
-    let full_slot1_text = full_client.native_dom_instance_id(30).unwrap();
-    let full_slot2_text = full_client.native_dom_instance_id(21).unwrap();
+    let full_slot1_text = full_client.native_dom_instance_id(nid(30)).unwrap();
+    let full_slot2_text = full_client.native_dom_instance_id(nid(21)).unwrap();
 
     let mut full_store = NodeStore::new();
     commit(&mut full_client, &mut full_store, |tx| {
@@ -211,11 +217,11 @@ fn streaming_shell_delta_css_dedup_and_shifted_id_post_and_mid_stream_hydration(
     assert_eq!(full_rep.adopted_nodes, 7);
     assert!(no_new_css_rules(&full_client));
     assert_eq!(
-        full_client.native_dom_instance_id(2030),
+        full_client.native_dom_instance_id(nid(2030)),
         Some(full_slot1_text)
     );
     assert_eq!(
-        full_client.native_dom_instance_id(2021),
+        full_client.native_dom_instance_id(nid(2021)),
         Some(full_slot2_text)
     );
 }
@@ -259,15 +265,15 @@ fn mutation_test_swapping_same_tag_siblings_with_different_child_counts_produces
     assert!(
         rep.mismatches
             .iter()
-            .any(|m| m.node_id == 12 && m.actual_tag == "<missing>" && m.expected_tag == "span")
+            .any(|m| m.node_id == nid(12) && m.actual_tag == "<missing>" && m.expected_tag == "span")
     );
     assert!(
         rep.mismatches
             .iter()
-            .any(|m| m.node_id == 10 && m.expected_tag.is_empty() && m.actual_tag == "span")
+            .any(|m| m.node_id == nid(10) && m.expected_tag.is_empty() && m.actual_tag == "span")
     );
     // Missing nodes get fresh simulated DOM identities.
-    assert!(client.native_dom_instance_id(12).is_some());
+    assert!(client.native_dom_instance_id(nid(12)).is_some());
 }
 
 #[test]
@@ -284,8 +290,8 @@ fn tag_mismatch_replaces_only_the_diverging_subtree() {
     let ssr = server.render_ssr(&store);
     let mut client = WebBackend::hydrate_from_ssr(&ssr);
     client.register_table_system(TagOverrideSystem);
-    let keep_instance = client.native_dom_instance_id(2).unwrap();
-    let inner_instance = client.native_dom_instance_id(4).unwrap();
+    let keep_instance = client.native_dom_instance_id(nid(2)).unwrap();
+    let inner_instance = client.native_dom_instance_id(nid(4)).unwrap();
     let mut client_store = NodeStore::new();
     commit(&mut client, &mut client_store, |tx| {
         let keep = text(tx, 2, "keep");
@@ -300,14 +306,14 @@ fn tag_mismatch_replaces_only_the_diverging_subtree() {
     assert_eq!(
         rep.mismatches,
         vec![nve_backend_web::HydrationMismatch {
-            node_id: 3,
+            node_id: nid(3),
             expected_tag: "article".into(),
             actual_tag: "section".into(),
         }]
     );
-    assert_eq!(client.native_dom_instance_id(2), Some(keep_instance));
+    assert_eq!(client.native_dom_instance_id(nid(2)), Some(keep_instance));
     assert_ne!(
-        client.native_dom_instance_id(4),
+        client.native_dom_instance_id(nid(4)),
         Some(inner_instance),
         "subtree rebuilt"
     );
@@ -317,13 +323,12 @@ fn tag_mismatch_replaces_only_the_diverging_subtree() {
 fn shifted_node_ids_preserve_dirty_input_and_remap_pre_hydration_click_replay() {
     let build_tree = |tx: &mut Transaction<'_>, offset: u32, input_val: &str| {
         let inp = node(tx, offset + 2);
-        tx.edit::<TextInput>(inp).value(input_val);
-        tx.edit::<Interaction>(inp)
-            .event_mask(EventMask::TEXT_CHANGE as u32);
+        tx.edit::<TextInput>(inp)
+            .value(input_val)
+            .listen(TextInputEvent::Change);
         let btn = node(tx, offset + 3);
-        tx.edit::<Accessibility>(btn).role(AriaRole::Button);
-        tx.edit::<Interaction>(btn)
-            .event_mask(EventMask::PRESS as u32);
+        tx.edit::<Accessibility>(btn).role(Some(AriaRole::Button));
+        tx.edit::<Interaction>(btn).listen(InteractionEvent::Press);
         let lbl = text(tx, offset + 4, "Submit");
         tx.set_children(btn, &[lbl]);
         tx.set_children(NodeId::ROOT, &[inp, btn]);
@@ -338,25 +343,25 @@ fn shifted_node_ids_preserve_dirty_input_and_remap_pre_hydration_click_replay() 
     let mut client = WebBackend::hydrate_from_ssr(&ssr);
     let before: Vec<u64> = [2, 3, 4]
         .iter()
-        .map(|&id| client.native_dom_instance_id(id).unwrap())
+        .map(|&id| client.native_dom_instance_id(nid(id)).unwrap())
         .collect();
 
     // User types into SSR input #2 and clicks SSR text label #4 before WASM boots!
-    client.set_hydrated_dom_control_value(2, "user-edited-query");
+    client.set_hydrated_dom_control_value(nid(2), "user-edited-query");
     assert_eq!(
-        client.native_dom_control_value(2),
+        client.native_dom_control_value(nid(2)),
         Some("user-edited-query")
     );
     client.queue_pre_hydration_events(vec![
         CapturedPreHydrationEvent::Press {
-            node_id: 4,
+            node_id: nid(4),
             x: 15.0,
             y: 25.0,
             age_ms: 40,
         },
         // Event targeting a non-existent SSR ID must be dropped (never misrouted).
         CapturedPreHydrationEvent::Press {
-            node_id: 503,
+            node_id: nid(503),
             x: 1.0,
             y: 1.0,
             age_ms: 10,
@@ -378,26 +383,26 @@ fn shifted_node_ids_preserve_dirty_input_and_remap_pre_hydration_click_replay() 
 
     // Exact DOM instances adopted under shifted IDs!
     for (client_id, instance) in [502, 503, 504].into_iter().zip(&before) {
-        assert_eq!(client.native_dom_instance_id(client_id), Some(*instance));
+        assert_eq!(client.native_dom_instance_id(nid(client_id)), Some(*instance));
     }
     // Dirty local input preserved via PreferLocal under shifted ID 502!
     assert_eq!(
-        client.native_dom_control_value(502),
+        client.native_dom_control_value(nid(502)),
         Some("user-edited-query")
     );
 
     // Reconciled TextChange (on 502) followed by remapped+bubbled Press (4 -> 504 -> 503)!
-    let events = client.drain_events();
-    assert_eq!(events.len(), 2);
-    assert_eq!(events[0].node_id, 502);
-    assert_eq!(events[0].kind, NativeEventKind::TextChange);
-    assert_eq!(
-        events[0].payload,
-        EventPayload::Text("user-edited-query".into())
-    );
-    assert_eq!(events[1].node_id, 503);
-    assert_eq!(events[1].kind, NativeEventKind::Press);
-    assert_eq!(events[1].payload, EventPayload::Point { x: 15.0, y: 25.0 });
+    let events = drain(&mut client);
+    let validated = events.as_validated();
+    assert_eq!(validated.len(), 2);
+    let ev0 = validated.get(0).unwrap();
+    assert_eq!(ev0.node(), nid(502));
+    assert_eq!(ev0.text_input(), Some(TextInputEvent::Change));
+    assert_eq!(ev0.text(), "user-edited-query");
+    let ev1 = validated.get(1).unwrap();
+    assert_eq!(ev1.node(), nid(503));
+    assert_eq!(ev1.interaction(), Some(InteractionEvent::Press));
+    assert_eq!((ev1.x(), ev1.y()), (15.0, 25.0));
 
     // Clean (untouched) control adopts the incoming client value without emitting events.
     let mut clean = WebBackend::hydrate_from_ssr(&ssr);
@@ -406,8 +411,8 @@ fn shifted_node_ids_preserve_dirty_input_and_remap_pre_hydration_click_replay() 
         build_tree(tx, 500, "server-incoming")
     });
     assert_eq!(clean.hydration_report().reconciled_dirty_controls, 0);
-    assert_eq!(clean.native_dom_control_value(502), Some("server-incoming"));
-    assert!(clean.drain_events().is_empty());
+    assert_eq!(clean.native_dom_control_value(nid(502)), Some("server-incoming"));
+    assert!(drain(&mut clean).is_empty());
 }
 
 #[test]
@@ -426,12 +431,12 @@ fn duplicate_slot_chunks_in_streaming_html_last_wins_on_promotion() {
 
     let html = format!("{shell}{stale}{latest}{end}");
     let mut client = WebBackend::hydrate_from_streaming_html(&html);
-    let latest_btn_instance = client.native_dom_instance_id(11).unwrap();
+    let latest_btn_instance = client.native_dom_instance_id(nid(11)).unwrap();
     let mut store = NodeStore::new();
     commit(&mut client, &mut store, |tx| {
         let wrap = node(tx, 2);
         let btn = text(tx, 99, "latest");
-        tx.edit::<Accessibility>(btn).role(AriaRole::Button);
+        tx.edit::<Accessibility>(btn).role(Some(AriaRole::Button));
         tx.set_children(wrap, &[btn]);
         tx.set_children(NodeId::ROOT, &[wrap]);
     });
@@ -440,7 +445,7 @@ fn duplicate_slot_chunks_in_streaming_html_last_wins_on_promotion() {
         "{:?}",
         client.hydration_report()
     );
-    assert_eq!(client.native_dom_instance_id(99), Some(latest_btn_instance));
+    assert_eq!(client.native_dom_instance_id(nid(99)), Some(latest_btn_instance));
 }
 
 #[test]
@@ -454,8 +459,8 @@ fn truncated_tcp_split_slot_chunk_does_not_prematurely_replace_pending_fallback(
         "{shell}<div slot=\"nve-slot-feed\" data-nve-slot=\"feed\" class=\"nve-slot\"><button data-nve-id=\"10\">Half"
     );
     let mut client = WebBackend::hydrate_from_streaming_html(&truncated);
-    let fallback_slot = client.native_dom_instance_id(3).unwrap();
-    let fallback_span = client.native_dom_instance_id(4).unwrap();
+    let fallback_slot = client.native_dom_instance_id(nid(3)).unwrap();
+    let fallback_span = client.native_dom_instance_id(nid(4)).unwrap();
     let mut store = NodeStore::new();
     commit(&mut client, &mut store, |tx| {
         let s = pending_slot(tx, 200, 201, 202, "feed");
@@ -463,16 +468,16 @@ fn truncated_tcp_split_slot_chunk_does_not_prematurely_replace_pending_fallback(
     });
     assert!(client.hydration_report().mismatches.is_empty());
     assert_eq!(client.hydration_report().replaced_nodes, 0);
-    assert_eq!(client.native_dom_instance_id(201), Some(fallback_slot));
-    assert_eq!(client.native_dom_instance_id(202), Some(fallback_span));
+    assert_eq!(client.native_dom_instance_id(nid(201)), Some(fallback_slot));
+    assert_eq!(client.native_dom_instance_id(nid(202)), Some(fallback_span));
 }
 
 /// `[press button, disabled?] -> label` tree with ids `offset + {2, 3}`.
 fn button_with_label(tx: &mut Transaction<'_>, offset: u32, disabled: bool) {
     let btn = node(tx, offset + 2);
-    tx.edit::<Accessibility>(btn).role(AriaRole::Button);
+    tx.edit::<Accessibility>(btn).role(Some(AriaRole::Button));
     tx.edit::<Interaction>(btn)
-        .event_mask(EventMask::PRESS as u32)
+        .listen(InteractionEvent::Press)
         .disabled(disabled);
     let lbl = text(tx, offset + 3, "Go");
     tx.set_children(btn, &[lbl]);
@@ -481,7 +486,7 @@ fn button_with_label(tx: &mut Transaction<'_>, offset: u32, disabled: bool) {
 
 fn press(node_id: u32) -> CapturedPreHydrationEvent {
     CapturedPreHydrationEvent::Press {
-        node_id,
+        node_id: nid(node_id),
         x: 1.0,
         y: 1.0,
         age_ms: 10,
@@ -498,9 +503,14 @@ fn pre_hydration_press_inside_disabled_button_is_dropped_not_replayed() {
         client.queue_pre_hydration_events(vec![press(3), press(2)]);
         let mut client_store = NodeStore::new();
         commit(&mut client, &mut client_store, |tx| button_with_label(tx, 100, disabled));
-        let events = client.drain_events();
-        assert_eq!(events.len(), expected * 2, "disabled={disabled}: {events:?}");
-        assert!(events.iter().all(|e| e.node_id == 102 && e.kind == NativeEventKind::Press));
+        let events = drain(&mut client);
+        let validated = events.as_validated();
+        assert_eq!(validated.len(), expected * 2, "disabled={disabled}: {validated:?}");
+        assert!(
+            validated
+                .iter()
+                .all(|e| e.node() == nid(102) && e.interaction() == Some(InteractionEvent::Press))
+        );
         assert_eq!(client.hydration_report().replayed_events, (expected * 2) as u32);
     }
 }
@@ -514,7 +524,7 @@ fn queued_pre_hydration_events_without_ssr_pairing_are_discarded() {
         client.queue_pre_hydration_events(vec![press(2), press(3)]);
         let mut store = NodeStore::new();
         commit(&mut client, &mut store, |tx| button_with_label(tx, 0, false));
-        assert!(client.drain_events().is_empty(), "html={html:?}");
+        assert!(drain(&mut client).is_empty(), "html={html:?}");
         assert_eq!(client.hydration_report().replayed_events, 0);
     }
 
@@ -527,9 +537,9 @@ fn queued_pre_hydration_events_without_ssr_pairing_are_discarded() {
     commit(&mut client, &mut client_store, |tx| button_with_label(tx, 0, false));
     client.queue_pre_hydration_events(vec![press(2)]);
     commit(&mut client, &mut client_store, |tx| {
-        tx.edit::<TextContent>(NodeId(3)).text("Again");
+        tx.edit::<TextContent>(nid(3)).text("Again");
     });
-    assert!(client.drain_events().is_empty());
+    assert!(drain(&mut client).is_empty());
 }
 
 #[test]

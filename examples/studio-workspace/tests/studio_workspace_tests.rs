@@ -6,11 +6,11 @@ use common::{
     MultiBackendHarness, find_in_store, live_node_ids, register_studio_tables, write_ppm,
 };
 use nve_abi::{
-    ColorRgba, NveDirectEvent, NveGestureDisposition, NveMapEntry, NvePropsRef, NveSizeConstraints,
-    NveValue,
+    ColorRgba, EventBatchBuf, FrameId, NveGestureDisposition, NveMapEntry, NvePropsRef,
+    NveSizeConstraints, NveValue, SurfaceId, TimestampUs,
 };
 use nve_backend_headless::HeadlessBackend;
-use nve_components::tables::Visual;
+use nve_tables::tables::Visual;
 use nve_engine::loader::HotAppInstance;
 use nve_engine::{HotPatchMsg, NveApp, StoreBackend, StoreWireReplica, Viewport};
 use nve_studio_workspace::state::StudioConfig;
@@ -351,7 +351,7 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
     state.scrub_redo();
     assert_eq!(state.cursor, MAX_HISTORY - 1);
 
-    let mut app = common::headless_module(1);
+    let mut app = common::headless_module(SurfaceId::ROOT);
     let measured = app.measure(NveSizeConstraints {
         min_w: 320.0,
         max_w: 960.0,
@@ -374,7 +374,7 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
     // SAFETY: `direct_entries` outlives `direct_props`.
     let direct_props = unsafe { NvePropsRef::from_slice(&direct_entries) };
     assert!(app.set_props(direct_props));
-    let _ = app.render(1);
+    let _ = app.render(FrameId(1));
     let patch = HotPatchMsg::TemplatePatch {
         generation: 1,
         template_id: "studio".into(),
@@ -385,7 +385,7 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
         text_replacements: vec![],
     };
     assert!(app.apply_hot_patch(&patch));
-    let _ = app.render(2);
+    let _ = app.render(FrameId(2));
 
     let saved = app.snapshot_state().to_vec();
     assert!(!saved.is_empty());
@@ -394,7 +394,7 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
         "snapshot_state must emit binary NWS1 binary format"
     );
 
-    let mut restored_app = common::headless_module(1);
+    let mut restored_app = common::headless_module(SurfaceId::ROOT);
     restored_app.restore_state(b"{not-valid-binary");
     assert_eq!(
         restored_app.state_snapshot().current.studio.accent,
@@ -421,17 +421,17 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
     );
 
     register_studio_tables();
-    let frame = restored_app.render(3);
+    let frame = restored_app.render(FrameId(3));
     let mut backend = HeadlessBackend::new();
     backend.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 960.0,
             height: 640.0,
             scale_factor: 1.0,
         },
     );
-    let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
+    let mut host = StoreWireReplica::new(backend, nve_tables::tables::core_realization_order());
     host.submit_nve2_frame(frame).unwrap();
     let tree = host.backend().render_ascii_tree(host.store());
     assert!(tree.contains("Live Metrics"));
@@ -476,11 +476,11 @@ fn tier2_cdylib_hotswap_loads_via_nve_get_interface_and_preserves_full_state() {
     };
     register_studio_tables();
     let mut backend = HeadlessBackend::new();
-    backend.set_viewport(1, vp);
-    let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
+    backend.set_viewport(SurfaceId::ROOT, vp);
+    let mut host = StoreWireReplica::new(backend, nve_tables::tables::core_realization_order());
 
-    let mut inst = HotAppInstance::load(&dylib_path, 1, 1, None).expect("load gen 1");
-    let f1 = inst.render(1);
+    let mut inst = HotAppInstance::load(&dylib_path, SurfaceId::ROOT, 1, None).expect("load gen 1");
+    let f1 = inst.render(FrameId(1));
     assert!(!f1.is_empty());
     host.submit_nve2_frame(f1).unwrap();
     assert!(
@@ -501,15 +501,16 @@ fn tier2_cdylib_hotswap_loads_via_nve_get_interface_and_preserves_full_state() {
         let nid =
             find_in_store(host.store(), tid).unwrap_or_else(|| panic!("missing testID='{tid}'"));
         let rect = host.backend().layout_of(nid).unwrap();
-        let ev = [NveDirectEvent::press(
-            1,
+        let mut ev = EventBatchBuf::new();
+        ev.push_press(
+            SurfaceId::ROOT,
             nid,
-            fid * 16_000,
+            TimestampUs(fid * 16_000),
             rect.x + rect.width * 0.5,
             rect.y + rect.height * 0.5,
-        )];
-        assert!(inst.dispatch_events(&ev));
-        let frame = inst.render(fid);
+        );
+        assert!(inst.dispatch_events(ev.as_validated()));
+        let frame = inst.render(FrameId(fid));
         host.submit_nve2_frame(frame).unwrap();
     };
 
@@ -537,10 +538,10 @@ fn tier2_cdylib_hotswap_loads_via_nve_get_interface_and_preserves_full_state() {
     assert_eq!(inst.generation(), 2);
 
     let mut backend2 = HeadlessBackend::new();
-    backend2.set_viewport(1, vp);
+    backend2.set_viewport(SurfaceId::ROOT, vp);
     let mut host2 =
-        StoreWireReplica::new(backend2, nve_components::tables::core_realization_order());
-    let f5 = inst.render(5);
+        StoreWireReplica::new(backend2, nve_tables::tables::core_realization_order());
+    let f5 = inst.render(FrameId(5));
     host2.submit_nve2_frame(f5).unwrap();
     let tree2 = host2.backend().render_ascii_tree(host2.store());
     assert!(

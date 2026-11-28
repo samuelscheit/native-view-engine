@@ -10,7 +10,7 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
 
-use nve_components::client_hints::{
+use nve_tables::client_hints::{
     SSR_ACCEPT_CH_HEADER, SSR_CRITICAL_CH_HEADER, SSR_VARY_HEADER,
 };
 

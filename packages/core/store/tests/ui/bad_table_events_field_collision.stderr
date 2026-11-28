@@ -1,0 +1,7 @@
+error: field `listeners` collides with generated `listeners()` method on event-bearing table
+  --> tests/ui/bad_table_events_field_collision.rs:10:10
+   |
+10 | #[derive(NveTable)]
+   |          ^^^^^^^^
+   |
+   = note: this error originates in the derive macro `NveTable` (in Nightly builds, run with -Z macro-backtrace for more info)

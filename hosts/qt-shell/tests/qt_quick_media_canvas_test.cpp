@@ -25,9 +25,12 @@ void image(h::Nve2Writer& w, uint32_t id, uint32_t res, std::span<const uint8_t>
 
 std::vector<uint8_t> two_rects(c::DrawColorRgba second) {
   c::DrawListEncoder e;
+  // Flat `u32`-word draw list (naturally 4-byte aligned for NVE2 DefineResources).
   e.clear(c::DrawColorRgba::rgb(255, 255, 255))
+      .clip_rect(0.0f, 0.0f, 40.0f, 20.0f)
       .fill_rect(0.0f, 0.0f, 20.0f, 20.0f, c::DrawColorRgba::rgb(255, 0, 0))
-      .fill_rect(20.0f, 0.0f, 20.0f, 20.0f, second);
+      .fill_rect(20.0f, 0.0f, 20.0f, 20.0f, second)
+      .restore_clip();
   return e.finish();
 }
 
@@ -43,7 +46,6 @@ void test_images_and_canvas() {
   image(w, kUrl, 60u, h::encode_image_url(data_url(png(2, 2, QColor(0, 255, 0)))));
   image(w, kBytes, 61u, h::encode_image_bytes(red));
   image(w, kTint, 62u, h::encode_image_bytes(red));
-  w.set_bool(kTint, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_TINT_ENABLED, true);
   w.set(kTint, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_TINT, h::rgba(0, 0, 255));
   image(w, kBad, 63u, h::encode_image_url("data:image/png;base64,AAAA"));
   image(w, kContain, 64u, h::encode_image_bytes(red));  // square image in a 40x20 box: pillarboxed
@@ -95,7 +97,7 @@ void test_images_and_canvas() {
   NVE_CHECK(same_rgb(q.at(235, 10), 0, 255, 0));
   NVE_CHECK(item.sceneGraphStats().canvasRasterizations == first.canvasRasterizations + 1u);
   std::vector<uint8_t> corrupt = two_rects(c::DrawColorRgba::rgb(0, 0, 0));
-  corrupt.resize(corrupt.size() - 3u);
+  corrupt.resize(corrupt.size() - 4u);  // truncate the last word while keeping 4-byte wire alignment
   w.define_resource(72u, c::kDrawListKind, corrupt);
   w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_TABLE_CANVAS_DRAW_LIST, 72u);
   w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_TABLE_CANVAS_GENERATION, 3u);
@@ -201,17 +203,15 @@ void test_typography_and_accessibility() {
   ScriptedApp app;
   h::Nve2Writer& w = app.w;
   w.create(1u);
-  w.set(1u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_COLOR);  // inherited
   w.set(1u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_COLOR, h::rgba(200, 0, 0));
   text_node(w, kHeading, "Title");
   w.set(kHeading, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_ROLE, NVE_ARIA_ROLE_HEADING);
   w.set(kHeading, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_LEVEL, 2u);
-  w.set(kHeading, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_FONT_SIZE);
   w.set_f32(kHeading, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, 24.0f);
   text_node(w, kButton, "Go");
   w.set(kButton, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_ROLE, NVE_ARIA_ROLE_BUTTON);
   (void)w.set_str(kButton, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_HINT, "Starts it");
-  subscribe(w, kButton, {NVE_EVENT_PRESS});
+  subscribe(w, kButton, {NVE_INTERACTION_EVENT_PRESS});
   w.create(kCheck);
   size_node(w, kCheck, 20.0f, 20.0f);
   w.set(kCheck, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_ROLE, NVE_ARIA_ROLE_CHECKBOX);
@@ -225,7 +225,7 @@ void test_typography_and_accessibility() {
   text_node(w, kHidden, "hidden");
   w.set(kHidden, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_VISIBILITY, NVE_VISIBILITY_HIDDEN);
   text_node(w, kDisabled, "Off");
-  subscribe(w, kDisabled, {NVE_EVENT_PRESS});
+  subscribe(w, kDisabled, {NVE_INTERACTION_EVENT_PRESS});
   w.set_bool(kDisabled, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_DISABLED, true);
   w.create(kGroup);
   text_node(w, kInner, "Inner");
@@ -271,9 +271,9 @@ void test_typography_and_accessibility() {
   NVE_CHECK(button->role() == QAccessible::Button && button->text(QAccessible::Description) == "Starts it");
   NVE_CHECK(button->actionInterface()->actionNames() == QStringList{QAccessibleActionInterface::pressAction()});
   button->actionInterface()->doAction(QAccessibleActionInterface::pressAction());
-  NVE_CHECK(app.count(NVE_EVENT_PRESS, kButton) == 1u);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_PRESS, kButton) == 1u);
   button->actionInterface()->doAction(QStringLiteral("bogus"));
-  NVE_CHECK(app.count(NVE_EVENT_PRESS, kButton) == 1u);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_PRESS, kButton) == 1u);
   NVE_CHECK(root->childAt(button->rect().center().x(), button->rect().center().y()) == button);
   QAccessibleInterface* check = root->child(2);
   NVE_CHECK(check->role() == QAccessible::CheckBox && check->state().checkable && check->state().checked);
@@ -285,7 +285,7 @@ void test_typography_and_accessibility() {
   NVE_CHECK(disabled->state().disabled && disabled->actionInterface()->actionNames().isEmpty());
   disabled->actionInterface()->doAction(QAccessibleActionInterface::pressAction());
   q.click(q.center(kDisabled));
-  NVE_CHECK(app.count(NVE_EVENT_PRESS, kDisabled) == 0u);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_PRESS, kDisabled) == 0u);
   QAccessibleInterface* group = root->child(6);
   NVE_CHECK(group->childCount() == 1 && group->child(0)->text(QAccessible::Name) == "Inner");
   NVE_CHECK(group->child(0)->parent() == group);

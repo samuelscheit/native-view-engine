@@ -53,9 +53,9 @@ fn hlc_clock_monotonicity_skew_overflow_and_wire_roundtrip() {
     for &now_ms in &[1000u64, 1000, 1000, 500, 0, 999, 1000, 1001, 1001, 200] {
         let ts = c1.tick(now_ms);
         assert!(ts > prev, "tick must be strictly monotonic: {ts:?} <= {prev:?}");
-        let enc = ts.encode_le();
+        let enc = nve_codec::NveEncode::encode_to_vec(&ts).unwrap();
         assert_eq!(enc.len(), HLC_ENCODED_LEN);
-        assert_eq!(HlcTimestamp::decode_le(enc), ts);
+        assert_eq!(<HlcTimestamp as nve_codec::NveDecode>::decode_exact(&enc).unwrap(), ts);
         assert_eq!(HlcTimestamp::decode_slice(&enc), Some(ts));
         prev = ts;
     }
@@ -570,7 +570,7 @@ fn wire_crdt_delta_roundtrip_and_adversarial_fuzzing() {
     bad_utf8.extend_from_slice(&1u16.to_le_bytes());
     bad_utf8.extend_from_slice(&2u32.to_le_bytes());
     bad_utf8.extend_from_slice(&[0xFF, 0xFE]); // invalid UTF-8
-    bad_utf8.extend_from_slice(&OpId::new(PeerId(1), 1).to_le_bytes());
+    bad_utf8.extend_from_slice(&nve_codec::NveEncode::encode_to_vec(&OpId::new(PeerId(1), 1)).unwrap());
     assert!(matches!(
         NveCrdtDelta::decode(&frame_with_valid_checksum(bad_utf8)),
         Err(CrdtWireError::InvalidUtf8)

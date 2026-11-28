@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "check.h"
+#include "nve/host/core_resources.hpp"
 #include "nve/host/nve2_builder.hpp"
 #include "nve/host/runtime_session.hpp"
 
@@ -21,13 +22,7 @@ namespace {
 
 constexpr std::string_view kUrl = "https://cdn.example.com/a.png";
 
-std::vector<uint8_t> image_src_url(std::string_view url) {
-  std::vector<uint8_t> out{0u};
-  const auto n = static_cast<uint32_t>(url.size());
-  for (uint32_t s = 0u; s < 32u; s += 8u) out.push_back(static_cast<uint8_t>((n >> s) & 0xFFu));
-  out.insert(out.end(), url.begin(), url.end());
-  return out;
-}
+std::vector<uint8_t> image_src_url(std::string_view url) { return nve::host::encode_image_url(url); }
 
 /// ROOT(1) -> [card(2): visual bg + text "Hi", image(3): src resource 7].
 std::vector<uint8_t> build_scene() {

@@ -1,4 +1,4 @@
-//! Criterion micro-benchmarks for `nve-host-services`: `BinWriter` / `BinReader` binary framing
+//! Criterion micro-benchmarks for `nve-host-services`: `ByteWriter` / `ByteReader` binary framing
 //! and URL validation.
 
 #[cfg(target_arch = "wasm32")]
@@ -9,12 +9,12 @@ mod native {
     use std::hint::black_box;
 
     use criterion::{criterion_group, Criterion};
-    use nve_host_services::{validate_url, BinReader, BinWriter};
+    use nve_host_services::{validate_url, ByteReader, ByteWriter, MAX_PAYLOAD_BYTES};
 
     fn bench_bin_codec(c: &mut Criterion) {
         c.bench_function("host_services_bin_roundtrip", |b| {
             b.iter(|| {
-                let mut w = BinWriter::with_capacity(128);
+                let mut w = ByteWriter::with_capacity(128);
                 w.write_u32(black_box(0x0023));
                 w.write_u64(black_box(1_700_000_000));
                 w.write_bool(true);
@@ -23,12 +23,12 @@ mod native {
                     .expect("valid bench string write");
                 let bytes = w.into_bytes();
 
-                let mut r = BinReader::new(&bytes);
+                let mut r = ByteReader::new(&bytes);
                 let svc = r.read_u32().expect("read u32");
                 let ts = r.read_u64().expect("read u64");
                 let ok = r.read_bool().expect("read bool");
                 let scale = r.read_f32().expect("read f32");
-                let url = r.read_str().expect("read str");
+                let url = r.read_str(MAX_PAYLOAD_BYTES).expect("read str");
                 black_box((svc, ts, ok, scale, url.len()))
             });
         });

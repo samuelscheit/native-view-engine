@@ -439,7 +439,8 @@ fn pixel_buffer_transparent_rgba_preserves_alpha_and_avoids_black_box() {
 #[cfg(feature = "skia")]
 #[test]
 fn cpu_skia_surface_plugin_preserves_transparent_background() {
-    use nve_store::{ChangeSet, NodeId, NveTable, Rgba, TableEventBus, TableSlot};
+    use nve_abi::EventBatchBuf;
+    use nve_store::{ChangeSet, NodeId, NveTable, Rgba, TableSlot};
     use crate::table_system::{SkiaSystemPaintCtx, SkiaTableRegistry, SkiaTableSystem};
 
     #[allow(dead_code)]
@@ -476,7 +477,7 @@ fn cpu_skia_surface_plugin_preserves_transparent_background() {
     };
     let mut registry = SkiaTableRegistry::new();
     registry.register(IconSys);
-    let mut events = TableEventBus::new();
+    let mut events = EventBatchBuf::new();
 
     let dl = DisplayList {
         ops: vec![PaintOp::Plugin {

@@ -1,5 +1,5 @@
 use crate::TaffyStoreLayout;
-use nve_components::tables::{Display, FlexDirection, Layout, Position, Visual};
+use nve_tables::tables::{Display, FlexDirection, Layout, Position, Visual};
 use nve_engine::Viewport;
 use nve_store::{ChangeSet, Length, NodeId, NodeStore};
 

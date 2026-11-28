@@ -17,9 +17,9 @@ use std::sync::Arc;
 
 use nve_abi::hash::HashMap;
 use nve_abi::table::effect;
-use nve_components::tables::{Transform, Typography, Visual};
+use nve_tables::tables::{Transform, Typography, Visual};
 use nve_engine::{BackendApplyStats, BackendError, StoreBackend};
-use nve_store::{ChangeSet, NodeId, NodeStore, TableEventBus, TableSlot};
+use nve_store::{ChangeSet, EventBatchBuf, NodeId, NodeStore, TableSlot};
 
 #[path = "table_system_ctx.rs"]
 mod ctx;
@@ -35,6 +35,7 @@ pub(crate) use ctx::ClickInterceptors;
 pub use ctx::WebSystemCommitCtx;
 #[cfg(target_arch = "wasm32")]
 pub use ctx::ClickInterceptor;
+#[cfg(feature = "ssr")]
 pub(crate) use ssr::write_core_ssr_attrs;
 pub use registry::{WebTableRegistry, WebTableSystem};
 pub use crate::sanitize::{is_safe_custom_tag, is_safe_web_attr, is_safe_web_url};
@@ -72,7 +73,7 @@ pub struct WebStoreRenderer {
     /// `(slot, node)` pairs queued by [`WebSystemCommitCtx::request_connected_sync`].
     #[cfg(target_arch = "wasm32")]
     connected_sync: Vec<(TableSlot, NodeId)>,
-    pub events: TableEventBus,
+    pub events: EventBatchBuf,
     pub composite_fast_lane_hits: u64,
     pub full_style_rebuilds: u64,
 }
@@ -119,7 +120,7 @@ impl WebStoreRenderer {
     }
 }
 
-pub(crate) fn write_transform_css(tf: nve_components::tables::TransformRef<'_>, out: &mut String) {
+pub(crate) fn write_transform_css(tf: nve_tables::tables::TransformRef<'_>, out: &mut String) {
     use core::fmt::Write as _;
     let (tx, ty) = (tf.translate_x(), tf.translate_y());
     let (sx, sy) = (tf.scale_x(), tf.scale_y());
@@ -227,7 +228,7 @@ impl WebStoreRenderer {
     pub(crate) fn remove_plugins(
         &mut self,
         changes: &ChangeSet,
-        #[cfg(target_arch = "wasm32")] live_elements: Option<&HashMap<u32, web_sys::Element>>,
+        #[cfg(target_arch = "wasm32")] live_elements: Option<&HashMap<NodeId, web_sys::Element>>,
     ) {
         for &id in &changes.removed {
             for i in 0..self.registry.systems.len() {
@@ -236,7 +237,7 @@ impl WebStoreRenderer {
                 let mut ctx = self.commit_ctx(
                     slot,
                     #[cfg(target_arch = "wasm32")]
-                    live_elements.and_then(|m| m.get(&id.raw())),
+                    live_elements.and_then(|m| m.get(&id)),
                 );
                 sys.remove_node(&mut ctx, id);
                 self.slot_attrs.remove(&(id, slot));
@@ -277,7 +278,7 @@ impl WebStoreRenderer {
     fn detach_plugins_step1(
         &mut self,
         changes: &ChangeSet,
-        #[cfg(target_arch = "wasm32")] live_elements: Option<&HashMap<u32, web_sys::Element>>,
+        #[cfg(target_arch = "wasm32")] live_elements: Option<&HashMap<NodeId, web_sys::Element>>,
     ) -> u32 {
         let mut mutations = 0u32;
         for tc in changes.tables() {
@@ -289,7 +290,7 @@ impl WebStoreRenderer {
                     let mut ctx = self.commit_ctx(
                         tc.slot,
                         #[cfg(target_arch = "wasm32")]
-                        live_elements.and_then(|m| m.get(&nid.raw())),
+                        live_elements.and_then(|m| m.get(&nid)),
                     );
                     sys.remove_node(&mut ctx, nid);
                     ctx.cleanup_current_slot(nid);
@@ -306,7 +307,7 @@ impl WebStoreRenderer {
         store: &NodeStore,
         changes: &ChangeSet,
         #[cfg(any(target_arch = "wasm32", test))] record_committed: bool,
-        #[cfg(target_arch = "wasm32")] live_elements: Option<&HashMap<u32, web_sys::Element>>,
+        #[cfg(target_arch = "wasm32")] live_elements: Option<&HashMap<NodeId, web_sys::Element>>,
     ) -> u32 {
         #[cfg(any(target_arch = "wasm32", test))]
         if record_committed {
@@ -344,7 +345,7 @@ impl WebStoreRenderer {
                     let mut ctx = self.commit_ctx(
                         slot,
                         #[cfg(target_arch = "wasm32")]
-                        live_elements.and_then(|m| m.get(&nid.raw())),
+                        live_elements.and_then(|m| m.get(&nid)),
                     );
                     sys.commit_node(&mut ctx, store, nid, if own { mask } else { 0 });
                     mutations += 1;
@@ -359,7 +360,7 @@ impl WebStoreRenderer {
         &mut self,
         store: &NodeStore,
         changes: &ChangeSet,
-        #[cfg(target_arch = "wasm32")] live_elements: Option<&HashMap<u32, web_sys::Element>>,
+        #[cfg(target_arch = "wasm32")] live_elements: Option<&HashMap<NodeId, web_sys::Element>>,
     ) -> u32 {
         let mut mutations = 0u32;
         for cmd in &changes.commands {
@@ -367,7 +368,7 @@ impl WebStoreRenderer {
                 let mut ctx = self.commit_ctx(
                     cmd.table,
                     #[cfg(target_arch = "wasm32")]
-                    live_elements.and_then(|m| m.get(&cmd.node.raw())),
+                    live_elements.and_then(|m| m.get(&cmd.node)),
                 );
                 sys.handle_command(&mut ctx, store, cmd.node, cmd.op, changes.command_payload(cmd));
                 mutations += 1;
@@ -385,8 +386,8 @@ impl WebStoreRenderer {
         &mut self,
         store: &NodeStore,
         changes: &ChangeSet,
-        #[cfg(target_arch = "wasm32")] live_dom: Option<&HashMap<u32, web_sys::Element>>,
-        retag_live: Option<&HashMap<u32, E>>,
+        #[cfg(target_arch = "wasm32")] live_dom: Option<&HashMap<NodeId, web_sys::Element>>,
+        retag_live: Option<&HashMap<NodeId, E>>,
         retagged: &[NodeId],
         on_sync: impl FnMut(&dyn WebTableSystem, NodeId, &E),
     ) -> u32 {
@@ -427,7 +428,7 @@ impl WebStoreRenderer {
         &mut self,
         store: &NodeStore,
         changes: &ChangeSet,
-        #[cfg(target_arch = "wasm32")] live_elements: Option<&HashMap<u32, web_sys::Element>>,
+        #[cfg(target_arch = "wasm32")] live_elements: Option<&HashMap<NodeId, web_sys::Element>>,
         #[cfg(target_arch = "wasm32")] retagged: &[NodeId],
     ) -> u32 {
         #[cfg(target_arch = "wasm32")]
@@ -448,7 +449,7 @@ impl WebStoreRenderer {
         &mut self,
         store: &NodeStore,
         changes: &ChangeSet,
-        #[cfg(target_arch = "wasm32")] live_elements: Option<&HashMap<u32, web_sys::Element>>,
+        #[cfg(target_arch = "wasm32")] live_elements: Option<&HashMap<NodeId, web_sys::Element>>,
         #[cfg(target_arch = "wasm32")] retagged: &[NodeId],
     ) -> u32 {
         self.remove_plugins(

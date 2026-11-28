@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::task::Waker;
 
-use nve_abi::{FrameId, NveEventBatchRef};
+use nve_abi::{FrameId, ValidatedEvents};
 use nve_engine::{AppFrame, CapabilityUnsupported, HotPatchMsg, RuntimeApp, WakeBridge, WakeToken};
 use nve_store::NodeStore;
 
@@ -63,11 +63,11 @@ impl RuntimeApp for DioxusRuntimeApp {
         }
     }
 
-    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
         if events.is_empty() {
             return false;
         }
-        self.surface.dispatch_direct_events(events)
+        self.surface.dispatch_events(events)
     }
 
     fn direct_store(&self) -> Option<&NodeStore> {
@@ -106,7 +106,7 @@ mod tests {
     use std::task::{Context, Poll, Waker};
 
     use dioxus_core::Element;
-    use nve_abi::NVE_RUNTIME_SCHEMA_HASH;
+    use nve_abi::{SurfaceId, NVE_RUNTIME_SCHEMA_HASH};
     use nve_engine::Viewport;
     use nve_runtime::{RuntimeBuilder, RuntimeError};
 
@@ -186,9 +186,9 @@ mod tests {
 
     #[test]
     fn dioxus_runtime_app_drives_surface_runtime_zero_copy() {
-        let surface = DioxusSurface::new(1, sample_app);
+        let surface = DioxusSurface::new(SurfaceId::ROOT, sample_app);
         let mut rt = RuntimeBuilder::new()
-            .surface_id(1)
+            .surface_id(SurfaceId::ROOT)
             .viewport(Viewport {
                 width: 400.0,
                 height: 300.0,
@@ -214,9 +214,9 @@ mod tests {
     #[test]
     fn dioxus_runtime_app_multi_tick_async_rerender_and_scene_busy_preserves_wakes() {
         let ch = OneShotState::default();
-        let surface = DioxusSurface::new_with_context(1, async_app, ch.clone());
+        let surface = DioxusSurface::new_with_context(SurfaceId::ROOT, async_app, ch.clone());
         let mut rt = RuntimeBuilder::new()
-            .surface_id(1)
+            .surface_id(SurfaceId::ROOT)
             .viewport(Viewport {
                 width: 400.0,
                 height: 300.0,

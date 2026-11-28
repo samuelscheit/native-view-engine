@@ -2,10 +2,9 @@
 
 use std::collections::HashMap;
 
-use nve_abi::NodeId as AbiNodeId;
-use nve_components::tables::Scroll;
+use nve_tables::tables::Scroll;
 use nve_engine::LayoutRect;
-use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore, NveTable};
+use nve_store::{ChangeSet, NodeId, NodeStore, NveTable};
 
 use crate::StoreLayoutEngine;
 
@@ -14,36 +13,36 @@ use super::LaidOutScene;
 /// Per-surface scroll offset map plus programmatic `requested_scroll_{x,y}` deduplication.
 #[derive(Debug, Default, Clone)]
 pub struct ScrollOffsets {
-    offsets: HashMap<AbiNodeId, (f32, f32)>,
-    last_requested_x: HashMap<AbiNodeId, f32>,
-    last_requested_y: HashMap<AbiNodeId, f32>,
+    offsets: HashMap<NodeId, (f32, f32)>,
+    last_requested_x: HashMap<NodeId, f32>,
+    last_requested_y: HashMap<NodeId, f32>,
     reconcile_scratch: Vec<ScrollReconcileEntry>,
 }
 
 impl ScrollOffsets {
     #[inline]
-    pub fn get(&self, id: AbiNodeId) -> (f32, f32) {
+    pub fn get(&self, id: NodeId) -> (f32, f32) {
         self.offsets.get(&id).copied().unwrap_or((0.0, 0.0))
     }
 
     /// Every tracked `(node, (x, y))` offset, in unspecified order.
     #[inline]
-    pub fn iter(&self) -> impl Iterator<Item = (AbiNodeId, (f32, f32))> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = (NodeId, (f32, f32))> + '_ {
         self.offsets.iter().map(|(&id, &xy)| (id, xy))
     }
 
     #[inline]
-    pub fn contains(&self, id: AbiNodeId) -> bool {
+    pub fn contains(&self, id: NodeId) -> bool {
         self.offsets.contains_key(&id)
     }
 
     #[inline]
-    pub fn set_raw(&mut self, id: AbiNodeId, x: f32, y: f32) {
+    pub fn set_raw(&mut self, id: NodeId, x: f32, y: f32) {
         self.offsets.insert(id, (x, y));
     }
 
     #[inline]
-    pub fn remove(&mut self, id: AbiNodeId) {
+    pub fn remove(&mut self, id: NodeId) {
         self.offsets.remove(&id);
         self.last_requested_x.remove(&id);
         self.last_requested_y.remove(&id);
@@ -58,42 +57,41 @@ impl ScrollOffsets {
 
     /// Visual child shift for `id`, subtracting any virtualized `Scroll::virtual_top_spacer`.
     #[inline]
-    pub fn visual_shift(&self, store: &NodeStore, id: StoreNodeId) -> (f32, f32) {
-        let (sx, sy) = self.get(id.raw());
+    pub fn visual_shift(&self, store: &NodeStore, id: NodeId) -> (f32, f32) {
+        let (sx, sy) = self.get(id);
         Self::visual_shift_with(store, id, sx, sy)
     }
 
     /// [`Self::visual_shift`] for an offset `(sx, sy)` already read (e.g. from [`Self::iter`]).
     #[inline]
-    pub fn visual_shift_with(store: &NodeStore, id: StoreNodeId, sx: f32, sy: f32) -> (f32, f32) {
-        if let Some(scroll) = store.try_row::<Scroll>(id) {
-            let top_spacer = scroll.virtual_top_spacer();
-            if top_spacer.is_finite() && top_spacer > 0.0 {
-                return (sx, (sy - top_spacer).max(0.0));
-            }
+    pub fn visual_shift_with(store: &NodeStore, id: NodeId, sx: f32, sy: f32) -> (f32, f32) {
+        match store
+            .try_row::<Scroll>(id)
+            .and_then(|scroll| scroll.virtual_top_spacer())
+            .filter(|&v| v.is_finite() && v > 0.0)
+        {
+            Some(top_spacer) => (sx, (sy - top_spacer).max(0.0)),
+            None => (sx, sy),
         }
-        (sx, sy)
     }
 }
 
 /// Computes `(content_width, content_height)` for a scroll container node.
 pub fn compute_scroll_content_size(
     store: &NodeStore,
-    layout_of: impl Fn(StoreNodeId) -> Option<LayoutRect>,
-    node_id: StoreNodeId,
+    layout_of: impl Fn(NodeId) -> Option<LayoutRect>,
+    node_id: NodeId,
 ) -> Option<(f32, f32)> {
     let rect = layout_of(node_id)?;
     let mut max_w = rect.width;
     let mut max_h = rect.height;
 
     if let Some(scroll) = store.try_row::<Scroll>(node_id) {
-        let vw = scroll.virtual_total_width();
-        if vw.is_finite() && vw > max_w {
-            max_w = vw;
+        if let Some(vw) = scroll.virtual_total_width().filter(|v| v.is_finite()) {
+            max_w = max_w.max(vw);
         }
-        let vh = scroll.virtual_total_height();
-        if vh.is_finite() && vh > max_h {
-            max_h = vh;
+        if let Some(vh) = scroll.virtual_total_height().filter(|v| v.is_finite()) {
+            max_h = max_h.max(vh);
         }
     }
 
@@ -108,7 +106,7 @@ pub fn compute_scroll_content_size(
 
 #[derive(Debug, Clone, Copy)]
 struct ScrollReconcileEntry {
-    raw: AbiNodeId,
+    id: NodeId,
     x: f32,
     y: f32,
     req_x: Option<f32>,
@@ -122,24 +120,24 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
     }
 
     #[inline]
-    pub fn set_scroll_offset_raw(&mut self, id: AbiNodeId, dx: f32, dy: f32) {
+    pub fn set_scroll_offset_raw(&mut self, id: NodeId, dx: f32, dy: f32) {
         self.scroll.set_raw(id, dx, dy);
     }
 
     #[inline]
-    pub fn scroll_offset(&self, id: AbiNodeId) -> (f32, f32) {
+    pub fn scroll_offset(&self, id: NodeId) -> (f32, f32) {
         self.scroll.get(id)
     }
 
     #[inline]
-    pub fn visual_scroll_shift(&self, store: &NodeStore, id: StoreNodeId) -> (f32, f32) {
+    pub fn visual_scroll_shift(&self, store: &NodeStore, id: NodeId) -> (f32, f32) {
         self.scroll.visual_shift(store, id)
     }
 
     pub fn scroll_content_size(
         &self,
         store: &NodeStore,
-        node_id: StoreNodeId,
+        node_id: NodeId,
     ) -> Option<(f32, f32)> {
         compute_scroll_content_size(store, |id| self.layout.layout_of(id), node_id)
     }
@@ -149,7 +147,7 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
     pub fn set_scroll_offset_clamped(
         &mut self,
         store: &NodeStore,
-        node_id: StoreNodeId,
+        node_id: NodeId,
         x: f32,
         y: f32,
     ) -> (f32, f32, bool) {
@@ -164,9 +162,8 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
         let clamped_x = if x.is_finite() { x.clamp(0.0, max_x) } else { 0.0 };
         let clamped_y = if y.is_finite() { y.clamp(0.0, max_y) } else { 0.0 };
 
-        let raw = node_id.raw();
-        let prev = self.scroll.get(raw);
-        self.scroll.set_raw(raw, clamped_x, clamped_y);
+        let prev = self.scroll.get(node_id);
+        self.scroll.set_raw(node_id, clamped_x, clamped_y);
         let changed = (prev.0 - clamped_x).abs() > 1e-4 || (prev.1 - clamped_y).abs() > 1e-4;
         (clamped_x, clamped_y, changed)
     }
@@ -176,11 +173,11 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
     pub fn apply_scroll_delta(
         &mut self,
         store: &NodeStore,
-        node_id: StoreNodeId,
+        node_id: NodeId,
         dx: f32,
         dy: f32,
     ) -> (f32, f32, bool) {
-        let (cur_x, cur_y) = self.scroll.get(node_id.raw());
+        let (cur_x, cur_y) = self.scroll.get(node_id);
         let nx = cur_x + if dx.is_finite() { dx } else { 0.0 };
         let ny = cur_y + if dy.is_finite() { dy } else { 0.0 };
         self.set_scroll_offset_clamped(store, node_id, nx, ny)
@@ -211,17 +208,17 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
         if !self.scroll.offsets.is_empty() {
             self.scroll
                 .offsets
-                .retain(|&raw, _| store.is_live(StoreNodeId(raw)));
+                .retain(|&id, _| store.is_live(id));
         }
         if !self.scroll.last_requested_x.is_empty() {
             self.scroll
                 .last_requested_x
-                .retain(|&raw, _| store.is_live(StoreNodeId(raw)));
+                .retain(|&id, _| store.is_live(id));
         }
         if !self.scroll.last_requested_y.is_empty() {
             self.scroll
                 .last_requested_y
-                .retain(|&raw, _| store.is_live(StoreNodeId(raw)));
+                .retain(|&id, _| store.is_live(id));
         }
 
         let Some(nve_store::TableStorage {
@@ -237,8 +234,8 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
         let mut updates = std::mem::take(&mut self.scroll.reconcile_scratch);
         updates.clear();
         if !owners.is_empty() {
-            for &raw in &owners[..row_count.min(owners.len())] {
-                self.collect_scroll_node(store, StoreNodeId(raw), &mut updates);
+            for &id in &owners[..row_count.min(owners.len())] {
+                self.collect_scroll_node(store, id, &mut updates);
             }
         } else {
             for idx in 1..store.capacity() {
@@ -249,13 +246,13 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
         }
         for entry in updates.drain(..) {
             if let Some(vx) = entry.req_x {
-                self.scroll.last_requested_x.insert(entry.raw, vx);
+                self.scroll.last_requested_x.insert(entry.id, vx);
             }
             if let Some(vy) = entry.req_y {
-                self.scroll.last_requested_y.insert(entry.raw, vy);
+                self.scroll.last_requested_y.insert(entry.id, vy);
             }
-            if entry.x != 0.0 || entry.y != 0.0 || self.scroll.contains(entry.raw) {
-                self.scroll.set_raw(entry.raw, entry.x, entry.y);
+            if entry.x != 0.0 || entry.y != 0.0 || self.scroll.contains(entry.id) {
+                self.scroll.set_raw(entry.id, entry.x, entry.y);
             }
         }
         self.scroll.reconcile_scratch = updates;
@@ -264,7 +261,7 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
     fn collect_scroll_node(
         &self,
         store: &NodeStore,
-        id: StoreNodeId,
+        id: NodeId,
         out: &mut Vec<ScrollReconcileEntry>,
     ) {
         if !store.is_live(id) {
@@ -281,28 +278,25 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
             .unwrap_or((rect.width, rect.height));
         let max_x = (cw - rect.width).max(0.0);
         let max_y = (ch - rect.height).max(0.0);
-        let raw = id.raw();
-        let (mut sx, mut sy) = self.scroll.get(raw);
-        let req_y = scroll.requested_scroll_y();
+        let (mut sx, mut sy) = self.scroll.get(id);
         let mut recorded_req_y = None;
-        if req_y.is_finite() {
-            let prev_req = self.scroll.last_requested_y.get(&raw).copied();
+        if let Some(req_y) = scroll.requested_scroll_y().filter(|v| v.is_finite()) {
+            let prev_req = self.scroll.last_requested_y.get(&id).copied();
             if prev_req.is_none_or(|p| (p - req_y).abs() > 1e-4) {
                 sy = req_y;
                 recorded_req_y = Some(req_y);
             }
         }
-        let req_x = scroll.requested_scroll_x();
         let mut recorded_req_x = None;
-        if req_x.is_finite() {
-            let prev_req = self.scroll.last_requested_x.get(&raw).copied();
+        if let Some(req_x) = scroll.requested_scroll_x().filter(|v| v.is_finite()) {
+            let prev_req = self.scroll.last_requested_x.get(&id).copied();
             if prev_req.is_none_or(|p| (p - req_x).abs() > 1e-4) {
                 sx = req_x;
                 recorded_req_x = Some(req_x);
             }
         }
         out.push(ScrollReconcileEntry {
-            raw,
+            id,
             x: sx.clamp(0.0, max_x),
             y: sy.clamp(0.0, max_y),
             req_x: recorded_req_x,

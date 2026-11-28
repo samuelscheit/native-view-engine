@@ -1,0 +1,7 @@
+error: `x`: #[bits(8)] is redundant or wider than `u8` (8 bits); remove #[bits] or narrow strictly (`1..8`)
+ --> tests/ui/bad_bits_u8.rs:3:10
+  |
+3 | #[derive(NveTable)]
+  |          ^^^^^^^^
+  |
+  = note: this error originates in the derive macro `NveTable` (in Nightly builds, run with -Z macro-backtrace for more info)

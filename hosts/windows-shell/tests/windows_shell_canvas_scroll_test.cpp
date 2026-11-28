@@ -87,13 +87,13 @@ void test_scroll_containers() {
   w.create(kScroll);
   w.attach(kScroll, NVE_TABLE_SCROLL_DESC);
   sized(w, kScroll, 320.0f, 100.0f);
-  events(w, kScroll, {NVE_EVENT_SCROLL});
+  events(w, kScroll, {NVE_SCROLL_EVENT_SCROLL});
   w.create(kTall);
   sized(w, kTall, 320.0f, 300.0f);
   w.create(kButton);  // inside the tall content, 150pt down
   w.set(kButton, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_MARGIN_TOP, h::length_points(150.0f));
   sized(w, kButton, 100.0f, 30.0f);
-  events(w, kButton, {NVE_EVENT_PRESS});
+  events(w, kButton, {NVE_INTERACTION_EVENT_PRESS});
   const uint32_t tall_kids[] = {kButton};
   w.set_children(kTall, tall_kids);
   const uint32_t scroll_kids[] = {kTall};
@@ -128,23 +128,25 @@ void test_scroll_containers() {
   const int before = changes;
   NVE_CHECK(host.wheel_at(50.0f, 50.0f, 0.0f, 120.0f));
   NVE_CHECK(changes > before && approx(node(host, kScroll).scroll_y, 120.0, 0.5));
-  NVE_CHECK(app.count(NVE_EVENT_SCROLL, kScroll) == 1u);
-  const auto* ev = app.last(NVE_EVENT_SCROLL);
-  NVE_CHECK(approx(ev->ev.y, 120.0, 0.5) && approx(ev->ev.height, 300.0, 1.0) && approx(ev->ev.width, 320.0, 1.0));
+  NVE_CHECK(app.count(NVE_SCROLL_EVENT_SCROLL, kScroll) == 1u);
+  const auto* ev = app.last(NVE_SCROLL_EVENT_SCROLL);
+  NVE_CHECK(approx(h::event_payload_f32(ev->ev, 1u), 120.0, 0.5) &&
+            approx(h::event_payload_f32(ev->ev, 3u), 300.0, 1.0) &&
+            approx(h::event_payload_f32(ev->ev, 2u), 320.0, 1.0));
   float rx = -1.0f, ry = -1.0f;
   NVE_CHECK(host.session().runtime().scroll_by(kScroll, 0.0f, 0.0f, &rx, &ry) == NVE_RUNTIME_OK);
   NVE_CHECK(approx(ry, 120.0, 0.5) && approx(rx, 0.0, 0.01));
   // The scrolled button is now on screen at its shifted position.
   NVE_CHECK(approx(abs_rect(host, kButton).y, 150.0 - 120.0, 0.5));
   NVE_CHECK(host.press_at(50.0f, 45.0f).node_id == kButton);
-  NVE_CHECK(approx(app.last(NVE_EVENT_PRESS)->ev.y, 15.0, 0.5));
+  NVE_CHECK(approx(h::event_payload_f32(app.last(NVE_INTERACTION_EVENT_PRESS)->ev, 1u), 15.0, 0.5));
 
   // Clamped at the end of the content (max 200); past it, the wheel chains to the outer container.
   NVE_CHECK(host.wheel_at(50.0f, 50.0f, 0.0f, 500.0f));
-  NVE_CHECK(approx(node(host, kScroll).scroll_y, 200.0, 0.5) && app.count(NVE_EVENT_SCROLL, kScroll) == 2u);
+  NVE_CHECK(approx(node(host, kScroll).scroll_y, 200.0, 0.5) && app.count(NVE_SCROLL_EVENT_SCROLL, kScroll) == 2u);
   NVE_CHECK(host.wheel_at(50.0f, 50.0f, 0.0f, 40.0f));
   NVE_CHECK(approx(node(host, kScroll).scroll_y, 200.0, 0.5) && approx(node(host, kOuter).scroll_y, 40.0, 0.5));
-  NVE_CHECK(app.count(NVE_EVENT_SCROLL, kScroll) == 2u);  // the outer one does not subscribe
+  NVE_CHECK(app.count(NVE_SCROLL_EVENT_SCROLL, kScroll) == 2u);  // the outer one does not subscribe
   NVE_CHECK(host.wheel_at(50.0f, 50.0f, 0.0f, -1000.0f));  // back up: inner first
   NVE_CHECK(approx(node(host, kScroll).scroll_y, 0.0, 0.5) && approx(node(host, kOuter).scroll_y, 40.0, 0.5));
   NVE_CHECK(host.wheel_at(50.0f, 10.0f, 0.0f, -1000.0f));  // inner at top: chains outward
@@ -158,14 +160,15 @@ void test_scroll_containers() {
   NVE_CHECK(approx(abs_rect(host, kWide).x, -100.0, 0.5));
 
   // Programmatic scroll is applied by the runtime and not echoed as a user Scroll event.
-  const size_t scrolls = app.count(NVE_EVENT_SCROLL, kScroll);
+  const size_t scrolls = app.count(NVE_SCROLL_EVENT_SCROLL, kScroll);
   w.set_f32(kScroll, NVE_TABLE_SCROLL_DESC, NVE_TABLE_SCROLL_REQUESTED_SCROLL_Y, 80.0f);
   flush(host);
-  NVE_CHECK(approx(node(host, kScroll).scroll_y, 80.0, 0.5) && app.count(NVE_EVENT_SCROLL, kScroll) == scrolls);
+  NVE_CHECK(approx(node(host, kScroll).scroll_y, 80.0, 0.5) && app.count(NVE_SCROLL_EVENT_SCROLL, kScroll) == scrolls);
   NVE_CHECK(host.dispatch_scroll(kScroll, 0.0f, 10.0f));  // the user scrolls away; an unrelated frame keeps it
   w.set(kTall, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(9, 9, 9));
   flush(host);
-  NVE_CHECK(approx(node(host, kScroll).scroll_y, 10.0, 0.5) && app.count(NVE_EVENT_SCROLL, kScroll) == scrolls + 1u);
+  NVE_CHECK(approx(node(host, kScroll).scroll_y, 10.0, 0.5) &&
+            app.count(NVE_SCROLL_EVENT_SCROLL, kScroll) == scrolls + 1u);
   NVE_CHECK(!host.dispatch_scroll(99u, 0.0f, 0.0f));
   NVE_CHECK(!host.dispatch_scroll(kTall, 0.0f, 10.0f));  // not a scroll container
 

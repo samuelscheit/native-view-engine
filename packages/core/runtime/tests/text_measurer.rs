@@ -1,14 +1,15 @@
 //! Native text-measurer contracts through the C vtable and the Rust `SurfaceRuntime` API.
 
 use std::ffi::c_void;
+use std::num::NonZeroU16;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use nve_abi::{
-    NveRuntimeTextStyle, NveStrSlice, NVE_LINE_HEIGHT_PERCENT,
+    NveRuntimeTextStyle, NveStrSlice, SurfaceId, NVE_LINE_HEIGHT_PERCENT,
     NVE_LINE_HEIGHT_POINTS,
 };
-use nve_components::tables::{
+use nve_tables::tables::{
     FontStyle, Layout, OverflowWrap, TextContent, Typography, WhiteSpace, WordBreak,
 };
 use nve_engine::Viewport;
@@ -160,23 +161,13 @@ fn c_abi_text_measurer_receives_the_resolved_inherited_typography() {
         .letter_spacing(1.5)
         .line_height(Length::percent(150.0))
         .white_space(WhiteSpace::NoWrap)
-        .max_lines(2)
-        .set(
-            Typography::SET_FONT_FAMILY
-                | Typography::SET_FONT_SIZE
-                | Typography::SET_FONT_STYLE
-                | Typography::SET_LETTER_SPACING
-                | Typography::SET_LINE_HEIGHT
-                | Typography::SET_WHITE_SPACE
-                | Typography::SET_MAX_LINES,
-        );
+        .max_lines(NonZeroU16::new(2));
     tx.edit::<TextContent>(inherits).text("inherits");
     tx.edit::<TextContent>(overrides).text("overrides");
     tx.edit::<Typography>(overrides)
         .font_weight(700)
         .line_height(Length::points(22.0))
-        .white_space(WhiteSpace::Normal)
-        .set(Typography::SET_FONT_WEIGHT | Typography::SET_LINE_HEIGHT | Typography::SET_WHITE_SPACE);
+        .white_space(WhiteSpace::Normal);
     tx.edit::<Layout>(overrides).width(Length::points(120.0));
     tx.set_children(column, &[inherits, overrides]);
     tx.set_children(NodeId::ROOT, &[column]);
@@ -241,18 +232,7 @@ fn ancestor_typography_edits_remeasure_descendants_and_color_does_not() {
         let mut changes = ChangeSet::default();
         let mut tx = store.tx();
         let [column, wrapper, leaf] = [(); 3].map(|_| tx.create());
-        // Every field explicit (at its default) so later edits need no `set` bookkeeping.
-        tx.edit::<Typography>(column).font_family("Arial").set(
-            Typography::SET_FONT_FAMILY
-                | Typography::SET_LINE_HEIGHT
-                | Typography::SET_LETTER_SPACING
-                | Typography::SET_WHITE_SPACE
-                | Typography::SET_MAX_LINES
-                | Typography::SET_FONT_STYLE
-                | Typography::SET_WORD_BREAK
-                | Typography::SET_OVERFLOW_WRAP
-                | Typography::SET_COLOR,
-        );
+        tx.edit::<Typography>(column).font_family("Arial");
         tx.edit::<TextContent>(leaf).text("leaf");
         tx.set_children(NodeId::ROOT, &[column]);
         tx.set_children(column, &[wrapper]);
@@ -287,7 +267,7 @@ fn ancestor_typography_edits_remeasure_descendants_and_color_does_not() {
             tx.edit::<Typography>(c).white_space(WhiteSpace::PreWrap);
         }, |m| m.white_space == WhiteSpace::PreWrap as u8),
         ("max_lines", |tx, c| {
-            tx.edit::<Typography>(c).max_lines(4);
+            tx.edit::<Typography>(c).max_lines(NonZeroU16::new(4));
         }, |m| m.max_lines == 4),
         ("font_style", |tx, c| {
             tx.edit::<Typography>(c).font_style(FontStyle::Italic);
@@ -329,7 +309,7 @@ impl TextMeasurer for HalfMeasurer {
 
 #[test]
 fn rust_text_measurer_swaps_and_resets() {
-    let mut rt = SurfaceRuntime::new(1, Viewport::default());
+    let mut rt = SurfaceRuntime::new(SurfaceId::ROOT, Viewport::default());
     let (frame, text) = text_frame();
     rt.submit_nve2(&frame).unwrap();
     rt.tick(0.0).unwrap();

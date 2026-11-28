@@ -25,7 +25,7 @@ pub(super) const EXTERNAL_SDK_ROOTS: &[&str] = &[
 /// Canonical identity of an enum type across files and crates.
 ///
 /// Preserves crate/module origin so same-name enums from distinct crates (e.g.
-/// `nve_components::tables::FlexDirection` vs `nve_abi::FlexDirection`) remain distinct,
+/// `nve_tables::tables::FlexDirection` vs `nve_abi::FlexDirection`) remain distinct,
 /// while locally defined types get `origin_crate = current_crate` and unresolved single-segment
 /// types (e.g. from `use super::*;` or `prelude::*`) keep `origin_crate = None` so they still
 /// match explicitly qualified workspace imports.
@@ -109,7 +109,7 @@ impl EnumQualifier {
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct ImportScope {
-    /// Current workspace crate name (snake_case, e.g. `"nve_components"`), if known.
+    /// Current workspace crate name (snake_case, e.g. `"nve_tables"`), if known.
     pub current_crate: Option<String>,
     /// Types defined locally in this file/module (`enum`, `struct`, `type`).
     pub local_types: BTreeSet<String>,

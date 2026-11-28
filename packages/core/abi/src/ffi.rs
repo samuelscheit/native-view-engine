@@ -13,17 +13,19 @@ use std::ffi::c_void;
 
 use nve_abi_macros::NveAbi;
 
-use crate::value::{NveEventBatch, NveMapEntry, NveValueTag};
+use crate::event::NveEventBatch;
+use crate::id::{FrameId, InterfaceId, SurfaceId};
+use crate::value::{NveMapEntry, NveValueTag};
 
 /// Compile-time XXH64 schema fingerprint for NVE's Core C ABI, derived directly from
 /// `crate::schema::core_abi_descriptor()` (zero hardcoded hex literals).
 pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = crate::schema::compute_core_abi_schema_hash();
 
-pub const NVE_IFACE_SURFACE: u32 = 1;
-pub const NVE_IFACE_LAYOUT: u32 = 2;
-pub const NVE_IFACE_COMPONENT: u32 = 3;
-pub const NVE_IFACE_DEV: u32 = 4;
-pub const NVE_IFACE_HOST: u32 = 5;
+pub const NVE_IFACE_SURFACE: InterfaceId = InterfaceId(1);
+pub const NVE_IFACE_LAYOUT: InterfaceId = InterfaceId(2);
+pub const NVE_IFACE_COMPONENT: InterfaceId = InterfaceId(3);
+pub const NVE_IFACE_DEV: InterfaceId = InterfaceId(4);
+pub const NVE_IFACE_HOST: InterfaceId = InterfaceId(5);
 
 /// Pointer of a borrowed slab published across the C ABI: NULL when empty (every zero-count slab
 /// is published as NULL, never as a dangling non-null pointer).
@@ -142,90 +144,6 @@ impl NveGestureDisposition {
     }
 }
 
-/// Native event discriminator matching `enum NveEventKind` in `nve_abi.generated.h`.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, NveAbi)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[nve_abi(name = "NveEventKind", c_prefix = "NVE_EVENT_", dart_fallback = "Custom")]
-pub enum NativeEventKind {
-    Press = 1,
-    LongPress = 2,
-    Scroll = 3,
-    TextChange = 4,
-    Focus = 5,
-    Blur = 6,
-    Layout = 7,
-    Custom = 8,
-    CompositionStart = 9,
-    CompositionUpdate = 10,
-    CompositionEnd = 11,
-    KeyDown = 12,
-    KeyUp = 13,
-    Submit = 14,
-    PointerDown = 15,
-    PointerMove = 16,
-    PointerUp = 17,
-    PointerEnter = 18,
-    PointerLeave = 19,
-    Wheel = 20,
-    TableEvent = 21,
-}
-
-impl NativeEventKind {
-    #[inline]
-    pub const fn from_u8_opt(v: u8) -> Option<Self> {
-        match v {
-            1 => Some(Self::Press),
-            2 => Some(Self::LongPress),
-            3 => Some(Self::Scroll),
-            4 => Some(Self::TextChange),
-            5 => Some(Self::Focus),
-            6 => Some(Self::Blur),
-            7 => Some(Self::Layout),
-            8 => Some(Self::Custom),
-            9 => Some(Self::CompositionStart),
-            10 => Some(Self::CompositionUpdate),
-            11 => Some(Self::CompositionEnd),
-            12 => Some(Self::KeyDown),
-            13 => Some(Self::KeyUp),
-            14 => Some(Self::Submit),
-            15 => Some(Self::PointerDown),
-            16 => Some(Self::PointerMove),
-            17 => Some(Self::PointerUp),
-            18 => Some(Self::PointerEnter),
-            19 => Some(Self::PointerLeave),
-            20 => Some(Self::Wheel),
-            21 => Some(Self::TableEvent),
-            _ => None,
-        }
-    }
-
-    #[inline]
-    pub const fn from_u8(v: u8) -> Result<Self, DecodeError> {
-        match Self::from_u8_opt(v) {
-            Some(kind) => Ok(kind),
-            None => Err(DecodeError::InvalidEnum("NativeEventKind", v as u32)),
-        }
-    }
-}
-
-/// Event payload wire tag matching `EventPayload` in `packages/core/abi/src/events.rs`.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, NveAbi)]
-#[nve_abi(c_prefix = "NVE_EVENT_PAYLOAD_")]
-pub enum NveEventPayloadTag {
-    Empty = 0,
-    Point = 1,
-    Scroll = 2,
-    Text = 3,
-    Layout = 4,
-    Custom = 5,
-    Key = 6,
-    Pointer = 7,
-    Wheel = 8,
-    TableEvent = 9,
-}
-
 /// Validation / decoding errors shared across zero-copy FFI views and binary wire codecs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeError {
@@ -245,6 +163,7 @@ pub enum DecodeError {
     MissingField(&'static str),
     /// A string, byte run, container payload, or element count exceeds the wire format's `u32`.
     TooLarge,
+    InvalidEvent(crate::event::EventValidationError),
 }
 
 impl std::fmt::Display for DecodeError {
@@ -259,15 +178,15 @@ impl std::error::Error for DecodeError {}
 pub type NveAppHandle = *mut c_void;
 
 /// Single exported entry point per NVE module (`nve_get_interface`).
-pub type NveGetInterfaceFn = unsafe extern "C" fn(interface_id: u32) -> *const c_void;
+pub type NveGetInterfaceFn = unsafe extern "C" fn(interface_id: InterfaceId) -> *const c_void;
 
 /// Required core surface interface (`NVE_IFACE_SURFACE = 1`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct NveSurfaceApi {
-    pub create: unsafe extern "C" fn(surface_id: u32) -> NveAppHandle,
+    pub create: unsafe extern "C" fn(surface_id: SurfaceId) -> NveAppHandle,
     pub destroy: unsafe extern "C" fn(handle: NveAppHandle),
-    pub render: unsafe extern "C" fn(handle: NveAppHandle, frame_id: u64) -> NveBufferSlice,
+    pub render: unsafe extern "C" fn(handle: NveAppHandle, frame_id: FrameId) -> NveBufferSlice,
     pub dispatch_events: unsafe extern "C" fn(handle: NveAppHandle, batch: NveEventBatch) -> u32,
 }
 

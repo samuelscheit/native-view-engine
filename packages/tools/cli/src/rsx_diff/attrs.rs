@@ -1,6 +1,6 @@
 //! Registry of patchable native-element style attributes: the typed value classes each accepts
 //! (for `TypedRsxPatch`), the keyword enum behind keyword attributes, and whether today's string
-//! `TemplatePatch` path (`nve_components::css`) applies the attribute at all.
+//! `TemplatePatch` path (`nve_tables::css`) applies the attribute at all.
 //!
 //! Identity (`test_id`, `key`), event handlers (`on*`), content props and every unknown attribute
 //! are deliberately absent: an edit to them is a logic/structure change that needs a Tier-2 build.
@@ -91,7 +91,7 @@ pub struct AttrSpec {
     /// Canonical kebab-case NVE/CSS name.
     pub name: &'static str,
     pub kind: AttrKind,
-    /// `nve_components::css_key_bits` (or `style`) recognizes it: today's string
+    /// `nve_tables::css_key_bits` (or `style`) recognizes it: today's string
     /// `TemplatePatch` path applies it. Typed-only attributes wait for `RowPatch` lowering.
     pub css: bool,
 }
@@ -155,71 +155,71 @@ macro_rules! keyword_enum {
     };
 }
 
-keyword_enum!(DISPLAY: Display = nve_components::tables::Display {
+keyword_enum!(DISPLAY: Display = nve_tables::tables::Display {
     Flex => Some("flex"), None => Some("none"), Grid => Some("grid"), Block => Some("block"),
     Inline => Some("inline"), InlineBlock => Some("inline-block"),
     InlineFlex => Some("inline-flex"), Contents => Some("contents"),
 });
-keyword_enum!(FLEX_DIRECTION: FlexDirection = nve_components::tables::FlexDirection {
+keyword_enum!(FLEX_DIRECTION: FlexDirection = nve_tables::tables::FlexDirection {
     Column => Some("column"), Row => Some("row"),
     ColumnReverse => Some("column-reverse"), RowReverse => Some("row-reverse"),
 });
-keyword_enum!(FLEX_WRAP: FlexWrap = nve_components::tables::FlexWrap {
+keyword_enum!(FLEX_WRAP: FlexWrap = nve_tables::tables::FlexWrap {
     NoWrap => Some("nowrap"), Wrap => Some("wrap"), WrapReverse => Some("wrap-reverse"),
 });
-keyword_enum!(JUSTIFY_CONTENT: JustifyContent = nve_components::tables::JustifyContent {
+keyword_enum!(JUSTIFY_CONTENT: JustifyContent = nve_tables::tables::JustifyContent {
     FlexStart => Some("flex-start"), Center => Some("center"), FlexEnd => Some("flex-end"),
     SpaceBetween => Some("space-between"), SpaceAround => Some("space-around"),
     SpaceEvenly => Some("space-evenly"),
 });
-keyword_enum!(ALIGN_ITEMS: AlignItems = nve_components::tables::AlignItems {
+keyword_enum!(ALIGN_ITEMS: AlignItems = nve_tables::tables::AlignItems {
     Stretch => Some("stretch"), FlexStart => Some("flex-start"), Center => Some("center"),
     FlexEnd => Some("flex-end"), Baseline => Some("baseline"),
 });
-keyword_enum!(ALIGN_SELF: AlignSelf = nve_components::tables::AlignSelf {
+keyword_enum!(ALIGN_SELF: AlignSelf = nve_tables::tables::AlignSelf {
     Auto => Some("auto"), Stretch => Some("stretch"), FlexStart => Some("flex-start"),
     Center => Some("center"), FlexEnd => Some("flex-end"), Baseline => Some("baseline"),
 });
-keyword_enum!(POSITION: Position = nve_components::tables::Position {
+keyword_enum!(POSITION: Position = nve_tables::tables::Position {
     Relative => Some("relative"), Absolute => Some("absolute"), Sticky => Some("sticky"),
     Fixed => Some("fixed"),
 });
-keyword_enum!(BOX_SIZING: BoxSizing = nve_components::tables::BoxSizing {
+keyword_enum!(BOX_SIZING: BoxSizing = nve_tables::tables::BoxSizing {
     BorderBox => Some("border-box"), ContentBox => Some("content-box"),
 });
-keyword_enum!(VISIBILITY: Visibility = nve_components::tables::Visibility {
+keyword_enum!(VISIBILITY: Visibility = nve_tables::tables::Visibility {
     Inherit => Some("inherit"), Visible => Some("visible"), Hidden => Some("hidden"),
 });
-keyword_enum!(OVERFLOW: Overflow = nve_components::tables::Overflow {
+keyword_enum!(OVERFLOW: Overflow = nve_tables::tables::Overflow {
     Visible => Some("visible"), Hidden => Some("hidden"), Scroll => Some("scroll"),
     Auto => Some("auto"),
 });
-keyword_enum!(OVERFLOW_WRAP: OverflowWrap = nve_components::tables::OverflowWrap {
+keyword_enum!(OVERFLOW_WRAP: OverflowWrap = nve_tables::tables::OverflowWrap {
     Normal => Some("normal"), Anywhere => Some("anywhere"), BreakWord => Some("break-word"),
 });
-keyword_enum!(WORD_BREAK: WordBreak = nve_components::tables::WordBreak {
+keyword_enum!(WORD_BREAK: WordBreak = nve_tables::tables::WordBreak {
     Normal => Some("normal"), BreakAll => Some("break-all"), KeepAll => Some("keep-all"),
     BreakWord => Some("break-word"),
 });
 // `css.rs` has no `break-spaces`.
-keyword_enum!(WHITE_SPACE: WhiteSpace = nve_components::tables::WhiteSpace {
+keyword_enum!(WHITE_SPACE: WhiteSpace = nve_tables::tables::WhiteSpace {
     Normal => Some("normal"), NoWrap => Some("nowrap"), Pre => Some("pre"),
     PreWrap => Some("pre-wrap"), PreLine => Some("pre-line"), BreakSpaces => None,
 });
 // `css.rs` maps the strings `start`/`end` to `Left`/`Right`, not to these variants.
-keyword_enum!(TEXT_ALIGN: TextAlign = nve_components::tables::TextAlign {
+keyword_enum!(TEXT_ALIGN: TextAlign = nve_tables::tables::TextAlign {
     Start => None, End => None, Left => Some("left"), Right => Some("right"),
     Center => Some("center"), Justify => Some("justify"),
 });
-keyword_enum!(FONT_STYLE: FontStyle = nve_components::tables::FontStyle {
+keyword_enum!(FONT_STYLE: FontStyle = nve_tables::tables::FontStyle {
     Normal => Some("normal"), Italic => Some("italic"), Oblique => Some("oblique"),
 });
-keyword_enum!(VERTICAL_ALIGN: VerticalAlign = nve_components::tables::VerticalAlign {
+keyword_enum!(VERTICAL_ALIGN: VerticalAlign = nve_tables::tables::VerticalAlign {
     Baseline => Some("baseline"), Top => Some("top"), Middle => Some("middle"),
     Bottom => Some("bottom"), Sub => Some("sub"), Super => Some("super"),
     TextTop => Some("text-top"), TextBottom => Some("text-bottom"),
 });
-keyword_enum!(CURSOR: CursorKind = nve_components::CursorKind {
+keyword_enum!(CURSOR: CursorKind = nve_tables::CursorKind {
     Auto => Some("auto"), Default => Some("default"), Pointer => Some("pointer"),
     Text => Some("text"), Grab => Some("grab"), Grabbing => Some("grabbing"),
     NotAllowed => Some("not-allowed"), ColResize => Some("col-resize"),
@@ -301,7 +301,7 @@ attr_table! {
     "border-top-width" => PX, false; "border-right-width" => PX, false;
     "border-bottom-width" => PX, false; "border-left-width" => PX, false;
     "border-radius" => PX, true;
-    "box-shadow" => AttrKind::Text, true;
+    "box-shadow" => AttrKind::Text, false;
     "opacity" => AttrKind::Number(NumberRule::Unitless { min: 0.0, max: 1.0 }), true;
     "z-index" => AttrKind::Number(NumberRule::ZIndex), true;
     "visibility" => AttrKind::Keyword(&VISIBILITY), true;

@@ -297,8 +297,8 @@ void NveQtQuickItem::Impl::update_record(QuickNodeView& v, const host::NodeData&
     repaint = true;
   }
 
-  v.event_mask = node.interaction.event_mask;
-  v.wants_press = node.wants(NVE_EVENT_PRESS);
+  v.interaction_events = node.interaction.events;
+  v.wants_press = node.wants(NVE_INTERACTION_EVENT_PRESS);
   v.href.assign(node.href);
   v.disabled = node.interaction.disabled;
   v.focusable = !v.disabled && (node.interaction.focusable || v.is_input);

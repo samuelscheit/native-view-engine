@@ -1,13 +1,14 @@
 //! The issues SSR server and the browser shell's issues session register ONE shared plugin set
 //! (`nve_example_issues_client::register_web_systems`), so Frame-0 tags never diverge.
 
+use nve_abi::{NodeId, SurfaceId};
 use nve_backend_web::{WebBackend, WebTableRegistry};
 use nve_canvas::Canvas;
 use nve_dioxus::DioxusSurface;
 use nve_dioxus::prelude::*;
 use nve_engine::Viewport;
 use nve_example_issues_server::ssr::issues_web_backend;
-use nve_store::{ChangeSet, NodeId, NodeStore, NveTable, TableSlot};
+use nve_store::{ChangeSet, NodeStore, NveTable, TableSlot};
 use nve_web_html::{
     DataAttrList, HtmlDataAttrs, HtmlForm, HtmlSemantics, SemanticElement, WebHtml,
 };
@@ -25,7 +26,7 @@ fn slots(registry: &WebTableRegistry) -> Vec<TableSlot> {
 
 /// One node per web table kind the issues tree can carry, plus a canvas node.
 fn probe_store() -> (NodeStore, Vec<NodeId>) {
-    nve_components::tables::register_core_tables();
+    nve_tables::tables::register_core_tables();
     nve_web_html::register_web_html_tables();
     let mut store = NodeStore::new();
     let mut nodes = Vec::new();
@@ -39,10 +40,12 @@ fn probe_store() -> (NodeStore, Vec<NodeId>) {
                     tx.edit::<HtmlForm>(n).action("/notes/save");
                 }
                 1 => {
-                    tx.edit::<HtmlSemantics>(n).element(SemanticElement::Dialog);
+                    tx.edit::<HtmlSemantics>(n)
+                        .element(Some(SemanticElement::Dialog));
                 }
                 2 => {
-                    tx.edit::<HtmlSemantics>(n).element(SemanticElement::Tfoot);
+                    tx.edit::<HtmlSemantics>(n)
+                        .element(Some(SemanticElement::Tfoot));
                 }
                 3 => {
                     tx.edit::<WebHtml>(n).tag("article").html("<p>x</p>");
@@ -70,8 +73,8 @@ fn probe_store() -> (NodeStore, Vec<NodeId>) {
 fn issues_server_and_browser_session_register_identical_plugins_and_resolve_identical_tags() {
     let server = issues_web_backend();
     let session = WebAppSession::new(
-        1,
-        DioxusSurface::new(1, empty),
+        SurfaceId::ROOT,
+        DioxusSurface::new(SurfaceId::ROOT, empty),
         nve_web_shell::register_issues_web_systems,
         WebBackend::new(),
         Viewport::default(),

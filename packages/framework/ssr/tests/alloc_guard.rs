@@ -7,7 +7,7 @@ use core::cell::Cell;
 use std::alloc::System;
 
 use nve_backend_web::WebBackend;
-use nve_components::tables::Visual;
+use nve_tables::tables::Visual;
 use nve_ssr::{generate_csp_nonce, SsrPageOptions, StreamPlan};
 use nve_store::{ChangeSet, NodeId, NodeStore, Rgba};
 

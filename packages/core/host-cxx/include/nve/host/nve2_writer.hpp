@@ -75,15 +75,11 @@ class Nve2Writer {
     if (!fresh) detaches_[slot].insert(node);
   }
 
-  /// Writes `value` into field `f` (any non-`Str` kind; resources carry their `ResourceId`).
-  /// Returns `false` for a spec that is invalid, a `Str`, or outside `t`'s row.
+  /// Writes `value` into scalar field `f` (required or optional `Some(value)`, setting `val_word`
+  /// for `NVE_OPT_WIDE_BIT` and word 0 `explicit_bit` on inherited tables). Returns `false` for
+  /// invalid, two-word (`Str`/64-bit), or out-of-range specs.
   bool set(uint32_t node, const NveTableDesc& t, NveFieldSpec f, uint32_t value) {
-    if (f.kind == static_cast<uint8_t>(NVE_FIELD_STR) || nve_field_fits(f, t.words) == 0) return false;
-    Row& r = row(node, t);
-    const uint32_t mask = f.bits >= 32u ? ~uint32_t{0} : ((uint32_t{1} << f.bits) - 1u) << f.shift;
-    r.words[f.word] = (r.words[f.word] & ~mask) | ((value << f.shift) & mask);
-    r.mask |= uint32_t{1} << f.word;
-    return true;
+    return write_scalar(node, t, f, true, value);
   }
   bool set_f32(uint32_t node, const NveTableDesc& t, NveFieldSpec f, float v) {
     return set(node, t, f, std::bit_cast<uint32_t>(v));
@@ -91,21 +87,70 @@ class Nve2Writer {
   bool set_bool(uint32_t node, const NveTableDesc& t, NveFieldSpec f, bool v) {
     return set(node, t, f, v ? 1u : 0u);
   }
+  bool set_grid_line(uint32_t node, const NveTableDesc& t, NveFieldSpec f, NveGridLine g) {
+    return set(node, t, f, nve_grid_line_encode(g));
+  }
+  /// Clears an optional scalar field to `None` (marks `explicit_bit` on inherited tables).
+  bool set_none(uint32_t node, const NveTableDesc& t, NveFieldSpec f) {
+    if (f.opt == static_cast<uint8_t>(NVE_OPT_REQUIRED)) return false;
+    return write_scalar(node, t, f, false, 0u);
+  }
+  /// Clears the word 0 explicit-override bit on an inherited table so `f` inherits from its parent.
+  bool clear_explicit(uint32_t node, const NveTableDesc& t, NveFieldSpec f) {
+    if (f.explicit_bit == NVE_NO_EXPLICIT_BIT || nve_field_fits(f, t.words) == 0) return false;
+    Row& r = row(node, t);
+    r.words[0] &= ~(uint32_t{1} << f.explicit_bit);
+    r.mask |= 1u;
+    return true;
+  }
+  /// Writes a two-word 64-bit field (`U64`, `I64`, `F64`).
+  bool set_u64(uint32_t node, const NveTableDesc& t, NveFieldSpec f, uint64_t value) {
+    if (f.kind == static_cast<uint8_t>(NVE_FIELD_STR) || nve_field_is_two_word(f.kind) == 0 ||
+        nve_field_fits(f, t.words) == 0) {
+      return false;
+    }
+    Row& r = row(node, t);
+    r.words[f.word] = static_cast<uint32_t>(value);
+    r.words[f.word + 1u] = static_cast<uint32_t>(value >> 32u);
+    r.mask |= (uint32_t{1} << f.word) | (uint32_t{1} << (f.word + 1u));
+    mark_explicit(r, f);
+    return true;
+  }
+  bool set_i64(uint32_t node, const NveTableDesc& t, NveFieldSpec f, int64_t v) {
+    return set_u64(node, t, f, static_cast<uint64_t>(v));
+  }
+  bool set_f64(uint32_t node, const NveTableDesc& t, NveFieldSpec f, double v) {
+    return set_u64(node, t, f, std::bit_cast<uint64_t>(v));
+  }
+  /// Writes a table's per-table `EventSet` listener mask word (`NVE_TABLE_*_EVENTS_WORD`).
+  bool set_events(uint32_t node, const NveTableDesc& t, uint8_t events_word, uint32_t mask) {
+    if (events_word == NVE_NO_EVENTS_WORD || events_word >= t.words) return false;
+    Row& r = row(node, t);
+    r.words[events_word] = mask;
+    r.mask |= uint32_t{1} << events_word;
+    return true;
+  }
 
-  /// Sets a `Str` field. Rejects non-`Str` specs and invalid UTF-8.
+  /// Sets a `Str` field (and its word 0 `explicit_bit` on inherited tables). Rejects non-`Str`
+  /// specs and invalid UTF-8.
   bool set_str(uint32_t node, const NveTableDesc& t, NveFieldSpec f, std::string_view text) {
     if (f.kind != static_cast<uint8_t>(NVE_FIELD_STR) || nve_field_fits(f, t.words) == 0) return false;
     if (text.size() > 0x00FFFFFFu) return false;
     if (!text.empty() && nve_utf8_valid(reinterpret_cast<const uint8_t*>(text.data()), text.size()) == 0) {
       return false;
     }
-    row(node, t).strs[f.word] = std::string(text);
+    Row& r = row(node, t);
+    r.strs[f.word] = std::string(text);
+    mark_explicit(r, f);
     return true;
   }
 
-  /// Defines resource `id` (non-zero) of `kind` with its codec bytes for this frame.
-  void define_resource(uint32_t id, Key64 kind, std::span<const uint8_t> bytes, bool ephemeral = false) {
-    resources_.push_back(Resource{id, kind, ephemeral, std::vector<uint8_t>(bytes.begin(), bytes.end())});
+  /// Defines resource `id` (non-zero) of `kind` with its 4-byte-aligned flat-word payload and
+  /// optional child `ResourceId` dependencies for this frame.
+  void define_resource(uint32_t id, Key64 kind, std::span<const uint8_t> bytes, bool ephemeral = false,
+                       std::span<const uint32_t> children = {}) {
+    resources_.push_back(Resource{id, kind, ephemeral, std::vector<uint32_t>(children.begin(), children.end()),
+                                  std::vector<uint8_t>(bytes.begin(), bytes.end())});
   }
   void release_resource(uint32_t id) { releases_.push_back(id); }
 
@@ -135,7 +180,7 @@ class Nve2Writer {
     emit_children();
     list(kRemoveNodes, 0u, removes_);
     list(kReleaseResources, 0u, releases_);
-    const uint32_t header[6] = {NVE_ABI_MAGIC, NVE_ABI_VERSION, static_cast<uint32_t>(frame),
+    const uint32_t header[6] = {NVE_ABI_MAGIC, kWireVersion, static_cast<uint32_t>(frame),
                                 static_cast<uint32_t>(frame >> 32u), ops_,
                                 static_cast<uint32_t>(out_.size() / 4u)};
     for (size_t i = 0; i < 6u; ++i) put_at(i * 4u, header[i]);
@@ -144,6 +189,7 @@ class Nve2Writer {
   }
 
  private:
+  static constexpr uint32_t kWireVersion = 2u;
   // `nve_store::wire::Op` (packages/core/store/src/wire/mod.rs).
   static constexpr uint8_t kDeclareTables = 1u;
   static constexpr uint8_t kRemoveNodes = 2u;
@@ -166,10 +212,37 @@ class Nve2Writer {
     uint32_t id;
     Key64 kind;
     bool ephemeral;
+    std::vector<uint32_t> children;
     std::vector<uint8_t> bytes;
   };
 
   static uint64_t row_key(uint32_t slot, uint32_t node) noexcept { return (uint64_t{slot} << 32u) | node; }
+
+  static void mark_explicit(Row& r, NveFieldSpec f) noexcept {
+    if (f.explicit_bit != NVE_NO_EXPLICIT_BIT) {
+      r.words[0] |= uint32_t{1} << f.explicit_bit;
+      r.mask |= 1u;
+    }
+  }
+
+  bool write_scalar(uint32_t node, const NveTableDesc& t, NveFieldSpec f, bool present, uint32_t value) {
+    uint32_t word_bits = 0u;
+    uint32_t val_word_bits = 0u;
+    if (nve_field_is_two_word(f.kind) != 0 || nve_field_fits(f, t.words) == 0 ||
+        nve_field_opt_encode(f, present ? 1 : 0, value, &word_bits, &val_word_bits) == 0) {
+      return false;
+    }
+    Row& r = row(node, t);
+    const uint32_t mask = f.bits >= 32u ? ~uint32_t{0} : ((uint32_t{1} << f.bits) - 1u) << f.shift;
+    r.words[f.word] = (r.words[f.word] & ~mask) | ((word_bits << f.shift) & mask);
+    r.mask |= uint32_t{1} << f.word;
+    if (f.opt == static_cast<uint8_t>(NVE_OPT_WIDE_BIT)) {
+      r.words[f.val_word] = val_word_bits;
+      r.mask |= uint32_t{1} << f.val_word;
+    }
+    mark_explicit(r, f);
+    return true;
+  }
 
   /// Wire table slots are `u8`: a session declares at most 256 tables (a static, programmer-
   /// controlled set), so exceeding it is a bug, not an input error.
@@ -270,6 +343,8 @@ class Nve2Writer {
       u32(r.kind.lo());
       u32(r.kind.hi());
       u32(r.ephemeral ? 1u : 0u);
+      u32(static_cast<uint32_t>(r.children.size()));
+      for (const uint32_t cid : r.children) u32(cid);
       u32(static_cast<uint32_t>(r.bytes.size()));
       bytes(r.bytes);
     }

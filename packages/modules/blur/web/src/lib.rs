@@ -25,8 +25,7 @@ impl BlurWebSystem {
         };
         let px = (row.material().css_blur_px() * clamped).max(0.0);
         let _ = write!(out, "backdrop-filter:blur({px}px);-webkit-backdrop-filter:blur({px}px);");
-        if row.tint_enabled() {
-            let t = row.tint();
+        if let Some(t) = row.tint() {
             let a = f32::from(t.a()) / 255.0;
             let _ = write!(out, "background-color:rgba({},{},{},{a});", t.r(), t.g(), t.b());
         }

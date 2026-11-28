@@ -1,4 +1,4 @@
-// Windows-only suite: DirectWrite measurement, Direct2D pixels (`NVE_DRAW1`, rounded clips,
+// Windows-only suite: DirectWrite measurement, Direct2D pixels (flat draw lists, rounded clips,
 // borders, shadows, text), the per-target paint cache (WIC images: data / file / bytes; UNC and
 // remote hosts refused), headless BMP screenshots, and a live (hidden) host window: native EDIT
 // overlays (controlled echo, rejecting app, submit, removal), queued wakes, window manager HWNDs.
@@ -138,9 +138,14 @@ void test_draw_list_pixels() {
   s.rt->BeginDraw();
   s.rt->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
   const DrawListDecodeResult res = render_draw_list_to_d2d(s.rt, s.brush, s.factory, D2D1::RectF(0, 0, 40, 20), bytes);
-  std::vector<uint8_t> bad = bytes;
-  bad.pop_back();
-  NVE_CHECK(render_draw_list_to_d2d(s.rt, s.brush, s.factory, D2D1::RectF(0, 0, 40, 20), bad).error == DrawListError::Truncated);
+  std::vector<uint8_t> truncated = bytes;
+  truncated.resize(truncated.size() - 4u);
+  NVE_CHECK(render_draw_list_to_d2d(s.rt, s.brush, s.factory, D2D1::RectF(0, 0, 40, 20), truncated).error ==
+            DrawListError::Truncated);
+  std::vector<uint8_t> unaligned = bytes;
+  unaligned.pop_back();
+  NVE_CHECK(render_draw_list_to_d2d(s.rt, s.brush, s.factory, D2D1::RectF(0, 0, 40, 20), unaligned).error ==
+            DrawListError::Unaligned);
   DrawListEncoder unbalanced;
   unbalanced.clip_rect(0.0f, 0.0f, 1.0f, 1.0f);
   NVE_CHECK(render_draw_list_to_d2d(s.rt, s.brush, s.factory, D2D1::RectF(0, 0, 40, 20), unbalanced.finish()).ok());
@@ -258,18 +263,19 @@ void test_window_inputs_and_wakes() {
   app.w.create(1u);
   app.w.create(kInput);
   (void)app.w.set_str(kInput, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "hi");
-  events(app.w, kInput, {NVE_EVENT_TEXT_CHANGE, NVE_EVENT_SUBMIT, NVE_EVENT_FOCUS, NVE_EVENT_BLUR});
+  events(app.w, kInput, {NVE_TEXT_INPUT_EVENT_CHANGE, NVE_TEXT_INPUT_EVENT_SUBMIT});
+  events(app.w, kInput, {NVE_INTERACTION_EVENT_FOCUS, NVE_INTERACTION_EVENT_BLUR});
   sized(app.w, kInput, 160.0f, 24.0f);
   app.w.create(kNumber);  // keeps digits only: rejects other edits without republishing
   (void)app.w.set_str(kNumber, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "1");
-  events(app.w, kNumber, {NVE_EVENT_TEXT_CHANGE});
+  events(app.w, kNumber, {NVE_TEXT_INPUT_EVENT_CHANGE});
   sized(app.w, kNumber, 160.0f, 24.0f);
   const uint32_t kids[] = {kInput, kNumber};
   app.w.set_children(1u, kids);
   std::string number = "1";
   app.on_event = [&number](ScriptedApp& a, const h::testing::RecordedEvent& e) {
-    if (e.ev.kind != NVE_EVENT_TEXT_CHANGE) return;
-    if (e.ev.node_id == kInput) {
+    if (!h::is_text_input_event(e.ev, NVE_TEXT_INPUT_EVENT_CHANGE)) return;
+    if (e.ev.node == kInput) {
       std::string upper = e.text;
       for (char& c : upper) c = static_cast<char>(c >= 'a' && c <= 'z' ? c - 32 : c);
       (void)a.w.set_str(kInput, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, upper);
@@ -294,16 +300,18 @@ void test_window_inputs_and_wakes() {
   NVE_CHECK(edit != nullptr && WinTextInputs::control_text(edit) == "hi" && WinTextInputs::control_text(digits) == "1");
   ::SetWindowTextW(edit, L"typed");  // EN_CHANGE -> TextChange -> app echo
   pump_messages();
-  NVE_CHECK(app.last(NVE_EVENT_TEXT_CHANGE)->text == "typed" && app.count(NVE_EVENT_TEXT_CHANGE, kInput) == 1u);
+  NVE_CHECK(app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "typed" &&
+            app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kInput) == 1u);
   NVE_CHECK(WinTextInputs::control_text(edit) == "TYPED" && node(window.host(), kInput).input.value == "TYPED");
   ::SendMessageW(edit, WM_KEYDOWN, VK_RETURN, 0);
-  NVE_CHECK(app.last(NVE_EVENT_SUBMIT)->text == "TYPED");
+  NVE_CHECK(app.last(NVE_TEXT_INPUT_EVENT_SUBMIT)->text == "TYPED");
   // A rejected edit reverts at once; an accepted one stays; write-backs never echo upstream.
   ::SetWindowTextW(digits, L"1a");
-  NVE_CHECK(WinTextInputs::control_text(digits) == "1" && app.count(NVE_EVENT_TEXT_CHANGE, kNumber) == 1u);
+  NVE_CHECK(WinTextInputs::control_text(digits) == "1" && app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kNumber) == 1u);
   ::SetWindowTextW(digits, L"12");
   pump_messages();
-  NVE_CHECK(WinTextInputs::control_text(digits) == "12" && number == "12" && app.count(NVE_EVENT_TEXT_CHANGE, kNumber) == 2u);
+  NVE_CHECK(WinTextInputs::control_text(digits) == "12" && number == "12" &&
+            app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kNumber) == 2u);
   // An app-side change arrives through a queued wake.
   (void)app.w.set_str(kInput, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "from app");
   (void)window.host().session().dispatch(ScriptedApp::flush_event(window.surface_id()));
@@ -311,14 +319,15 @@ void test_window_inputs_and_wakes() {
   NVE_CHECK(WinTextInputs::control_text(edit) == "from app");
   // Removing the node destroys its control (its EN_KILLFOCUS is not user input).
   ::SetFocus(edit);
-  const size_t blurs = app.count(NVE_EVENT_BLUR, kInput);
+  const size_t blurs = app.count(NVE_INTERACTION_EVENT_BLUR, kInput);
   app.w.remove(kInput);
   const uint32_t rest[] = {kNumber};
   app.w.set_children(1u, rest);
   (void)window.host().session().dispatch(ScriptedApp::flush_event(window.surface_id()));
   (void)window.host().pump();
   pump_messages();
-  NVE_CHECK(window.text_inputs().size() == 1u && !::IsWindow(edit) && app.count(NVE_EVENT_BLUR, kInput) == blurs);
+  NVE_CHECK(window.text_inputs().size() == 1u && !::IsWindow(edit) &&
+            app.count(NVE_INTERACTION_EVENT_BLUR, kInput) == blurs);
   window.close();
   pump_messages();
 }

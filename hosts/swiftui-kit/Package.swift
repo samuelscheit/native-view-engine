@@ -26,12 +26,18 @@ let package = Package(
             dependencies: [
                 .product(name: "CNveAbi", package: "host-swift"),
                 .product(name: "NveHost", package: "host-swift"),
+                .product(name: "NveHostAbi", package: "host-swift"),
             ],
             path: "Sources/NveSwiftUI"
         ),
         .testTarget(
             name: "NveSwiftUITests",
-            dependencies: ["NveSwiftUI", .product(name: "CNveAbi", package: "host-swift"), .product(name: "NveHost", package: "host-swift")],
+            dependencies: [
+                "NveSwiftUI",
+                .product(name: "CNveAbi", package: "host-swift"),
+                .product(name: "NveHost", package: "host-swift"),
+                .product(name: "NveHostAbi", package: "host-swift"),
+            ],
             path: "Tests/NveSwiftUITests"
         ),
     ]

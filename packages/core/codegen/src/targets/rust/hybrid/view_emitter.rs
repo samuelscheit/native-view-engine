@@ -10,10 +10,9 @@ use crate::writer::CodeWriter;
 
 use super::emit_doc_comments;
 use super::type_map::{
-    DEFAULT, RESULT, direct_nve_value_expr, rust_owned_type, rust_param_type,
-    rust_prop_default_expr,
+    DEFAULT, RESULT, rust_owned_type, rust_param_type, rust_prop_default_expr,
 };
-use super::types_emitter::{RecordField, emit_record};
+use super::types_emitter::{RecordField, emit_record, emit_struct_codec};
 use super::vtable_emitter::{VtableOwner, emit_rust_vtable};
 
 pub(super) fn emit_rust_module(out: &mut CodeWriter, m: &HybridModuleSpec, spec: &HybridFileSpec) {
@@ -40,7 +39,7 @@ fn emit_section_header(
     out: &mut CodeWriter,
     kind: &str,
     owner: &VtableOwner,
-    iface_id: u32,
+    iface_id: nve_abi::InterfaceId,
     schema_hash: u64,
 ) {
     let (pascal, upper) = (&owner.pascal, &owner.upper);
@@ -156,7 +155,9 @@ fn emit_props(out: &mut CodeWriter, pascal: &str, v: &HybridViewSpec) {
     writeln!(out);
 }
 
-/// Typed payload struct, its zero-copy `NveDirectEvent` emitter, and a free `emit_<view>_<event>`.
+/// Typed payload struct (an `NveBinValue` map codec), its `EventBatchBuf` emitter, and a free
+/// `emit_<view>_<event>`. The event crosses as one `nve.custom` `NveEvent` named `ev.name` whose
+/// byte-arena payload is the encoded map.
 fn emit_event(out: &mut CodeWriter, owner: &VtableOwner, ev: &HybridEventSpec) {
     let pascal = &owner.pascal;
     let ev_struct = format!("{pascal}{}Event", to_pascal_case(&ev.name));
@@ -172,60 +173,27 @@ fn emit_event(out: &mut CodeWriter, owner: &VtableOwner, ev: &HybridEventSpec) {
         })
         .collect();
     emit_record(out, &[], "Debug, Clone, PartialEq", &ev_struct, &fields);
+    let keys: Vec<&str> = ev.params.iter().map(|p| p.name.as_str()).collect();
+    emit_struct_codec(out, &ev_struct, &keys);
 
     writeln!(out, "impl {ev_struct} {{");
     writeln!(
         out,
-        "    /// Hands `sink` an event borrowing `self`: scalars, strings, and bytes as direct values,"
+        "    /// Appends this event to `out` as one `nve.custom` event carrying its `NveBinValue` map."
     );
     writeln!(
         out,
-        "    /// every other parameter as a value tree (never wrapped in bytes)."
+        "    pub fn push_to(&self, surface: nve_abi::SurfaceId, node: nve_abi::NodeId, timestamp: nve_abi::TimestampUs, out: &mut nve_abi::EventBatchBuf) -> {RESULT}<(), nve_abi::DecodeError> {{"
     );
     writeln!(
         out,
-        "    pub fn emit_direct<NveHybridSink: ::core::ops::FnOnce(&nve_abi::NveDirectEvent)>(&self, surface_id: u32, node_id: u32, timestamp_us: u64, sink: NveHybridSink) -> {RESULT}<(), nve_abi::DecodeError> {{"
+        "        let data = nve_abi::hybrid::encode_to_vec(self)?;"
     );
-    let mut values = Vec::with_capacity(ev.params.len());
-    for (idx, p) in ev.params.iter().enumerate() {
-        let field = format!("self.{}", rust_ident(&p.name));
-        if let Some(direct) = direct_nve_value_expr(&field, &p.ty) {
-            values.push(direct);
-            continue;
-        }
-        if p.ty != HybridType::Value {
-            writeln!(
-                out,
-                "        let _nve_value_{idx} = NveHybridValue::encode(&{field})?;"
-            );
-            writeln!(
-                out,
-                "        let _nve_tree_{idx} = _nve_value_{idx}.to_tree();"
-            );
-        } else {
-            writeln!(out, "        let _nve_tree_{idx} = {field}.to_tree();");
-        }
-        values.push(format!("*_nve_tree_{idx}.root()"));
-    }
     writeln!(
         out,
-        "        let entries: [nve_abi::NveMapEntry; {}] = [",
-        ev.params.len()
-    );
-    for (p, value) in ev.params.iter().zip(&values) {
-        writeln!(
-            out,
-            "            nve_abi::NveMapEntry::new(\"{}\", {value}),",
-            escape_c_like_string(&p.name)
-        );
-    }
-    writeln!(out, "        ];");
-    writeln!(
-        out,
-        "        sink(&nve_abi::NveDirectEvent::custom(surface_id, node_id, timestamp_us, \"{}\", nve_abi::NveValue::map(&entries)));",
+        "        out.try_push_custom(surface, node, timestamp, \"{}\", &data).map_err(nve_abi::DecodeError::InvalidEvent)",
         escape_c_like_string(&ev.name)
     );
-    writeln!(out, "        Ok(())");
     writeln!(out, "    }}");
     writeln!(out, "}}");
     writeln!(out);
@@ -237,7 +205,7 @@ fn emit_event(out: &mut CodeWriter, owner: &VtableOwner, ev: &HybridEventSpec) {
     );
     write!(
         out,
-        "pub fn emit_{}_{}<NveHybridSink: ::core::ops::FnOnce(&nve_abi::NveDirectEvent)>(_nve_surface_id: u32, _nve_node_id: u32, _nve_timestamp_us: u64",
+        "pub fn emit_{}_{}(_nve_surface: nve_abi::SurfaceId, _nve_node: nve_abi::NodeId, _nve_timestamp: nve_abi::TimestampUs",
         owner.snake,
         to_snake_case(&ev.name)
     );
@@ -246,7 +214,7 @@ fn emit_event(out: &mut CodeWriter, owner: &VtableOwner, ev: &HybridEventSpec) {
     }
     writeln!(
         out,
-        ", _nve_sink: NveHybridSink) -> {RESULT}<(), nve_abi::DecodeError> {{"
+        ", _nve_out: &mut nve_abi::EventBatchBuf) -> {RESULT}<(), nve_abi::DecodeError> {{"
     );
     write!(out, "    {ev_struct} {{");
     for p in &ev.params {
@@ -254,7 +222,7 @@ fn emit_event(out: &mut CodeWriter, owner: &VtableOwner, ev: &HybridEventSpec) {
     }
     writeln!(
         out,
-        " }}.emit_direct(_nve_surface_id, _nve_node_id, _nve_timestamp_us, _nve_sink)"
+        " }}.push_to(_nve_surface, _nve_node, _nve_timestamp, _nve_out)"
     );
     writeln!(out, "}}");
     writeln!(out);

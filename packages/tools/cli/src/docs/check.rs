@@ -83,7 +83,11 @@ pub(crate) fn validate_content_dir(content_dir: &Path) -> Result<CheckResult, St
     });
 
     let page_count = site.pages.len();
-    let search_bytes = site.search_index.encode().len();
+    let search_bytes = site
+        .search_index
+        .encode()
+        .map_err(|e| format!("failed to encode search.nvs2: {e}"))?
+        .len();
 
     Ok(CheckResult {
         site,

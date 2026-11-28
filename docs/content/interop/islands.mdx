@@ -12,11 +12,12 @@ order: 2
 
 ```rust title="packages/core/interop/src/lib.rs"
 pub struct InteropRuntime {
-    pub surfaces: SurfaceOrchestrator,
+    surfaces: SurfaceOrchestrator, // accessed via `surfaces()` & lifecycle/env/cascade methods
     pub layout: LayoutNegotiator,
     pub gestures: GestureArbitrator,
     pub channels: NveChannelBus,
     pub windows: WindowManager,
+    plugins: NvePluginHost,        // accessed via `plugins()`, `plugin_mut()`, & register/unload methods
 }
 ```
 
@@ -60,7 +61,7 @@ Opt-in foreign-framework `<Island>` mounting (React Native, Flutter `FlutterEngi
 
 ## Panic-Isolated Plugin Host (`NvePluginHost`)
 
-`packages/core/interop/src/plugin_host/` lets flagship applications like NVE Studio dynamically load third-party native-speed Rust plugins via `nve_get_interface` (`PluginMetadata`, `PluginCapabilities`, `PluginRequirement`, `DEFAULT_PLUGIN_SURFACE_BASE`):
+`packages/core/interop/src/plugin_host/` lets flagship applications like NVE Studio dynamically load third-party native-speed Rust plugins via `nve_get_interface` (`PluginMetadata`, `PluginCapabilities`, `PluginRequirement`), allocating isolated generational `SurfaceId`s directly from the shared `SurfaceOrchestrator`:
 
 - Plugins render into isolated `NvePluginSlot`s with dedicated `SurfaceId`s.
 - Because `export_nve_app!` wraps every FFI call in `ffi_catch_unwind`, a bug inside a third-party plugin faults only its slot rather than crashing the host application.

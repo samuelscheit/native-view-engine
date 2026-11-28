@@ -1,6 +1,6 @@
 //! Taffy tree adapter (`LayoutView`) over disjoint borrows of `NodeStore` and `TaffyStoreLayout`.
 
-use nve_components::tables::{
+use nve_tables::tables::{
     Display as NveDisplay, Layout as NveLayout, TextContent, is_node_display_none,
 };
 use nve_store::{NodeId, NodeStore};
@@ -49,7 +49,7 @@ fn tid_from_nve(id: NodeId) -> taffy::NodeId {
 impl<'s> LayoutView<'s> {
     #[inline(always)]
     fn id_of(&self, n: taffy::NodeId) -> NodeId {
-        self.store.id_at(ix(n)).unwrap_or(NodeId(0))
+        self.store.id_at(ix(n)).unwrap_or(NodeId::NULL)
     }
 
     #[inline(always)]

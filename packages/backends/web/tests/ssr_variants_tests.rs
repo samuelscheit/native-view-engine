@@ -3,7 +3,7 @@
 
 use nve_backend_web::ssr_variants::{ssr_style_overrides, write_scoped_overrides, SsrVariantMismatch};
 use nve_backend_web::WebBackend;
-use nve_components::tables::Visual;
+use nve_tables::tables::Visual;
 use nve_store::{ChangeSet, NodeId, NodeStore, Rgba};
 
 /// Root with one child per background; equal colors share one SSR content class.

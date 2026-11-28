@@ -37,11 +37,11 @@ impl Scalar {
     fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "bool" => Self::Bool,
-            "u8" => Self::U8,
-            "u16" => Self::U16,
-            "u32" => Self::U32,
+            "u8" | "PrimarySlot" => Self::U8,
+            "u16" | "ShortLen" | "PropFieldId" => Self::U16,
+            "u32" | "NodeIndex" | "Word" => Self::U32,
             "u64" => Self::U64,
-            "i32" => Self::I32,
+            "i32" | "ZIndex" => Self::I32,
             "i64" => Self::I64,
             "f32" => Self::F32,
             "f64" => Self::F64,
@@ -143,9 +143,28 @@ impl<'a> Ty<'a> {
             });
         }
         if !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-            return Ok(Self::Named(s));
+            return Ok(Self::Named(canonical_handle_alias(s)));
         }
         Err(bad_type(spelling, "unsupported ABI type spelling"))
+    }
+}
+
+/// Maps Rust `#[repr(transparent)]` handle names used in `nve-abi` structs to their C typedef
+/// aliases in `CORE_ALIASES`.
+fn canonical_handle_alias(name: &str) -> &str {
+    match name {
+        "NodeId" => "NveNodeId",
+        "SurfaceId" => "NveSurfaceId",
+        "FrameId" => "NveFrameId",
+        "TableKey" => "NveTableKey",
+        "TimestampUs" => "NveTimestampUs",
+        "DurationUs" => "NveDurationUs",
+        "EventId" => "NveEventId",
+        "EventFlags" => "NveEventFlags",
+        "ArenaOffset" => "NveArenaOffset",
+        "ByteLen" => "NveByteLen",
+        "InterfaceId" => "NveInterfaceId",
+        other => other,
     }
 }
 

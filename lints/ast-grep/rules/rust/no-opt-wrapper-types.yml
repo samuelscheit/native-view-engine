@@ -1,10 +1,10 @@
 id: rust-no-opt-wrapper-types
 language: rust
-severity: warning
-message: "Manual `Opt*` wrapper struct/enum in core components/tables/store/modules is banned [stage: Post1B1D]; use `Option<T>` / `Opt<T>` directly."
-note: "[stage: Post1B1D] Synced with `enum_and_macro_hygiene.rs` scope (`components`, `tables`, `store`, `modules`). Staged as `warning` until Track 1B-1d replaces `Opt*` wrappers with `Option<T>`."
+severity: error
+message: "Manual `Opt*` wrapper struct/enum in core components/tables/store/modules is banned; use `Option<T>` directly."
+note: "Synced with `enum_and_macro_hygiene.rs` scope (`components`, `tables`, `store`, `modules`). Enforced since Track 1B-1d C2."
 files:
-  - "packages/core/components/**/*.rs"
+  - "packages/core/tables/**/*.rs"
   - "packages/core/tables/**/*.rs"
   - "packages/core/store/**/*.rs"
   - "packages/modules/**/*.rs"

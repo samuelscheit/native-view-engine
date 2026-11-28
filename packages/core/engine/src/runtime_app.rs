@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use nve_abi::{FrameId, NveDirectEvent, NveEventBatchRef, NvePropsRef};
+use nve_abi::{FrameId, NvePropsRef, ValidatedEvents};
 use nve_store::{ChangeSet, NodeStore, Transaction};
 
 use crate::HotPatchMsg;
@@ -37,7 +37,7 @@ pub trait RuntimeApp {
 
     /// Dispatches a direct typed event batch into the application. Returns `true` when the app
     /// dirtied state and needs a re-render.
-    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool;
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool;
 
     /// Borrows the app's authoritative `NodeStore` when running in zero-copy direct mode.
     fn direct_store(&self) -> Option<&NodeStore> {
@@ -77,7 +77,7 @@ pub trait RuntimeApp {
     }
 
     /// Drains component-emitted outbound events, borrowed until the next call on `self`.
-    fn drain_emitted_events(&mut self) -> Result<&[NveDirectEvent], CapabilityUnsupported> {
+    fn drain_emitted_events(&mut self) -> Result<ValidatedEvents<'_>, CapabilityUnsupported> {
         Err(CapabilityUnsupported)
     }
 

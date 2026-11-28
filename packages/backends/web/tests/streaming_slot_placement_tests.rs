@@ -8,7 +8,7 @@ mod support;
 use nve_backend_web::{
     StreamingDocumentOptions, StreamingError, StreamingSsrSession, WebBackend,
 };
-use nve_components::tables::{Accessibility, AriaRole};
+use nve_tables::tables::{Accessibility, AriaRole};
 use nve_store::{NodeId, NodeStore};
 
 use support::*;
@@ -73,7 +73,7 @@ fn query_suspense_wrapper_never_hides_foster_parent_or_select_traps() {
     let mut store = NodeStore::new();
     commit(&mut backend, &mut store, |tx| {
         let form = node(tx, 2);
-        tx.edit::<Accessibility>(form).role(AriaRole::Form);
+        tx.edit::<Accessibility>(form).role(Some(AriaRole::Form));
         let sus = pending_slot(tx, 3, 4, 5, "qs");
         tx.set_children(form, &[sus]);
         tx.set_children(NodeId::ROOT, &[form]);

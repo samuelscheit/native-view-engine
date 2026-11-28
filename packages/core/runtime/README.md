@@ -35,11 +35,12 @@ Framework-agnostic host runtime for `native-view-engine`.
   hosts (`dart:ffi`, JNI) use the `cdylib` built by default.
 
 ```rust
+use nve_abi::SurfaceId;
 use nve_engine::Viewport;
 use nve_runtime::{RuntimeBuilder, SurfaceRuntime};
 
 let mut rt: SurfaceRuntime = RuntimeBuilder::new()
-    .surface_id(1)
+    .surface_id(SurfaceId::ROOT)
     .viewport(Viewport { width: 800.0, height: 600.0, scale_factor: 1.0 })
     .build();
 let _ = rt.tick(1.0 / 60.0);

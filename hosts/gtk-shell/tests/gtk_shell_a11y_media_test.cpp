@@ -70,8 +70,6 @@ void test_a11y_inputs_images_and_styles() {
   w.create(1u);
   w.create(kColumn);
   // Inherited typography from the column.
-  w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET,
-        NVE_TYPOGRAPHY_SET_FONT_STYLE | NVE_TYPOGRAPHY_SET_FONT_FAMILY | NVE_TYPOGRAPHY_SET_TEXT_DECORATION);
   w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_STYLE, NVE_FONT_STYLE_ITALIC);
   (void)w.set_str(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_FAMILY, "Inter\";}");
   w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_TEXT_DECORATION, NVE_TEXT_DECORATION_UNDERLINE);
@@ -79,7 +77,6 @@ void test_a11y_inputs_images_and_styles() {
   text_node(w, kHeading, "Settings");
   a11y(w, kHeading, NVE_ARIA_ROLE_HEADING, "");
   w.set(kHeading, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_LEVEL, 2u);
-  w.set(kHeading, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_MAX_LINES | NVE_TYPOGRAPHY_SET_TEXT_ALIGN);
   w.set(kHeading, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_MAX_LINES, 1u);
   w.set(kHeading, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_TEXT_ALIGN, NVE_TEXT_ALIGN_CENTER);
 
@@ -87,7 +84,7 @@ void test_a11y_inputs_images_and_styles() {
   a11y(w, kCheck, NVE_ARIA_ROLE_CHECKBOX, "Agree");
   (void)w.set_str(kCheck, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_HINT, "Accept the terms");
   w.set(kCheck, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_CHECKED, NVE_ARIA_TRI_STATE_TRUE);
-  w.set(kCheck, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_EVENT_MASK, h::event_bit(NVE_EVENT_PRESS));
+  w.set_events(kCheck, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_EVENTS_WORD, NVE_INTERACTION_EVENT_SET_PRESS);
   w.set(kCheck, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_CURSOR, NVE_CURSOR_KIND_POINTER);
   w.set(kCheck, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_COLOR, h::rgba(1, 2, 3));
   w.set_f32(kCheck, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_WIDTH, 2.0f);
@@ -100,7 +97,7 @@ void test_a11y_inputs_images_and_styles() {
 
   w.create(kDisabled);
   a11y(w, kDisabled, NVE_ARIA_ROLE_BUTTON, "Disabled");
-  w.set(kDisabled, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_EVENT_MASK, h::event_bit(NVE_EVENT_PRESS));
+  w.set_events(kDisabled, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_EVENTS_WORD, NVE_INTERACTION_EVENT_SET_PRESS);
   w.set_bool(kDisabled, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_DISABLED, true);
 
   w.create(kEntry);
@@ -132,7 +129,9 @@ void test_a11y_inputs_images_and_styles() {
 
   // Controlled inputs: echo every TextChange back as the new value.
   app.on_event = [](ScriptedApp& a, const nve::host::testing::RecordedEvent& e) {
-    if (e.ev.kind == NVE_EVENT_TEXT_CHANGE) (void)a.w.set_str(e.ev.node_id, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, e.text);
+    if (h::is_text_input_event(e.ev, NVE_TEXT_INPUT_EVENT_CHANGE)) {
+      (void)a.w.set_str(e.ev.node, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, e.text);
+    }
   };
 
   NveGtkHost host;
@@ -147,7 +146,8 @@ void test_a11y_inputs_images_and_styles() {
   GtkWidget* check = host.widget_for_node_id(kCheck);
   NVE_CHECK(role_of(check) == GTK_ACCESSIBLE_ROLE_CHECKBOX);
   sem = host.accessibility_info_for_node_id(kCheck);
-  NVE_CHECK(sem && sem->label == "Agree" && sem->hint == "Accept the terms" && sem->checked == NVE_ARIA_TRI_STATE_TRUE);
+  NVE_CHECK(sem && sem->label == "Agree" && sem->hint == "Accept the terms" &&
+            sem->checked == uint8_t{NVE_ARIA_TRI_STATE_TRUE});
   NVE_CHECK(gtk_widget_get_sensitive(check) && !gtk_widget_get_sensitive(host.widget_for_node_id(kDisabled)));
   NVE_CHECK(host.accessibility_info_for_node_id(kDisabled)->disabled);
   NVE_CHECK(host.accessibility_info_for_node_id(kHidden)->hidden);
@@ -180,20 +180,20 @@ void test_a11y_inputs_images_and_styles() {
 
   // Replacing text is a native delete + insert: two TextChanges ("" then "Ada"), echoed stably.
   gtk_editable_set_text(GTK_EDITABLE(entry), "Ada");
-  NVE_CHECK(app.count(NVE_EVENT_TEXT_CHANGE, kEntry) == 2u && app.last(NVE_EVENT_TEXT_CHANGE)->text == "Ada");
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kEntry) == 2u && app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "Ada");
   NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "Ada");  // echo does not fight the user
   int at = 0;
   gtk_editable_insert_text(GTK_EDITABLE(entry), "!", 1, &at);  // typing one char: one event
-  NVE_CHECK(app.count(NVE_EVENT_TEXT_CHANGE, kEntry) == 3u && app.last(NVE_EVENT_TEXT_CHANGE)->text == "!Ada");
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kEntry) == 3u && app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "!Ada");
   (void)app.w.set_str(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "reset");  // app-driven value
   flush(host);
   NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "reset");
-  NVE_CHECK(app.count(NVE_EVENT_TEXT_CHANGE, kEntry) == 3u);  // programmatic sets never echo upstream
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kEntry) == 3u);  // programmatic sets never echo upstream
   // Shrinking the limit truncates natively: a host write, not a user edit.
   app.w.set(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_MAX_LENGTH, 3u);
   flush(host);
   NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "res");
-  NVE_CHECK(app.count(NVE_EVENT_TEXT_CHANGE, kEntry) == 3u);
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kEntry) == 3u);
   // Limits beyond GTK's range clamp to it instead of wrapping to a negative (unlimited) int.
   app.w.set(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_MAX_LENGTH, 0xFFFFFFFFu);
   flush(host);
@@ -201,12 +201,13 @@ void test_a11y_inputs_images_and_styles() {
   (void)app.w.set_str(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "reset!");
   flush(host);
   g_signal_emit_by_name(entry, "activate");
-  NVE_CHECK(app.count(NVE_EVENT_SUBMIT, kEntry) == 1u && app.last(NVE_EVENT_SUBMIT)->text == "reset!");
-  NVE_CHECK(host.dispatch_focus(kEntry, true) || app.count(NVE_EVENT_FOCUS, kEntry) == 1u);
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_SUBMIT, kEntry) == 1u && app.last(NVE_TEXT_INPUT_EVENT_SUBMIT)->text == "reset!");
+  NVE_CHECK(host.dispatch_focus(kEntry, true) || app.count(NVE_INTERACTION_EVENT_FOCUS, kEntry) == 1u);
   (void)host.dispatch_focus(kEntry, false);
-  NVE_CHECK(app.count(NVE_EVENT_FOCUS, kEntry) == 1u && app.count(NVE_EVENT_BLUR, kEntry) == 1u);
+  NVE_CHECK(app.count(NVE_INTERACTION_EVENT_FOCUS, kEntry) == 1u && app.count(NVE_INTERACTION_EVENT_BLUR, kEntry) == 1u);
   gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(notes)), "line1\nline2", -1);
-  NVE_CHECK(app.last(NVE_EVENT_TEXT_CHANGE)->text == "line1\nline2" && app.last(NVE_EVENT_TEXT_CHANGE)->ev.node_id == kNotes);
+  NVE_CHECK(app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "line1\nline2" &&
+            app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->ev.node == kNotes);
 
   // --- Images.
   const auto paintable = [&](uint32_t id) { return gtk_picture_get_paintable(GTK_PICTURE(host.widget_for_node_id(id))); };
@@ -265,12 +266,12 @@ void test_rejecting_controlled_input() {
   w.create(1u);
   w.create(kNumber);
   (void)w.set_str(kNumber, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "1");
-  w.set(kNumber, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_EVENT_MASK, h::event_bit(NVE_EVENT_TEXT_CHANGE));
+  w.set_events(kNumber, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_EVENTS_WORD, NVE_TEXT_INPUT_EVENT_SET_CHANGE);
   const uint32_t kids[] = {kNumber};
   w.set_children(1u, kids);
   std::string value = "1";
   app.on_event = [&value](ScriptedApp& a, const h::testing::RecordedEvent& e) {
-    if (e.ev.kind != NVE_EVENT_TEXT_CHANGE) return;
+    if (!h::is_text_input_event(e.ev, NVE_TEXT_INPUT_EVENT_CHANGE)) return;
     std::string digits;
     for (const char c : e.text) {
       if (c >= '0' && c <= '9') digits.push_back(c);
@@ -285,7 +286,7 @@ void test_rejecting_controlled_input() {
   NVE_CHECK(GTK_IS_ENTRY(entry) && std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "1");
   int at = 1;
   gtk_editable_insert_text(GTK_EDITABLE(entry), "a", 1, &at);  // rejected
-  NVE_CHECK(app.count(NVE_EVENT_TEXT_CHANGE, kNumber) == 1u && app.last(NVE_EVENT_TEXT_CHANGE)->text == "1a");
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kNumber) == 1u && app.last(NVE_TEXT_INPUT_EVENT_CHANGE)->text == "1a");
   NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "1");
   at = 1;
   gtk_editable_insert_text(GTK_EDITABLE(entry), "2", 1, &at);  // accepted
@@ -293,7 +294,7 @@ void test_rejecting_controlled_input() {
   at = 0;
   gtk_editable_insert_text(GTK_EDITABLE(entry), "x9", 2, &at);  // transformed: "x912" -> "912"
   NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "912" && value == "912");
-  NVE_CHECK(app.count(NVE_EVENT_TEXT_CHANGE, kNumber) == 3u);  // write-backs never echo upstream
+  NVE_CHECK(app.count(NVE_TEXT_INPUT_EVENT_CHANGE, kNumber) == 3u);  // write-backs never echo upstream
 }
 
 }  // namespace

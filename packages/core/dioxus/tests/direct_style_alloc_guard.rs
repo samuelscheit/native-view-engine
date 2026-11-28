@@ -8,7 +8,8 @@ mod counting_alloc;
 
 use counting_alloc::count_allocs;
 use dioxus_core::{AttributeValue, ElementId, Template, TemplateNode, WriteMutations};
-use nve_components::tables::{FlexDirection, Layout, Typography, Visual};
+use nve_abi::SurfaceId;
+use nve_tables::tables::{FlexDirection, Layout, Typography, Visual};
 use nve_dioxus::NveMutationWriter;
 use nve_store::{Length, Rgba};
 
@@ -67,7 +68,7 @@ fn direct_typed_attribute_updates_perform_zero_heap_allocations() {
     let (_, sanity) = count_allocs(|| std::hint::black_box(Vec::<u8>::with_capacity(64)));
     assert!(sanity > 0, "allocator probe must observe a Vec allocation");
 
-    let mut writer = NveMutationWriter::new(1);
+    let mut writer = NveMutationWriter::new(SurfaceId::ROOT);
     writer.with_transaction(|tx| {
         tx.load_template(VIEW_TEMPLATE, 0, ElementId(1));
         tx.load_template(VIEW_TEMPLATE, 0, EL1);

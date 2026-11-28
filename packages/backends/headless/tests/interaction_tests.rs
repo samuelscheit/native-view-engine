@@ -1,11 +1,12 @@
 //! Deep integration tests for `:hover`, `:focus`, `:focus-visible`, `:active`, `:disabled`,
 //! and [`CursorKind`] resolution inside [`HeadlessBackend`] over `NodeStore` word tables.
 
-use nve_abi::{ColorRgba, EventMask};
+use nve_abi::{ColorRgba, InteractionEvent, SurfaceId};
 use nve_backend_headless::{
-    CursorKind, FocusModality, HeadlessBackend, InteractionState, StateStyleRule, StylePatch,
+    CursorKind, FocusModality, HeadlessBackend, InteractionState, RowPatch, StateStyleRule,
+    StylePatchExt,
 };
-use nve_components::tables::{Interaction, Layout, StateRules, TextInput, Visual};
+use nve_tables::tables::{Interaction, Layout, StateRules, TextInput, Visual};
 use nve_engine::{StoreBackend, Viewport};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 
@@ -15,7 +16,7 @@ fn headless_interaction_hover_active_focus_disabled_and_cursor() {
     let mut changes = ChangeSet::default();
     let mut backend = HeadlessBackend::new();
     backend.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 400.0,
             height: 300.0,
@@ -26,17 +27,17 @@ fn headless_interaction_hover_active_focus_disabled_and_cursor() {
     let rules = vec![
         StateStyleRule::new(
             InteractionState::HOVER,
-            StylePatch::new()
+            RowPatch::new()
                 .bg(ColorRgba::rgb(30, 64, 175))
                 .cursor(CursorKind::Pointer),
         ),
         StateStyleRule::new(
             InteractionState::ACTIVE,
-            StylePatch::new().bg(ColorRgba::rgb(29, 78, 216)),
+            RowPatch::new().bg(ColorRgba::rgb(29, 78, 216)),
         ),
         StateStyleRule::new(
             InteractionState::DISABLED,
-            StylePatch::new()
+            RowPatch::new()
                 .opacity(0.4)
                 .cursor(CursorKind::NotAllowed),
         ),
@@ -52,7 +53,7 @@ fn headless_interaction_hover_active_focus_disabled_and_cursor() {
         .height(Length::points(40.0));
     tx.edit::<Visual>(btn).background(Rgba::rgb(15, 23, 42));
     tx.edit::<Interaction>(btn)
-        .event_mask(EventMask::PRESS as u32)
+        .listen(InteractionEvent::Press)
         .cursor(CursorKind::Pointer)
         .state_rules(Some(StateRules(rules.into())));
 
@@ -74,8 +75,8 @@ fn headless_interaction_hover_active_focus_disabled_and_cursor() {
 
     // Hover btn -> hover rule activates.
     let dirty = backend.dispatch_pointer_move(&store, 50.0, 20.0);
-    assert_eq!(dirty, vec![btn.raw()]);
-    assert!(backend.interaction_state(btn.raw()).contains(InteractionState::HOVER));
+    assert_eq!(dirty, vec![btn]);
+    assert!(backend.interaction_state(btn).contains(InteractionState::HOVER));
     assert_eq!(
         backend.effective_visual(&store, btn).background,
         ColorRgba::rgb(30, 64, 175)
@@ -90,9 +91,9 @@ fn headless_interaction_hover_active_focus_disabled_and_cursor() {
     let _ = backend.dispatch_pointer_up(&store, 50.0, 20.0);
 
     // Keyboard focus -> focus + focus-visible.
-    let _ = backend.dispatch_focus(Some(btn.raw()), FocusModality::Keyboard);
+    let _ = backend.dispatch_focus(Some(btn), FocusModality::Keyboard);
     assert!(backend
-        .interaction_state(btn.raw())
+        .interaction_state(btn)
         .contains(InteractionState::FOCUS_VISIBLE));
 
     // Disable via NodeStore Interaction table -> disabled rule + NotAllowed cursor.
@@ -102,7 +103,7 @@ fn headless_interaction_hover_active_focus_disabled_and_cursor() {
     backend.commit(&store, &changes).unwrap();
 
     assert!(backend
-        .interaction_state(btn.raw())
+        .interaction_state(btn)
         .contains(InteractionState::DISABLED));
     assert_eq!(backend.effective_cursor(&store, btn), CursorKind::NotAllowed);
     assert!((backend.effective_visual(&store, btn).opacity - 0.4).abs() < 1e-4);

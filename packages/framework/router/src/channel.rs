@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use nve_interop::{
     ChannelMessage, ChannelPayload, InteropError, NveChannelBus, PayloadEncoding, SubscriptionId,
-    CHANNEL_ID_NAVIGATION,
+    SurfaceId, CHANNEL_ID_NAVIGATION,
 };
 
 use crate::deeplink::DeepLinkConfig;
@@ -55,7 +55,7 @@ impl From<InteropError> for BridgeError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InboundNavCommand {
     pub seq: u64,
-    pub sender_surface: Option<u32>,
+    pub sender_surface: Option<SurfaceId>,
     pub packet: NavPacket,
 }
 
@@ -69,7 +69,7 @@ pub enum InboundApplyOutcome<R> {
 }
 
 struct BridgeInbox {
-    surface_id: u32,
+    surface_id: SurfaceId,
     last_seq: AtomicU64,
     queue: Mutex<VecDeque<InboundNavCommand>>,
     decode_errors: AtomicU64,
@@ -122,7 +122,7 @@ impl BridgeInbox {
 /// Publishes every committed transition with `retain = true` and consumes external navigation
 /// commands with echo + monotonic sequence loop prevention.
 pub struct RouterChannelBridge {
-    surface_id: u32,
+    surface_id: SurfaceId,
     subscription_id: Option<SubscriptionId>,
     inbox: Arc<BridgeInbox>,
     published_count: u64,
@@ -132,7 +132,7 @@ impl RouterChannelBridge {
     /// Subscribes to `CHANNEL_ID_NAVIGATION` on `bus` for `surface_id`.
     pub fn attach(
         bus: &mut NveChannelBus,
-        surface_id: u32,
+        surface_id: SurfaceId,
         replay_retained: bool,
     ) -> Result<Self, InteropError> {
         let inbox = Arc::new(BridgeInbox {
@@ -165,7 +165,7 @@ impl RouterChannelBridge {
     }
 
     #[inline]
-    pub fn surface_id(&self) -> u32 {
+    pub fn surface_id(&self) -> SurfaceId {
         self.surface_id
     }
 

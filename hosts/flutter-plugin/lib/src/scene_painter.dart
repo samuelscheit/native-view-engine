@@ -31,7 +31,7 @@ abstract interface class NveTablePainter {
   void paint(NvePaintContext ctx, TableReader table, int row, int index, Rect rect, double radius);
 }
 
-/// `nve.canvas` (`packages/modules/canvas`): `draw_list: Res<DrawList>` (`NVE_DRAW1` payload).
+/// `nve.canvas` (`packages/modules/canvas`): `draw_list: Res<DrawList>` (flat `nve.res.draw_list` `u32`-word payload).
 final class NveCanvasTablePainter implements NveTablePainter {
   NveCanvasTablePainter([NveDrawListPainter? painter]) : _painter = painter ?? NveDrawListPainter();
 
@@ -333,8 +333,8 @@ final class NveScenePainter {
     final paint = Paint()
       ..filterQuality = FilterQuality.medium
       ..isAntiAlias = true;
-    if (t.boolean(row, ImageTable.tintEnabled)) {
-      paint.colorFilter = ColorFilter.mode(nveColor(t.color(row, ImageTable.tint).packed), BlendMode.srcIn);
+    if (t.optColor(row, ImageTable.tint) case final tint?) {
+      paint.colorFilter = ColorFilter.mode(nveColor(tint.packed), BlendMode.srcIn);
     }
     _canvas
       ..save()

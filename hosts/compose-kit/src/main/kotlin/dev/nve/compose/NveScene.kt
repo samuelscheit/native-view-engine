@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
+import dev.nve.host.DrawList
 import dev.nve.host.ImageSource
 import dev.nve.host.Key64
 import dev.nve.host.SceneReader
@@ -53,7 +54,7 @@ data class NveInput(
 
 /** `nve.accessibility` + `nve.interaction` + `nve.debug_id` semantics. */
 data class NveSemantics(
-    val role: Int = NveTables.Values.AriaRole.NONE,
+    val role: Int? = null,
     val label: String = "",
     val hint: String = "",
     val testId: String = "",
@@ -365,7 +366,7 @@ object NveSceneCapture {
                 drawList = if (prev?.drawList != null && prev.drawListResource == drawListResource && reusable(drawListResource)) {
                     prev.drawList
                 } else {
-                    (if (drawListResource == 0) null else resources.resource(drawListResource))?.let { copy(it.bytes) }
+                    drawListOf(if (drawListResource == 0) null else resources.resource(drawListResource))
                 }
             }
             NveNodeKind.SCROLL -> {
@@ -397,6 +398,10 @@ object NveSceneCapture {
         return src.url?.let { NveImage.Url(it) }
     }
 
+    /** Draw-list bytes copied out of the frame when the resource carries `nve.res.draw_list`. */
+    private fun drawListOf(res: NveResource?): ByteArray? =
+        if (res == null || res.kind != DrawList.KIND) null else copy(res.bytes)
+
     private fun copy(b: ByteBuffer): ByteArray = ByteArray(b.remaining()).also { b.duplicate().get(it) }
     private fun box(s: SceneReader, t: Tables, i: Int): NveBox {
         val r = s.rowOf(t.visual, i)
@@ -425,7 +430,7 @@ object NveSceneCapture {
         if (r < 0) return NveSemantics(testId = testId, disabled = disabled)
         val a = t.accessibility!!
         return NveSemantics(
-            role = a.u32(r, NveTables.Accessibility.ROLE),
+            role = if (a.isPresent(r, NveTables.Accessibility.ROLE)) a.u32(r, NveTables.Accessibility.ROLE) else null,
             label = s.text(a, r, NveTables.Accessibility.LABEL),
             hint = s.text(a, r, NveTables.Accessibility.HINT),
             testId = testId,

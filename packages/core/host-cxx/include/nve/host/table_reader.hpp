@@ -3,7 +3,7 @@
 // Dense tables: row `i` belongs to node index `i` and `owners` is empty. Sparse tables: row `r`
 // belongs to raw `NodeId` `owners[r]` (unsorted, swap-removed), and a node's row resolves in O(1)
 // through the store's published paged row index (`row_of_node`). Every read is bounds-checked and
-// returns `std::nullopt` instead of touching memory outside the published spans.
+// returns `std::nullopt` for out-of-range rows, malformed specs, or absent optional fields.
 #pragma once
 
 #include <bit>
@@ -20,6 +20,7 @@ namespace nve::host {
 
 using FieldSpec = NveFieldSpec;
 using FieldKind = NveFieldKind;
+using OptEncoding = NveOptEncoding;
 
 /// Packed `NodeId` (`index:24 | generation:8`), as carried by rows, owners, events, and `removed_ids`.
 [[nodiscard]] constexpr uint32_t node_index(uint32_t id) noexcept { return id & 0x00FFFFFFu; }
@@ -44,10 +45,16 @@ void field_spec_is_invalid();
   return count_fits(count, elem_size, static_cast<uint64_t>(PTRDIFF_MAX));
 }
 
-/// Compile-time `FieldSpec` literal `field(word, shift, bits, NVE_FIELD_*)`: an invalid spec
-/// (`bits` outside `1..=32`, `shift + bits > 32`, or past word 31) fails to compile.
-[[nodiscard]] consteval FieldSpec field(uint8_t word, uint8_t shift, uint8_t bits, FieldKind kind) {
-  const FieldSpec f{word, shift, bits, static_cast<uint8_t>(kind)};
+/// Compile-time `FieldSpec` literal `field(word, shift, bits, NVE_FIELD_*, ...)`: an invalid spec
+/// (`bits` outside `1..=32`, `shift + bits > 32`, past word 31, or mismatched optional metadata)
+/// fails to compile.
+[[nodiscard]] consteval FieldSpec field(uint8_t word, uint8_t shift, uint8_t bits, FieldKind kind,
+                                        OptEncoding opt = NVE_OPT_REQUIRED,
+                                        uint8_t val_word = NVE_NO_VAL_WORD,
+                                        uint8_t explicit_bit = NVE_NO_EXPLICIT_BIT,
+                                        uint8_t inherits = 0u) {
+  const FieldSpec f{word, shift, bits, static_cast<uint8_t>(kind), static_cast<uint8_t>(opt),
+                    val_word, explicit_bit, inherits};
   if (nve_field_valid(f) == 0) detail::field_spec_is_invalid();
   return f;
 }
@@ -61,6 +68,22 @@ struct LengthValue {
     return LengthValue{nve_length_unit(word), std::bit_cast<float>(nve_length_value_bits(word))};
   }
   friend constexpr bool operator==(LengthValue, LengthValue) noexcept = default;
+};
+
+/// Decoded `nve_store::GridLine`.
+struct GridLineValue {
+  NveGridLineKind kind = NVE_GRID_LINE_AUTO;
+  int16_t line = 0;
+  uint16_t span = 0u;
+
+  [[nodiscard]] static constexpr GridLineValue decode(uint32_t bits) noexcept {
+    const NveGridLine g = nve_grid_line_decode(bits);
+    return GridLineValue{static_cast<NveGridLineKind>(g.kind), g.line, g.span};
+  }
+  [[nodiscard]] constexpr uint32_t encode() const noexcept {
+    return nve_grid_line_encode(NveGridLine{static_cast<uint8_t>(kind), line, span});
+  }
+  friend constexpr bool operator==(GridLineValue, GridLineValue) noexcept = default;
 };
 
 /// Packed `RGBA8888` colour (`r | g<<8 | b<<16 | a<<24`).
@@ -118,7 +141,7 @@ class TableReader {
   template <class View>
   [[nodiscard]] static std::optional<TableReader> from_view(const View& v) noexcept {
     if (v.words == 0u || v.words > NVE_MAX_TABLE_WORDS) return std::nullopt;
-    const uint64_t row_words64 = static_cast<uint64_t>(v.row_count) * v.words;  // <= 2^37, exact
+    const uint64_t row_words64 = static_cast<uint64_t>(v.row_count) * v.words;               // <= 2^37, exact
     const uint64_t page_words64 = static_cast<uint64_t>(v.row_index_page_count) * kPageLen;  // <= 2^40, exact
     if (!count_fits_host(row_words64, sizeof(uint32_t)) || !count_fits_host(v.dirty_count, sizeof(uint32_t)) ||
         !count_fits_host(v.row_index_dir_len, sizeof(uint32_t)) || !count_fits_host(page_words64, sizeof(uint32_t))) {
@@ -155,11 +178,18 @@ class TableReader {
     return rows_[static_cast<size_t>(r) * words_ + w];
   }
 
-  /// Field bits of row `r`; `nullopt` for an out-of-range row or a spec that does not fit the row.
+  /// Raw un-decoded field bits in `row[f.word]`.
+  [[nodiscard]] std::optional<uint32_t> raw_bits(uint32_t r, FieldSpec f) const noexcept {
+    if (r >= row_count_ || nve_field_fits(f, words_) == 0) return std::nullopt;
+    return nve_field_bits(rows_[static_cast<size_t>(r) * words_ + f.word], f);
+  }
+
+  /// Decoded field bits of row `r` (respecting `f.opt`); `nullopt` when absent, out of range, or invalid.
   [[nodiscard]] std::optional<uint32_t> bits(uint32_t r, FieldSpec f) const noexcept {
-    const std::optional<uint32_t> w = field_word(r, f);
-    if (!w) return std::nullopt;
-    return nve_field_bits(*w, f);
+    if (r >= row_count_) return std::nullopt;
+    uint32_t out = 0u;
+    if (nve_field_opt_bits(row_ptr(r), words_, f, &out) == 0) return std::nullopt;
+    return out;
   }
 
   [[nodiscard]] std::optional<uint32_t> u32(uint32_t r, FieldSpec f) const noexcept { return bits(r, f); }
@@ -168,9 +198,10 @@ class TableReader {
   [[nodiscard]] std::optional<uint32_t> node(uint32_t r, FieldSpec f) const noexcept { return bits(r, f); }
 
   [[nodiscard]] std::optional<int32_t> i32(uint32_t r, FieldSpec f) const noexcept {
-    const std::optional<uint32_t> w = field_word(r, f);
-    if (!w) return std::nullopt;
-    return nve_field_i32(*w, f);
+    if (r >= row_count_) return std::nullopt;
+    int32_t out = 0;
+    if (nve_field_opt_i32(row_ptr(r), words_, f, &out) == 0) return std::nullopt;
+    return out;
   }
 
   [[nodiscard]] std::optional<float> f32(uint32_t r, FieldSpec f) const noexcept {
@@ -182,6 +213,10 @@ class TableReader {
   [[nodiscard]] std::optional<bool> boolean(uint32_t r, FieldSpec f) const noexcept {
     const std::optional<uint32_t> b = bits(r, f);
     if (!b) return std::nullopt;
+    if (f.opt == static_cast<uint8_t>(NVE_OPT_PLUS_ONE)) {
+      if (*b > 1u) return std::nullopt;  // `Option<bool>`: 1 -> false (0), 2 -> true (1), 3 -> None
+      return *b == 1u;
+    }
     return (*b & 1u) != 0u;
   }
 
@@ -197,6 +232,30 @@ class TableReader {
     return LengthValue::decode(*b);
   }
 
+  [[nodiscard]] std::optional<GridLineValue> grid_line(uint32_t r, FieldSpec f) const noexcept {
+    const std::optional<uint32_t> b = bits(r, f);
+    if (!b) return std::nullopt;
+    return GridLineValue::decode(*b);
+  }
+
+  [[nodiscard]] std::optional<uint64_t> u64(uint32_t r, FieldSpec f) const noexcept {
+    if (r >= row_count_ || f.kind == static_cast<uint8_t>(NVE_FIELD_STR) ||
+        nve_field_is_two_word(f.kind) == 0 || nve_field_fits(f, words_) == 0) {
+      return std::nullopt;
+    }
+    return nve_field_u64(row_ptr(r), words_, f);
+  }
+
+  [[nodiscard]] std::optional<int64_t> i64(uint32_t r, FieldSpec f) const noexcept {
+    const std::optional<uint64_t> v = u64(r, f);
+    return v ? std::optional<int64_t>(static_cast<int64_t>(*v)) : std::nullopt;
+  }
+
+  [[nodiscard]] std::optional<double> f64(uint32_t r, FieldSpec f) const noexcept {
+    const std::optional<uint64_t> v = u64(r, f);
+    return v ? std::optional<double>(std::bit_cast<double>(*v)) : std::nullopt;
+  }
+
   /// `{offset, len}` of a `Str` field; `nullopt` for a non-`Str` / malformed spec or past the row.
   [[nodiscard]] std::optional<StrSpan> str(uint32_t r, FieldSpec f) const noexcept {
     if (f.kind != static_cast<uint8_t>(NVE_FIELD_STR) || nve_field_fits(f, words_) == 0) return std::nullopt;
@@ -204,6 +263,18 @@ class TableReader {
     const std::optional<uint32_t> len = word(r, static_cast<uint32_t>(f.word) + 1u);
     if (!offset || !len) return std::nullopt;
     return StrSpan{*offset, *len};
+  }
+
+  /// `true` when `f` is explicitly set in row `r` (non-inherited fields are always explicit when in range).
+  [[nodiscard]] bool is_explicit(uint32_t r, FieldSpec f) const noexcept {
+    if (r >= row_count_) return false;
+    return nve_field_explicit(row_ptr(r), words_, f) != 0;
+  }
+
+  /// Per-table `EventSet` listener mask word (`0` when `events_word` is `NVE_NO_EVENTS_WORD` or OOB).
+  [[nodiscard]] uint32_t events(uint32_t r, uint8_t events_word) const noexcept {
+    if (r >= row_count_) return 0u;
+    return nve_row_events(row_ptr(r), words_, events_word);
   }
 
   /// Raw `NodeId` owning sparse row `r`, or the row index itself for dense tables.
@@ -234,9 +305,8 @@ class TableReader {
  private:
   static constexpr size_t kPageLen = NVE_ROW_INDEX_PAGE_LEN;
 
-  [[nodiscard]] std::optional<uint32_t> field_word(uint32_t r, FieldSpec f) const noexcept {
-    if (nve_field_fits(f, words_) == 0) return std::nullopt;
-    return word(r, f.word);
+  [[nodiscard]] const uint32_t* row_ptr(uint32_t r) const noexcept {
+    return rows_.data() + static_cast<size_t>(r) * words_;
   }
 
   Key64 key_{};

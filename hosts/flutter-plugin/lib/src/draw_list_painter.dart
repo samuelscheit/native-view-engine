@@ -4,14 +4,8 @@ import 'dart:typed_data';
 
 import 'package:flutter/rendering.dart';
 
-/// 9-byte ASCII magic header (`b"NVE_DRAW1"`) matching `packages/core/components/src/canvas_ir.rs`.
-const List<int> nveDrawMagic = <int>[78, 86, 69, 95, 68, 82, 65, 87, 49];
-
-/// Supported binary format version (`NVE_DRAW_VERSION == 1`).
-const int nveDrawVersion = 1;
-
-/// Fixed byte length of the `NVE_DRAW1` header (`9 + 2 + 4`).
-const int nveDrawHeaderSize = 15;
+/// Fixed byte length of the flat `nve.res.draw_list` header (word 0: little-endian `u32 opCount`).
+const int nveDrawHeaderSize = 4;
 
 /// Strict upper bound on operations per draw list (`MAX_DRAW_OPS`).
 const int nveDrawMaxOps = 65536;
@@ -22,10 +16,11 @@ const int nveDrawMaxPolylinePoints = 16384;
 /// Maximum nested `ClipRect` stack depth guarded during painting.
 const int nveDrawMaxClipDepth = 64;
 
-/// Compact prefix used when transporting `NVE_DRAW1` bytes through UTF-8 attributes.
+/// Compact prefix used when transporting flat `nve.res.draw_list` bytes through UTF-8 attributes.
 const String nveDrawListAttrPrefix = 'nve-draw1;b64,';
 
-/// Opcodes encoded inside an `NVE_DRAW1` binary vector stream.
+/// Little-endian `u32` opcodes encoded inside a flat `nve.res.draw_list` word stream
+/// matching `packages/modules/canvas/src/flat.rs`.
 abstract final class NveDrawOpcode {
   static const int clear = 1;
   static const int fillRect = 2;
@@ -37,11 +32,9 @@ abstract final class NveDrawOpcode {
   static const int restoreClip = 8;
 }
 
-/// Error categories returned when validating or painting an `NVE_DRAW1` buffer.
+/// Error categories returned when validating or painting a flat `nve.res.draw_list` buffer.
 enum NveDrawListErrorCode {
   truncated,
-  badMagic,
-  unsupportedVersion,
   opCountExceedsLimit,
   polylinePointCountExceedsLimit,
   unknownOpcode,
@@ -50,19 +43,15 @@ enum NveDrawListErrorCode {
   invalidBase64,
 }
 
-/// Structured, non-throwing validation or paint result for an `NVE_DRAW1` draw list.
+/// Structured, non-throwing validation or paint result for a flat `nve.res.draw_list` buffer.
 class NveDrawListResult {
   const NveDrawListResult.ok({
-    required this.version,
     required this.opCount,
   })  : errorCode = null,
         errorMessage = null;
 
-  const NveDrawListResult.err(this.errorCode, this.errorMessage)
-      : version = 0,
-        opCount = 0;
+  const NveDrawListResult.err(this.errorCode, this.errorMessage) : opCount = 0;
 
-  final int version;
   final int opCount;
   final NveDrawListErrorCode? errorCode;
   final String? errorMessage;
@@ -71,11 +60,11 @@ class NveDrawListResult {
 
   @override
   String toString() => isOk
-      ? 'NveDrawListResult.ok(v$version, ops=$opCount)'
+      ? 'NveDrawListResult.ok(ops=$opCount)'
       : 'NveDrawListResult.err($errorCode: $errorMessage)';
 }
 
-/// Zero-copy `NVE_DRAW1` binary draw-list decoder and Flutter [Canvas] painter with
+/// Zero-copy flat `nve.res.draw_list` (`u32`-word) decoder and Flutter [Canvas] painter with
 /// reusable [Paint] and [Path] objects and strict bounds/NaN/vertex guards.
 class NveDrawListPainter {
   NveDrawListPainter();
@@ -94,14 +83,11 @@ class NveDrawListPainter {
 
   static final List<int> _attrPrefixBytes = ascii.encode(nveDrawListAttrPrefix);
 
-  /// Resolves either raw `NVE_DRAW1` bytes (returned zero-copy without copying) or an
-  /// ASCII `nve-draw1;b64,...` base64 attribute payload into raw `NVE_DRAW1` bytes.
-  /// Returns `null` if the payload is neither raw `NVE_DRAW1` nor valid base64.
+  /// Resolves either raw flat `nve.res.draw_list` word bytes (returned zero-copy without copying)
+  /// or an ASCII `nve-draw1;b64,...` base64 attribute payload into raw flat word bytes.
+  /// Returns `null` if a prefixed base64 payload fails to decode.
   static Uint8List? resolveDrawListBytes(Uint8List rawBytes) {
-    if (rawBytes.length >= nveDrawMagic.length && _hasMagic(rawBytes)) {
-      return rawBytes;
-    }
-    if (rawBytes.length > _attrPrefixBytes.length && _startsWithAttrPrefix(rawBytes)) {
+    if (rawBytes.length >= _attrPrefixBytes.length && _startsWithAttrPrefix(rawBytes)) {
       try {
         final b64 = ascii.decode(
           Uint8List.sublistView(rawBytes, _attrPrefixBytes.length),
@@ -115,66 +101,48 @@ class NveDrawListPainter {
     return rawBytes;
   }
 
-  /// Decodes a UTF-8 `nve-draw1;b64,...` or bare base64 attribute string into raw bytes.
+  /// Decodes a UTF-8 `nve-draw1;b64,...` or bare base64 attribute string into raw flat word bytes.
   static Uint8List? decodeAttrString(String raw) {
     final trimmed = raw.trim();
-    if (trimmed.isEmpty) return null;
+    if (trimmed.isEmpty) {
+      return null;
+    }
     final b64 = trimmed.startsWith(nveDrawListAttrPrefix)
         ? trimmed.substring(nveDrawListAttrPrefix.length)
         : trimmed;
     return _decodeBase64Clean(b64);
   }
 
-  /// Strictly validates an `NVE_DRAW1` buffer zero-copy via [ByteData.sublistView]
-  /// without allocating per-op objects.
+  /// Strictly validates a flat `nve.res.draw_list` (`u32`-word) buffer zero-copy via
+  /// [ByteData.sublistView] without allocating per-op objects.
   static NveDrawListResult validate(Uint8List bytes) {
-    if (bytes.length < nveDrawHeaderSize) {
+    final len = bytes.length;
+    if (len < nveDrawHeaderSize) {
       return const NveDrawListResult.err(
         NveDrawListErrorCode.truncated,
-        'NVE_DRAW1 buffer shorter than 15-byte header',
-      );
-    }
-    if (!_hasMagic(bytes)) {
-      return const NveDrawListResult.err(
-        NveDrawListErrorCode.badMagic,
-        'NVE_DRAW1 magic header mismatch',
+        'Draw-list buffer shorter than 4-byte header',
       );
     }
 
     final view = ByteData.sublistView(bytes);
-    final version = view.getUint16(9, Endian.little);
-    if (version != nveDrawVersion) {
-      return NveDrawListResult.err(
-        NveDrawListErrorCode.unsupportedVersion,
-        'Unsupported NVE_DRAW1 version $version',
-      );
-    }
-
-    final opCount = view.getUint32(11, Endian.little);
+    final opCount = view.getUint32(0, Endian.little);
     if (opCount > nveDrawMaxOps) {
       return NveDrawListResult.err(
         NveDrawListErrorCode.opCountExceedsLimit,
-        'NVE_DRAW1 op count $opCount exceeds limit $nveDrawMaxOps',
+        'Draw-list op count $opCount exceeds limit $nveDrawMaxOps',
       );
     }
 
-    final len = bytes.length;
     var pos = nveDrawHeaderSize;
-    if (len - pos < opCount) {
-      return const NveDrawListResult.err(
-        NveDrawListErrorCode.truncated,
-        'NVE_DRAW1 op count exceeds remaining byte length',
-      );
-    }
-
     for (var i = 0; i < opCount; i++) {
-      if (pos >= len) {
+      if (len - pos < 4) {
         return const NveDrawListResult.err(
           NveDrawListErrorCode.truncated,
           'Unexpected EOF reading opcode',
         );
       }
-      final opcode = bytes[pos++];
+      final opcode = view.getUint32(pos, Endian.little);
+      pos += 4;
       switch (opcode) {
         case NveDrawOpcode.clear:
           if (len - pos < 4) {
@@ -315,7 +283,7 @@ class NveDrawListPainter {
         default:
           return NveDrawListResult.err(
             NveDrawListErrorCode.unknownOpcode,
-            'Unknown NVE_DRAW1 opcode $opcode',
+            'Unknown draw-list opcode $opcode',
           );
       }
     }
@@ -323,15 +291,15 @@ class NveDrawListPainter {
     if (pos != len) {
       return NveDrawListResult.err(
         NveDrawListErrorCode.trailingBytes,
-        '${len - pos} trailing bytes after NVE_DRAW1 op stream',
+        '${len - pos} trailing bytes after draw-list op stream',
       );
     }
 
-    return NveDrawListResult.ok(version: version, opCount: opCount);
+    return NveDrawListResult.ok(opCount: opCount);
   }
 
-  /// Validates and paints raw `NVE_DRAW1` bytes (or `nve-draw1;b64,...` bytes) onto
-  /// [canvas] within [bounds] (with local origin translated to `bounds.topLeft` and clipped).
+  /// Validates and paints raw flat `nve.res.draw_list` word bytes (or `nve-draw1;b64,...` bytes)
+  /// onto [canvas] within [bounds] (with local origin translated to `bounds.topLeft` and clipped).
   NveDrawListResult paint(
     Canvas canvas,
     Rect bounds,
@@ -342,7 +310,7 @@ class NveDrawListPainter {
     if (resolved == null) {
       return const NveDrawListResult.err(
         NveDrawListErrorCode.invalidBase64,
-        'Invalid base64 NVE_DRAW1 payload',
+        'Invalid base64 draw-list payload',
       );
     }
     final check = validate(resolved);
@@ -369,7 +337,8 @@ class NveDrawListPainter {
       final localBounds = Rect.fromLTWH(0.0, 0.0, bounds.width, bounds.height);
 
       for (var i = 0; i < opCount; i++) {
-        final opcode = resolved[pos++];
+        final opcode = view.getUint32(pos, Endian.little);
+        pos += 4;
         switch (opcode) {
           case NveDrawOpcode.clear:
             final rgba = view.getUint32(pos, Endian.little);
@@ -499,16 +468,11 @@ class NveDrawListPainter {
     return check;
   }
 
-  static bool _hasMagic(Uint8List bytes) {
-    for (var i = 0; i < nveDrawMagic.length; i++) {
-      if (bytes[i] != nveDrawMagic[i]) return false;
-    }
-    return true;
-  }
-
   static bool _startsWithAttrPrefix(Uint8List bytes) {
     for (var i = 0; i < _attrPrefixBytes.length; i++) {
-      if (bytes[i] != _attrPrefixBytes[i]) return false;
+      if (bytes[i] != _attrPrefixBytes[i]) {
+        return false;
+      }
     }
     return true;
   }
@@ -532,7 +496,9 @@ class NveDrawListPainter {
   static Uint8List? _decodeBase64Clean(String b64) {
     try {
       final cleaned = b64.replaceAll(RegExp(r'\s+'), '');
-      if (cleaned.isEmpty) return null;
+      if (cleaned.isEmpty) {
+        return null;
+      }
       final normalized = base64.normalize(cleaned);
       return base64.decode(normalized);
     } catch (_) {

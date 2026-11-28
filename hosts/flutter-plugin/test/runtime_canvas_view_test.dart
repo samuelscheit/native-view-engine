@@ -110,14 +110,14 @@ void main() {
   });
 
   testWidgets('taps dispatch press events and wheel / drag scroll the container', (tester) async {
-    final seen = <NveEventKind>[];
-    c.onEvent = (e) => seen.add(e.kind);
+    final seen = <RuntimeEvent>[];
+    c.onEvent = seen.add;
     await tester.pumpWidget(_host(c));
     await _settle(tester, c);
 
     final targets = c.withTree((t) => [
           for (var i = 1; i < t.s.nodeCapacity; i++)
-            if (t.s.isLive(i) && t.eventMask(i) & nveEventMaskPress != 0)
+            if (t.s.isLive(i) && t.eventMask(i) & NveInteractionEventSet.press != 0)
               if (t.visualRect(i).center case final center
                   when (Offset.zero & _surface).contains(center) && t.deepestAt(center, (j) => j == i) == i)
                 center,
@@ -139,7 +139,14 @@ void main() {
         break;
       }
     }
-    expect(seen, containsAllInOrder([NveEventKind.pointerDown, NveEventKind.pointerUp, NveEventKind.press]));
+    expect(
+      seen.map((e) => e.interaction),
+      containsAllInOrder([
+        NveInteractionEvent.pointerDown,
+        NveInteractionEvent.pointerUp,
+        NveInteractionEvent.press,
+      ]),
+    );
     expect(changed, isTrue, reason: 'a tap reaches the app and changes the painted text');
     expect(c.frameCount, greaterThan(framesBefore));
     expect(() => c.sendCommand('bad', {'v': Object()}), throwsArgumentError);
@@ -166,7 +173,7 @@ void main() {
     await _settle(tester, c);
     final afterWheel = shiftY();
     expect(afterWheel, greaterThan(0), reason: 'wheel scroll published as a visual shift');
-    expect(seen, contains(NveEventKind.scroll));
+    expect(seen.map((e) => e.scrollEvent), contains(NveScrollEvent.scroll));
 
     seen.clear();
     final drag = await tester.startGesture(at);
@@ -175,7 +182,7 @@ void main() {
     await drag.up();
     await _settle(tester, c);
     expect(shiftY(), greaterThan(afterWheel), reason: 'drag past slop scrolls content up');
-    expect(seen, isNot(contains(NveEventKind.press)), reason: 'a drag is no tap');
+    expect(seen.map((e) => e.interaction), isNot(contains(NveInteractionEvent.press)), reason: 'a drag is no tap');
 
     await tester.sendEventToBinding(pointer.scroll(const Offset(0, -1e6)));
     await _settle(tester, c);
@@ -263,13 +270,24 @@ void main() {
     expect(seen.map((e) => e.name).toList(), ['props']);
     expect(seen.single.value, {'count': 1, 'keys': ['count'], 'ok': true, 'ratio': 0.5});
     seen.clear();
+    expect(f.setProps(const {'malformed': true}), isTrue);
+    f.tick();
+    expect(seen.map((e) => e.name).toList(), ['malformed', 'props']);
+    expect(seen[0].isCustom, isTrue);
+    expect(seen[0].value, isNull, reason: 'invalid NveBinValue payload decodes to null');
+    expect(seen[0].data, [0xFF], reason: 'raw malformed payload bytes are preserved');
+    expect(seen[1].value, {'count': 1, 'keys': ['malformed'], 'ok': true, 'ratio': 0.5});
+
+    seen.clear();
     f.onAppEvent = (e) {
       seen.add(e);
       f.dispose();
     };
-    expect(f.setProps(const {'malformed': true}), isTrue);
+    expect(f.setProps(const {'malformed': true, 'stop': 1}), isTrue);
     expect(f.tick(), isFalse, reason: 'disposed by the listener mid-delivery');
-    expect(seen.map((e) => e.name).toList(), ['bad\uFFFDname'], reason: 'delivery stops at disposal');
+    expect(seen.map((e) => e.name).toList(), ['malformed'], reason: 'delivery stops at disposal');
+    expect(seen.single.value, isNull);
+    expect(seen.single.data, [0xFF]);
     expect(f.isDisposed, isTrue);
   });
 

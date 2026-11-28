@@ -46,7 +46,7 @@ impl WebAppSession {
                     msg,
                     &mut patch_changes,
                 );
-                let next_frame = self.frame_id.wrapping_add(1).max(1);
+                let next_frame = self.frame_id.next();
                 self.frame_id = next_frame;
                 Ok(HotReloadAction::TemplatePatched {
                     generation,

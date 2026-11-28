@@ -10,12 +10,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use nve_abi::{
-    decode_events, ColorRgba, EventMask, EventPayload, FrameId, NativeEventKind, NVE_KEY_MOD_META,
+    ColorRgba, EventBatchBuf, EventSet, FrameId, InteractionEvent, NodeId, SurfaceId,
 };
-use nve_components::tables::{register_core_tables, FlexDirection, Interaction, Layout, Visual};
+use nve_tables::tables::{register_core_tables, FlexDirection, Interaction, Layout, Visual};
 use nve_engine::{HotPatchMsg, Viewport};
 use nve_store::wire::WireEncoder;
-use nve_store::{ChangeSet, Length, NodeId as StoreNodeId, NodeStore, Rgba};
+use nve_store::{ChangeSet, Length, NodeStore, Rgba};
 use nve_wire::{NveWireKind, NveWireServer, NveWireServerConfig, NveWireTransportKind};
 use tungstenite::Message;
 
@@ -43,21 +43,21 @@ impl RemoteServerApp {
         let mut changes = ChangeSet::default();
         {
             let mut tx = store.tx();
-            let _ = tx.create_at(StoreNodeId::ROOT);
-            let _ = tx.create_at(StoreNodeId(2));
-            let _ = tx.create_at(StoreNodeId(4));
-            tx.set(StoreNodeId(2), Layout::WIDTH, Length::percent(100.0));
-            tx.set(StoreNodeId(2), Layout::HEIGHT, Length::percent(100.0));
+            let _ = tx.create_at(NodeId::ROOT);
+            let _ = tx.create_at(NodeId::new(2, 0));
+            let _ = tx.create_at(NodeId::new(4, 0));
+            tx.set(NodeId::new(2, 0), Layout::WIDTH, Length::percent(100.0));
+            tx.set(NodeId::new(2, 0), Layout::HEIGHT, Length::percent(100.0));
             let p = Length::points(20.0);
-            tx.set(StoreNodeId(2), Layout::PADDING_TOP, p);
-            tx.set(StoreNodeId(2), Layout::PADDING_RIGHT, p);
-            tx.set(StoreNodeId(2), Layout::PADDING_BOTTOM, p);
-            tx.set(StoreNodeId(2), Layout::PADDING_LEFT, p);
-            tx.set(StoreNodeId(2), Layout::ROW_GAP, Length::points(12.0));
-            tx.set(StoreNodeId(2), Layout::COLUMN_GAP, Length::points(12.0));
-            tx.set(StoreNodeId(2), Layout::FLEX_DIRECTION, FlexDirection::Column);
+            tx.set(NodeId::new(2, 0), Layout::PADDING_TOP, p);
+            tx.set(NodeId::new(2, 0), Layout::PADDING_RIGHT, p);
+            tx.set(NodeId::new(2, 0), Layout::PADDING_BOTTOM, p);
+            tx.set(NodeId::new(2, 0), Layout::PADDING_LEFT, p);
+            tx.set(NodeId::new(2, 0), Layout::ROW_GAP, Length::points(12.0));
+            tx.set(NodeId::new(2, 0), Layout::COLUMN_GAP, Length::points(12.0));
+            tx.set(NodeId::new(2, 0), Layout::FLEX_DIRECTION, FlexDirection::Column);
             tx.set(
-                StoreNodeId(2),
+                NodeId::new(2, 0),
                 Visual::BACKGROUND,
                 if self.palette_open {
                     Rgba::rgb(250, 204, 21)
@@ -65,16 +65,13 @@ impl RemoteServerApp {
                     Rgba::rgb(15, 23, 42)
                 },
             );
-            tx.set(
-                StoreNodeId(2),
-                Interaction::EVENT_MASK,
-                (EventMask::KEY_DOWN | EventMask::CUSTOM) as u32,
-            );
+            tx.edit::<Interaction>(NodeId::new(2, 0))
+                .listeners(EventSet::one(InteractionEvent::KeyDown));
 
-            tx.set(StoreNodeId(4), Layout::WIDTH, Length::points(160.0));
-            tx.set(StoreNodeId(4), Layout::HEIGHT, Length::points(56.0));
+            tx.set(NodeId::new(4, 0), Layout::WIDTH, Length::points(160.0));
+            tx.set(NodeId::new(4, 0), Layout::HEIGHT, Length::points(56.0));
             tx.set(
-                StoreNodeId(4),
+                NodeId::new(4, 0),
                 Visual::BACKGROUND,
                 if self.clicks == 0 {
                     Rgba::rgb(37, 99, 235)
@@ -82,10 +79,11 @@ impl RemoteServerApp {
                     Rgba::rgb(16, 185, 129)
                 },
             );
-            tx.set(StoreNodeId(4), Visual::BORDER_RADIUS, 8.0);
-            tx.set(StoreNodeId(4), Interaction::EVENT_MASK, EventMask::PRESS as u32);
-            tx.set_children(StoreNodeId(2), &[StoreNodeId(4)]);
-            tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
+            tx.set(NodeId::new(4, 0), Visual::BORDER_RADIUS, 8.0);
+            tx.edit::<Interaction>(NodeId::new(4, 0))
+                .listeners(EventSet::one(InteractionEvent::Press));
+            tx.set_children(NodeId::new(2, 0), &[NodeId::new(4, 0)]);
+            tx.set_children(NodeId::ROOT, &[NodeId::new(2, 0)]);
             tx.commit_into(&mut changes);
         }
         let mut out = Vec::new();
@@ -94,19 +92,17 @@ impl RemoteServerApp {
     }
 
     fn dispatch(&mut self, encoded_events: &[u8]) -> bool {
-        let Ok(events) = decode_events(encoded_events) else {
+        let Ok(events) = EventBatchBuf::decode_wire(encoded_events) else {
             return false;
         };
         let mut changed = false;
-        for ev in events {
-            match (ev.kind, ev.payload) {
-                (NativeEventKind::Press, _) if ev.node_id == 4 => {
+        for ev in events.as_validated().iter() {
+            match ev.interaction() {
+                Some(InteractionEvent::Press) if ev.node() == NodeId::new(4, 0) => {
                     self.clicks += 1;
                     changed = true;
                 }
-                (NativeEventKind::KeyDown, EventPayload::Key { key, modifiers, .. })
-                    if (modifiers & NVE_KEY_MOD_META) != 0 && key == "k" =>
-                {
+                Some(InteractionEvent::KeyDown) if ev.meta() && ev.key() == "k" => {
                     self.palette_open = !self.palette_open;
                     changed = true;
                 }
@@ -142,9 +138,9 @@ impl TestPairServer {
 
         let handle = thread::spawn(move || {
             let mut app = RemoteServerApp::new();
-            let mut frame_id = 1u64;
+            let mut frame_id = FrameId(1);
             let initial = app.render(frame_id);
-            let _ = server.broadcast_scene_keyframe(frame_id as u32, &initial);
+            let _ = server.broadcast_scene_keyframe(frame_id.raw() as u32, &initial);
 
             while !stop_flag.load(Ordering::Relaxed) {
                 let mut mutated = false;
@@ -154,9 +150,9 @@ impl TestPairServer {
                     }
                 }
                 if mutated {
-                    frame_id += 1;
+                    frame_id = frame_id.next();
                     let next = app.render(frame_id);
-                    let _ = server.broadcast_command_delta(frame_id as u32, &next);
+                    let _ = server.broadcast_command_delta(frame_id.raw() as u32, &next);
                 } else {
                     thread::sleep(Duration::from_millis(2));
                 }
@@ -233,7 +229,7 @@ fn hot_reload_client_decodes_nvp1_and_ignores_text_frames() {
             message: "Synced".into(),
             latency_ms: 2,
         };
-        ws.send(Message::Binary(binary_msg.to_bytes().into()))
+        ws.send(Message::Binary(binary_msg.to_bytes().unwrap().into()))
             .unwrap();
         ws.send(Message::Text(
             r#"{"type":"dev_status","message":"x","latency_ms":0}"#.into(),
@@ -241,7 +237,7 @@ fn hot_reload_client_decodes_nvp1_and_ignores_text_frames() {
         .unwrap();
         ws.send(Message::Binary(b"NVP1\x03garbage".to_vec().into()))
             .unwrap();
-        ws.send(Message::Binary(status_msg.to_bytes().into()))
+        ws.send(Message::Binary(status_msg.to_bytes().unwrap().into()))
             .unwrap();
         let _ = ws.close(None);
     });
@@ -323,7 +319,8 @@ fn paired_remote_app_e2e_quic_webtransport_wss_and_ws_rasterizes_and_mutates_pix
             height: 200.0,
             scale_factor: 1.0,
         };
-        let mut session = DesktopSession::new(app, 1, viewport, ColorRgba::rgb(0, 0, 0), false);
+        let mut session =
+            DesktopSession::new(app, SurfaceId::ROOT, viewport, ColorRgba::rgb(0, 0, 0), false);
 
         session
             .app_mut()
@@ -393,17 +390,14 @@ fn paired_headless_screenshot_writes_png_and_rejects_bad_token() {
     let _ = std::fs::remove_file(Path::new(&out_path));
 }
 
-#[test]
-fn paired_remote_app_preserves_multi_delta_batch_order_and_resets_on_high_frame_keyframe() {
+fn connect_ws_pair_session(token: &str) -> (NveWireServer, DesktopSession<PairedRemoteApp>) {
     register_core_tables();
-    let token = "skia-ordered-batch-token";
     let server = NveWireServer::bind_sync(NveWireServerConfig::new(
         "127.0.0.1:0".parse().unwrap(),
         "127.0.0.1:0".parse().unwrap(),
         token,
     ))
     .expect("bind server");
-
     let cfg = PairConnectConfig::new(
         format!("ws://{}/nve-wire", server.wss_addr()),
         token,
@@ -415,30 +409,41 @@ fn paired_remote_app_preserves_multi_delta_batch_order_and_resets_on_high_frame_
         height: 160.0,
         scale_factor: 1.0,
     };
-    let mut session = DesktopSession::new(app, 1, viewport, ColorRgba::rgb(0, 0, 0), false);
+    let session = DesktopSession::new(app, SurfaceId::ROOT, viewport, ColorRgba::rgb(0, 0, 0), false);
+    (server, session)
+}
+
+fn build_solid_bg_store(node: NodeId, bg: Rgba) -> (NodeStore, ChangeSet) {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut tx = store.tx();
+    let _ = tx.create_at(NodeId::ROOT);
+    let _ = tx.create_at(node);
+    tx.set(node, Layout::WIDTH, Length::percent(100.0));
+    tx.set(node, Layout::HEIGHT, Length::percent(100.0));
+    tx.set(node, Visual::BACKGROUND, bg);
+    tx.set_children(NodeId::ROOT, &[node]);
+    tx.commit_into(&mut changes);
+    (store, changes)
+}
+
+#[test]
+fn paired_remote_app_preserves_multi_delta_batch_order_and_resets_on_high_frame_keyframe() {
+    let (server, mut session) = connect_ws_pair_session("skia-ordered-batch-token");
+    let node2 = NodeId::new(2, 0);
+    let node9 = NodeId::new(9, 0);
 
     // Build Frame 1 (DeclareTables + CreateNodes + blue fill) and true incremental Frame 2
     // (Patch ONLY -> green fill, NO DeclareTables/CreateNodes).
-    let mut store = NodeStore::new();
+    let (mut store, mut changes) = build_solid_bg_store(node2, Rgba::rgb(37, 99, 235));
     let mut enc = WireEncoder::default();
     let mut f1_bytes = Vec::new();
-    let mut changes = ChangeSet::default();
-    {
-        let mut tx = store.tx();
-        let _ = tx.create_at(StoreNodeId::ROOT);
-        let _ = tx.create_at(StoreNodeId(2));
-        tx.set(StoreNodeId(2), Layout::WIDTH, Length::percent(100.0));
-        tx.set(StoreNodeId(2), Layout::HEIGHT, Length::percent(100.0));
-        tx.set(StoreNodeId(2), Visual::BACKGROUND, Rgba::rgb(37, 99, 235));
-        tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
-        tx.commit_into(&mut changes);
-    }
     enc.encode(&store, &changes, &mut f1_bytes);
 
     let mut f2_bytes = Vec::new();
     {
         let mut tx = store.tx();
-        tx.set(StoreNodeId(2), Visual::BACKGROUND, Rgba::rgb(16, 185, 129));
+        tx.set(node2, Visual::BACKGROUND, Rgba::rgb(16, 185, 129));
         tx.commit_into(&mut changes);
     }
     enc.encode(&store, &changes, &mut f2_bytes);
@@ -463,18 +468,7 @@ fn paired_remote_app_preserves_multi_delta_batch_order_and_resets_on_high_frame_
 
     // Now send a SceneKeyframe whose NVE2 header has frame = 5 (> 1) with a fresh tree (node 9,
     // yellow fill) and verify StoreWireReplica resets cleanly (node 2 gone, yellow rendered).
-    let mut store2 = NodeStore::new();
-    let mut changes2 = ChangeSet::default();
-    {
-        let mut tx = store2.tx();
-        let _ = tx.create_at(StoreNodeId::ROOT);
-        let _ = tx.create_at(StoreNodeId(9));
-        tx.set(StoreNodeId(9), Layout::WIDTH, Length::percent(100.0));
-        tx.set(StoreNodeId(9), Layout::HEIGHT, Length::percent(100.0));
-        tx.set(StoreNodeId(9), Visual::BACKGROUND, Rgba::rgb(250, 204, 21));
-        tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(9)]);
-        tx.commit_into(&mut changes2);
-    }
+    let (store2, _) = build_solid_bg_store(node9, Rgba::rgb(250, 204, 21));
     let mut kf_bytes = Vec::new();
     WireEncoder::default().encode_full(&store2, &mut kf_bytes);
     // Patch NVE2 frame_lo (offset 8..12) from 1 to 5 to verify SceneKeyframe resets even when frame > 1.
@@ -489,10 +483,10 @@ fn paired_remote_app_preserves_multi_delta_batch_order_and_resets_on_high_frame_
     session.render_and_rasterize().expect("apply frame-5 keyframe");
     assert_eq!(session.pixel_buffer().get_rgb(50, 50), Some((250, 204, 21)));
     assert!(
-        !session.store().is_live(StoreNodeId(2)),
+        !session.store().is_live(node2),
         "SceneKeyframe with frame > 1 must reset prior replica nodes"
     );
-    assert!(session.store().is_live(StoreNodeId(9)));
+    assert!(session.store().is_live(node9));
 
     session.app_mut().disconnect();
     server.shutdown();
@@ -500,44 +494,14 @@ fn paired_remote_app_preserves_multi_delta_batch_order_and_resets_on_high_frame_
 
 #[test]
 fn paired_remote_app_recovers_from_corrupt_frame_and_shows_auth_rejected_banner() {
-    register_core_tables();
-    let token = "skia-corrupt-recover-token";
-    let server = NveWireServer::bind_sync(NveWireServerConfig::new(
-        "127.0.0.1:0".parse().unwrap(),
-        "127.0.0.1:0".parse().unwrap(),
-        token,
-    ))
-    .expect("bind server");
-
-    let cfg = PairConnectConfig::new(
-        format!("ws://{}/nve-wire", server.wss_addr()),
-        token,
-        NveWireTransportKind::Ws,
-    );
-    let app = PairedRemoteApp::connect(cfg).expect("connect paired app");
-    let viewport = Viewport {
-        width: 240.0,
-        height: 160.0,
-        scale_factor: 1.0,
-    };
-    let mut session = DesktopSession::new(app, 1, viewport, ColorRgba::rgb(0, 0, 0), false);
+    let (server, mut session) = connect_ws_pair_session("skia-corrupt-recover-token");
+    let node2 = NodeId::new(2, 0);
+    let node5 = NodeId::new(5, 0);
 
     // Build valid Frame 1 (blue) and corrupt Frame 2 (garbage payload).
-    let mut store = NodeStore::new();
-    let mut enc = WireEncoder::default();
-    let mut changes = ChangeSet::default();
-    {
-        let mut tx = store.tx();
-        let _ = tx.create_at(StoreNodeId::ROOT);
-        let _ = tx.create_at(StoreNodeId(2));
-        tx.set(StoreNodeId(2), Layout::WIDTH, Length::percent(100.0));
-        tx.set(StoreNodeId(2), Layout::HEIGHT, Length::percent(100.0));
-        tx.set(StoreNodeId(2), Visual::BACKGROUND, Rgba::rgb(37, 99, 235));
-        tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
-        tx.commit_into(&mut changes);
-    }
+    let (store, changes) = build_solid_bg_store(node2, Rgba::rgb(37, 99, 235));
     let mut f1 = Vec::new();
-    enc.encode(&store, &changes, &mut f1);
+    WireEncoder::default().encode(&store, &changes, &mut f1);
 
     assert_eq!(server.broadcast_scene_keyframe(1, &f1).unwrap(), 1);
     assert_eq!(server.broadcast_command_delta(2, b"CORRUPT_NVE2_FRAME").unwrap(), 1);
@@ -588,24 +552,13 @@ fn paired_remote_app_recovers_from_corrupt_frame_and_shows_auth_rejected_banner(
     // 3. Send valid recovery SceneKeyframe (yellow) + immediate trailing CommandDelta (green) in
     //    ONE burst -> single render_and_rasterize() must clear waiting_for_keyframe on the valid
     //    keyframe AND apply the trailing delta in order -> green!
-    let mut store_rec = NodeStore::new();
+    let (mut store_rec, mut ch_rec) = build_solid_bg_store(node5, Rgba::rgb(250, 204, 21));
     let mut enc_rec = WireEncoder::default();
-    let mut ch_rec = ChangeSet::default();
-    {
-        let mut tx = store_rec.tx();
-        let _ = tx.create_at(StoreNodeId::ROOT);
-        let _ = tx.create_at(StoreNodeId(5));
-        tx.set(StoreNodeId(5), Layout::WIDTH, Length::percent(100.0));
-        tx.set(StoreNodeId(5), Layout::HEIGHT, Length::percent(100.0));
-        tx.set(StoreNodeId(5), Visual::BACKGROUND, Rgba::rgb(250, 204, 21));
-        tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(5)]);
-        tx.commit_into(&mut ch_rec);
-    }
     let mut kf_yellow = Vec::new();
     enc_rec.encode(&store_rec, &ch_rec, &mut kf_yellow);
     {
         let mut tx = store_rec.tx();
-        tx.set(StoreNodeId(5), Visual::BACKGROUND, Rgba::rgb(16, 185, 129));
+        tx.set(node5, Visual::BACKGROUND, Rgba::rgb(16, 185, 129));
         tx.commit_into(&mut ch_rec);
     }
     let mut delta_green = Vec::new();
@@ -660,7 +613,7 @@ fn paired_remote_app_recovers_from_corrupt_frame_and_shows_auth_rejected_banner(
         .expect("recovery keyframe after mid-frame corrupt delta");
     assert_eq!(session.pixel_buffer().get_rgb(50, 50), Some((250, 204, 21)));
     assert!(
-        !session.store().is_live(StoreNodeId(99)),
+        !session.store().is_live(NodeId::new(99, 0)),
         "mid-frame corrupt node 99 must not survive recovery keyframe"
     );
 

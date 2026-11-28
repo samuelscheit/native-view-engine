@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
+use nve_abi::SurfaceId;
 use nve_backend_web::WebBackend;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
@@ -182,7 +183,7 @@ fn two_sibling_query_suspense_boundaries_sharing_one_key_both_resolve_with_one_r
         let mut frame = 0u64;
         let mut web = WebBackend::new();
         let waker = Waker::from(Arc::new(NoopFlagWaker(AtomicBool::new(false))));
-        let mut surface = DioxusSurface::new(1, SiblingApp).with_context(client.clone());
+        let mut surface = DioxusSurface::new(SurfaceId::ROOT, SiblingApp).with_context(client.clone());
         if mode == QueryMode::Ssr {
             surface = surface.with_context(registry.clone());
         }
@@ -308,7 +309,7 @@ fn domain_and_protocol_errors_render_error_boundary_and_hydrate_with_zero_refetc
     let mut frame = 0u64;
     let mut web = WebBackend::new();
     let waker = Waker::from(Arc::new(NoopFlagWaker(AtomicBool::new(false))));
-    let mut ssr_surface = DioxusSurface::new(1, ErrApp)
+    let mut ssr_surface = DioxusSurface::new(SurfaceId::ROOT, ErrApp)
         .with_context(ssr_client.clone())
         .with_context(registry.clone());
 
@@ -357,7 +358,7 @@ fn domain_and_protocol_errors_render_error_boundary_and_hydrate_with_zero_refetc
 
     let mut cli_frame = 0u64;
     let mut cli_web = WebBackend::new();
-    let mut cli_surface = DioxusSurface::new(2, ErrApp).with_context(cli_client);
+    let mut cli_surface = DioxusSurface::new(SurfaceId::new(2, 0), ErrApp).with_context(cli_client);
     let cli_html = render_once(&mut cli_surface, &mut cli_web, &mut cli_frame);
     let _ = pump_settled(&mut cli_surface, &mut cli_web, &waker, &mut cli_frame);
     let cli_settled = cli_web.render_html(cli_surface.store());
@@ -423,7 +424,7 @@ fn keep_previous_data_does_not_re_suspend_on_key_switch() {
     let mut frame = 0u64;
     let mut web = WebBackend::new();
     let waker = Waker::from(Arc::new(NoopFlagWaker(AtomicBool::new(false))));
-    let mut surface = DioxusSurface::new(1, KeepPrevApp)
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, KeepPrevApp)
         .with_context(client)
         .with_context(std::rc::Rc::clone(&id_box));
 
@@ -507,7 +508,7 @@ fn ssr_plain_use_query_never_fetches_while_suspend_attributes_handles_and_flatte
     let mut frame = 0u64;
     let mut web = WebBackend::new();
     let waker = Waker::from(Arc::new(NoopFlagWaker(AtomicBool::new(false))));
-    let mut surface = DioxusSurface::new(1, SsrApp)
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, SsrApp)
         .with_context(client)
         .with_context(registry.clone());
 
@@ -607,7 +608,7 @@ fn stream_pending_suspends_without_rpc_then_resolves_via_chunk_or_finish_ssr_str
     let mut frame = 0u64;
     let mut web = WebBackend::new();
     let waker = Waker::from(Arc::new(NoopFlagWaker(AtomicBool::new(false))));
-    let mut surface = DioxusSurface::new(1, StreamBootApp).with_context(cli_client.clone());
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, StreamBootApp).with_context(cli_client.clone());
 
     let html_boot = render_once(&mut surface, &mut web, &mut frame);
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);

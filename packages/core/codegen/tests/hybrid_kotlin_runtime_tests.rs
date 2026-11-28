@@ -260,7 +260,7 @@ fn generated_kotlin_compiles_with_werror_and_round_trips_on_the_jvm() {
             expected_schema.insert(format!(
                 "schema {} {} {}",
                 m.name,
-                m.interface_id().cast_signed(),
+                m.interface_id().raw().cast_signed(),
                 m.schema_hash(spec).cast_signed()
             ));
         }
@@ -268,7 +268,7 @@ fn generated_kotlin_compiles_with_werror_and_round_trips_on_the_jvm() {
             expected_schema.insert(format!(
                 "schema {} {} {}",
                 v.name,
-                v.interface_id().cast_signed(),
+                v.interface_id().raw().cast_signed(),
                 v.schema_hash(spec).cast_signed()
             ));
         }

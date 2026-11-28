@@ -7,8 +7,9 @@
 use std::fmt;
 
 use nve_abi::xxh64;
+use nve_codec::{ByteReader, ByteWriter, CodecError, NveDecode, NveEncode};
 
-use super::hlc::{HLC_ENCODED_LEN, HlcTimestamp, OP_ID_ENCODED_LEN, OpId, PeerId, VersionVector};
+use super::hlc::{HlcTimestamp, OpId, PeerId, VersionVector};
 
 /// 8-byte self-documenting ASCII magic identifying `NveCrdtDelta` binary frames.
 pub const NVE_CRDT_DELTA_MAGIC: [u8; 8] = *b"NVE_CRDT";
@@ -59,6 +60,35 @@ pub enum CrdtWireError {
     LimitExceeded { kind: &'static str, count: usize, max: usize },
     TrailingBytes(usize),
     InvalidPayload(&'static str),
+}
+
+impl From<CodecError> for CrdtWireError {
+    #[inline]
+    fn from(err: CodecError) -> Self {
+        match err {
+            CodecError::Truncated { needed, remaining } => Self::Truncated {
+                expected: needed,
+                actual: remaining,
+            },
+            CodecError::InvalidUtf8 => Self::InvalidUtf8,
+            CodecError::TrailingBytes(n) => Self::TrailingBytes(n),
+            CodecError::BadBool(_) => Self::InvalidPayload("boolean byte must be 0 or 1"),
+            CodecError::LenOverflow { len, max } => Self::LimitExceeded {
+                kind: "field_bytes",
+                count: len,
+                max,
+            },
+            CodecError::DepthExceeded { max } => Self::LimitExceeded {
+                kind: "nesting_depth",
+                count: max.saturating_add(1),
+                max,
+            },
+            CodecError::BadMagic
+            | CodecError::BadVersion(_)
+            | CodecError::BadEnum { .. }
+            | CodecError::NonZeroReserved(_) => Self::InvalidPayload("corrupt CRDT wire field"),
+        }
+    }
 }
 
 impl fmt::Display for CrdtWireError {
@@ -187,31 +217,33 @@ impl NveCrdtDelta {
         check_limit("version_vector", self.version_vector.len(), MAX_VV_ENTRIES)?;
         check_limit("records", self.records.len(), MAX_RECORDS)?;
 
-        out.extend_from_slice(&NVE_CRDT_DELTA_MAGIC);
-        out.extend_from_slice(&NVE_CRDT_DELTA_VERSION.to_le_bytes());
-        out.extend_from_slice(&self.sender.to_le_bytes());
+        ByteWriter::with_buf(out, |w| {
+            w.write_raw(&NVE_CRDT_DELTA_MAGIC);
+            w.write_u16(NVE_CRDT_DELTA_VERSION);
+            self.sender.encode(w)?;
 
-        out.extend_from_slice(&(self.version_vector.len() as u32).to_le_bytes());
-        for (peer, seq) in self.version_vector.iter() {
-            out.extend_from_slice(&peer.to_le_bytes());
-            out.extend_from_slice(&seq.to_le_bytes());
-        }
+            w.write_u32(self.version_vector.len() as u32);
+            for (peer, seq) in self.version_vector.iter() {
+                peer.encode(w)?;
+                w.write_u64(seq);
+            }
 
-        out.extend_from_slice(&(self.records.len() as u32).to_le_bytes());
-        for rec in &self.records {
-            let len_pos = out.len();
-            out.extend_from_slice(&0u32.to_le_bytes());
-            let body_start = out.len();
-            encode_record(rec, out)?;
-            let body_len = out.len() - body_start;
-            check_limit("record_bytes", body_len, MAX_FIELD_BYTES)?;
-            out[len_pos..len_pos + 4].copy_from_slice(&(body_len as u32).to_le_bytes());
-        }
+            w.write_u32(self.records.len() as u32);
+            for rec in &self.records {
+                let len_pos = w.len();
+                w.write_u32(0);
+                let body_start = w.len();
+                encode_record(rec, w)?;
+                let body_len = w.len() - body_start;
+                check_limit("record_bytes", body_len, MAX_FIELD_BYTES)?;
+                w.patch_u32(len_pos, body_len as u32)?;
+            }
 
-        check_limit("wire_bytes", out.len() + 8, MAX_WIRE_BYTES)?;
-        let checksum = crdt_xxh64(out);
-        out.extend_from_slice(&checksum.to_le_bytes());
-        Ok(())
+            check_limit("wire_bytes", w.len() + 8, MAX_WIRE_BYTES)?;
+            let checksum = crdt_xxh64(w.as_slice());
+            w.write_u64(checksum);
+            Ok(())
+        })
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, CrdtWireError> {
@@ -223,53 +255,49 @@ impl NveCrdtDelta {
             });
         }
 
-        let magic: [u8; 8] = bytes[0..8].try_into().expect("checked min len");
+        let payload_end = bytes.len() - 8;
+        let mut r = ByteReader::new(&bytes[..payload_end]);
+        let magic = r.read_array::<8>()?;
         if magic != NVE_CRDT_DELTA_MAGIC {
             return Err(CrdtWireError::InvalidMagic(magic));
         }
-        let version = u16::from_le_bytes([bytes[8], bytes[9]]);
+        let version = r.read_u16()?;
         if version != NVE_CRDT_DELTA_VERSION {
             return Err(CrdtWireError::UnsupportedVersion(version));
         }
 
-        let payload_end = bytes.len() - 8;
-        let expected = u64::from_le_bytes(bytes[payload_end..].try_into().expect("8B checksum"));
+        let expected = ByteReader::new(&bytes[payload_end..]).read_u64()?;
         let actual = crdt_xxh64(&bytes[..payload_end]);
         if actual != expected {
             return Err(CrdtWireError::ChecksumMismatch { expected, actual });
         }
 
-        let mut cur = Cursor::new(&bytes[10..payload_end]);
-        let sender = PeerId(cur.read_u64()?);
+        let sender = PeerId::decode(&mut r)?;
 
-        let vv_len = cur.read_u32()? as usize;
+        let vv_len = r.read_u32()? as usize;
         check_limit("version_vector", vv_len, MAX_VV_ENTRIES)?;
-        cur.ensure_remaining(vv_len.saturating_mul(16))?;
+        r.ensure_remaining(vv_len.saturating_mul(16))?;
         let mut version_vector = VersionVector::new();
         for _ in 0..vv_len {
-            let peer = PeerId(cur.read_u64()?);
-            let seq = cur.read_u64()?;
+            let peer = PeerId::decode(&mut r)?;
+            let seq = r.read_u64()?;
             version_vector.set_max(peer, seq);
         }
 
-        let record_count = cur.read_u32()? as usize;
+        let record_count = r.read_u32()? as usize;
         check_limit("records", record_count, MAX_RECORDS)?;
-        cur.ensure_remaining(record_count.saturating_mul(5))?;
+        r.ensure_remaining(record_count.saturating_mul(5))?;
         let mut records = Vec::with_capacity(record_count);
         for _ in 0..record_count {
-            let rec_len = cur.read_u32()? as usize;
+            let rec_len = r.read_u32()? as usize;
             check_limit("record_bytes", rec_len, MAX_FIELD_BYTES)?;
-            let mut rec_cur = Cursor::new(cur.read_slice(rec_len)?);
-            let rec = decode_record(&mut rec_cur)?;
-            if rec_cur.remaining() != 0 {
-                return Err(CrdtWireError::TrailingBytes(rec_cur.remaining()));
-            }
+            let mut rec_r = ByteReader::new(r.read_exact(rec_len)?);
+            let rec = decode_record(&mut rec_r)?;
+            rec_r.finish()?;
             records.push(rec);
         }
 
-        if cur.remaining() != 0 {
-            return Err(CrdtWireError::TrailingBytes(cur.remaining()));
-        }
+        r.finish()?;
 
         Ok(Self {
             sender,
@@ -288,59 +316,66 @@ fn check_limit(kind: &'static str, count: usize, max: usize) -> Result<(), CrdtW
     }
 }
 
-fn encode_bytes(bytes: &[u8], out: &mut Vec<u8>) -> Result<(), CrdtWireError> {
+fn encode_bytes(bytes: &[u8], w: &mut ByteWriter) -> Result<(), CrdtWireError> {
     check_limit("field_bytes", bytes.len(), MAX_FIELD_BYTES)?;
-    out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-    out.extend_from_slice(bytes);
+    w.write_bytes(bytes)?;
     Ok(())
 }
 
-fn encode_value(val: &CrdtValue, out: &mut Vec<u8>) -> Result<(), CrdtWireError> {
+fn encode_value(val: &CrdtValue, w: &mut ByteWriter) -> Result<(), CrdtWireError> {
     match val {
-        CrdtValue::Unit => out.push(VAL_UNIT),
-        CrdtValue::Bool(b) => out.extend_from_slice(&[VAL_BOOL, u8::from(*b)]),
+        CrdtValue::Unit => w.write_u8(VAL_UNIT),
+        CrdtValue::Bool(b) => {
+            w.write_u8(VAL_BOOL);
+            w.write_bool(*b);
+        }
         CrdtValue::U32(v) => {
-            out.push(VAL_U32);
-            out.extend_from_slice(&v.to_le_bytes());
+            w.write_u8(VAL_U32);
+            w.write_u32(*v);
         }
         CrdtValue::U64(v) => {
-            out.push(VAL_U64);
-            out.extend_from_slice(&v.to_le_bytes());
+            w.write_u8(VAL_U64);
+            w.write_u64(*v);
         }
         CrdtValue::I64(v) => {
-            out.push(VAL_I64);
-            out.extend_from_slice(&v.to_le_bytes());
+            w.write_u8(VAL_I64);
+            w.write_i64(*v);
         }
         CrdtValue::Utf8(s) => {
-            out.push(VAL_UTF8);
-            encode_bytes(s.as_bytes(), out)?;
+            w.write_u8(VAL_UTF8);
+            encode_bytes(s.as_bytes(), w)?;
         }
         CrdtValue::Bytes(b) => {
-            out.push(VAL_BYTES);
-            encode_bytes(b, out)?;
+            w.write_u8(VAL_BYTES);
+            encode_bytes(b, w)?;
         }
     }
     Ok(())
 }
 
-fn decode_value(cur: &mut Cursor<'_>) -> Result<CrdtValue, CrdtWireError> {
-    match cur.read_u8()? {
+fn decode_value(r: &mut ByteReader<'_>) -> Result<CrdtValue, CrdtWireError> {
+    match r.read_u8()? {
         VAL_UNIT => Ok(CrdtValue::Unit),
-        VAL_BOOL => match cur.read_u8()? {
-            0 => Ok(CrdtValue::Bool(false)),
-            1 => Ok(CrdtValue::Bool(true)),
-            _ => Err(CrdtWireError::InvalidPayload("boolean byte must be 0 or 1")),
-        },
-        VAL_U32 => Ok(CrdtValue::U32(cur.read_u32()?)),
-        VAL_U64 => Ok(CrdtValue::U64(cur.read_u64()?)),
-        VAL_I64 => Ok(CrdtValue::I64(cur.read_i64()?)),
-        VAL_UTF8 => Ok(CrdtValue::Utf8(cur.read_string()?)),
-        VAL_BYTES => Ok(CrdtValue::Bytes(cur.read_bytes_vec()?)),
+        VAL_BOOL => Ok(CrdtValue::Bool(r.read_bool()?)),
+        VAL_U32 => Ok(CrdtValue::U32(r.read_u32()?)),
+        VAL_U64 => Ok(CrdtValue::U64(r.read_u64()?)),
+        VAL_I64 => Ok(CrdtValue::I64(r.read_i64()?)),
+        VAL_UTF8 => Ok(CrdtValue::Utf8(read_bounded_string(r)?)),
+        VAL_BYTES => Ok(CrdtValue::Bytes(r.read_bytes(MAX_FIELD_BYTES)?.to_vec())),
         other => Err(CrdtWireError::UnknownValueTag(other)),
     }
 }
 
-fn encode_record(rec: &CrdtRecord, out: &mut Vec<u8>) -> Result<(), CrdtWireError> {
+fn read_bounded_string(r: &mut ByteReader<'_>) -> Result<String, CrdtWireError> {
+    let len = r.read_u32()? as usize;
+    check_limit("string_bytes", len, MAX_FIELD_BYTES)?;
+    let slice = r.read_exact(len)?;
+    std::str::from_utf8(slice)
+        .map(str::to_owned)
+        .map_err(|_| CrdtWireError::InvalidUtf8)
+}
+
+fn encode_record(rec: &CrdtRecord, w: &mut ByteWriter) -> Result<(), CrdtWireError> {
     match rec {
         CrdtRecord::LwwSet {
             namespace,
@@ -350,13 +385,13 @@ fn encode_record(rec: &CrdtRecord, out: &mut Vec<u8>) -> Result<(), CrdtWireErro
             timestamp,
             value,
         } => {
-            out.push(TAG_LWW_SET);
-            out.extend_from_slice(&namespace.to_le_bytes());
-            out.extend_from_slice(&entity_id.to_le_bytes());
-            out.extend_from_slice(&field_id.to_le_bytes());
-            out.extend_from_slice(&op_id.to_le_bytes());
-            out.extend_from_slice(&timestamp.encode_le());
-            encode_value(value, out)?;
+            w.write_u8(TAG_LWW_SET);
+            w.write_u16(*namespace);
+            w.write_u64(*entity_id);
+            w.write_u16(*field_id);
+            op_id.encode(w)?;
+            timestamp.encode(w)?;
+            encode_value(value, w)?;
         }
         CrdtRecord::GCounterSet {
             namespace,
@@ -365,12 +400,12 @@ fn encode_record(rec: &CrdtRecord, out: &mut Vec<u8>) -> Result<(), CrdtWireErro
             op_id,
             count,
         } => {
-            out.push(TAG_GCOUNTER_SET);
-            out.extend_from_slice(&namespace.to_le_bytes());
-            out.extend_from_slice(&entity_id.to_le_bytes());
-            out.extend_from_slice(&peer.to_le_bytes());
-            out.extend_from_slice(&op_id.to_le_bytes());
-            out.extend_from_slice(&count.to_le_bytes());
+            w.write_u8(TAG_GCOUNTER_SET);
+            w.write_u16(*namespace);
+            w.write_u64(*entity_id);
+            peer.encode(w)?;
+            op_id.encode(w)?;
+            w.write_u64(*count);
         }
         CrdtRecord::PnCounterSet {
             namespace,
@@ -380,33 +415,33 @@ fn encode_record(rec: &CrdtRecord, out: &mut Vec<u8>) -> Result<(), CrdtWireErro
             pos,
             neg,
         } => {
-            out.push(TAG_PNCOUNTER_SET);
-            out.extend_from_slice(&namespace.to_le_bytes());
-            out.extend_from_slice(&entity_id.to_le_bytes());
-            out.extend_from_slice(&peer.to_le_bytes());
-            out.extend_from_slice(&op_id.to_le_bytes());
-            out.extend_from_slice(&pos.to_le_bytes());
-            out.extend_from_slice(&neg.to_le_bytes());
+            w.write_u8(TAG_PNCOUNTER_SET);
+            w.write_u16(*namespace);
+            w.write_u64(*entity_id);
+            peer.encode(w)?;
+            op_id.encode(w)?;
+            w.write_u64(*pos);
+            w.write_u64(*neg);
         }
         CrdtRecord::OrSetAddU64 {
             namespace,
             key,
             op_id,
         } => {
-            out.push(TAG_ORSET_ADD_U64);
-            out.extend_from_slice(&namespace.to_le_bytes());
-            out.extend_from_slice(&key.to_le_bytes());
-            out.extend_from_slice(&op_id.to_le_bytes());
+            w.write_u8(TAG_ORSET_ADD_U64);
+            w.write_u16(*namespace);
+            w.write_u64(*key);
+            op_id.encode(w)?;
         }
         CrdtRecord::OrSetRemove {
             namespace,
             removed_tag,
             remove_op,
         } => {
-            out.push(TAG_ORSET_REMOVE);
-            out.extend_from_slice(&namespace.to_le_bytes());
-            out.extend_from_slice(&removed_tag.to_le_bytes());
-            out.extend_from_slice(&remove_op.to_le_bytes());
+            w.write_u8(TAG_ORSET_REMOVE);
+            w.write_u16(*namespace);
+            removed_tag.encode(w)?;
+            remove_op.encode(w)?;
         }
         CrdtRecord::RgaInsert {
             namespace,
@@ -415,18 +450,12 @@ fn encode_record(rec: &CrdtRecord, out: &mut Vec<u8>) -> Result<(), CrdtWireErro
             after_id,
             value,
         } => {
-            out.push(TAG_RGA_INSERT);
-            out.extend_from_slice(&namespace.to_le_bytes());
-            out.extend_from_slice(&list_id.to_le_bytes());
-            out.extend_from_slice(&id.to_le_bytes());
-            match after_id {
-                None => out.push(0),
-                Some(anchor) => {
-                    out.push(1);
-                    out.extend_from_slice(&anchor.to_le_bytes());
-                }
-            }
-            encode_value(value, out)?;
+            w.write_u8(TAG_RGA_INSERT);
+            w.write_u16(*namespace);
+            w.write_u64(*list_id);
+            id.encode(w)?;
+            after_id.encode(w)?;
+            encode_value(value, w)?;
         }
         CrdtRecord::RgaDelete {
             namespace,
@@ -434,168 +463,92 @@ fn encode_record(rec: &CrdtRecord, out: &mut Vec<u8>) -> Result<(), CrdtWireErro
             target_id,
             remove_op,
         } => {
-            out.push(TAG_RGA_DELETE);
-            out.extend_from_slice(&namespace.to_le_bytes());
-            out.extend_from_slice(&list_id.to_le_bytes());
-            out.extend_from_slice(&target_id.to_le_bytes());
-            out.extend_from_slice(&remove_op.to_le_bytes());
+            w.write_u8(TAG_RGA_DELETE);
+            w.write_u16(*namespace);
+            w.write_u64(*list_id);
+            target_id.encode(w)?;
+            remove_op.encode(w)?;
         }
         CrdtRecord::OrSetAddString {
             namespace,
             key,
             op_id,
         } => {
-            out.push(TAG_ORSET_ADD_STR);
-            out.extend_from_slice(&namespace.to_le_bytes());
-            encode_bytes(key.as_bytes(), out)?;
-            out.extend_from_slice(&op_id.to_le_bytes());
+            w.write_u8(TAG_ORSET_ADD_STR);
+            w.write_u16(*namespace);
+            encode_bytes(key.as_bytes(), w)?;
+            op_id.encode(w)?;
         }
     }
     Ok(())
 }
 
-fn decode_record(cur: &mut Cursor<'_>) -> Result<CrdtRecord, CrdtWireError> {
-    match cur.read_u8()? {
+fn decode_record(r: &mut ByteReader<'_>) -> Result<CrdtRecord, CrdtWireError> {
+    match r.read_u8()? {
         TAG_LWW_SET => Ok(CrdtRecord::LwwSet {
-            namespace: cur.read_u16()?,
-            entity_id: cur.read_u64()?,
-            field_id: cur.read_u16()?,
-            op_id: cur.read_op_id()?,
-            timestamp: cur.read_hlc()?,
-            value: decode_value(cur)?,
+            namespace: r.read_u16()?,
+            entity_id: r.read_u64()?,
+            field_id: r.read_u16()?,
+            op_id: OpId::decode(r)?,
+            timestamp: HlcTimestamp::decode(r)?,
+            value: decode_value(r)?,
         }),
         TAG_GCOUNTER_SET => Ok(CrdtRecord::GCounterSet {
-            namespace: cur.read_u16()?,
-            entity_id: cur.read_u64()?,
-            peer: PeerId(cur.read_u64()?),
-            op_id: cur.read_op_id()?,
-            count: cur.read_u64()?,
+            namespace: r.read_u16()?,
+            entity_id: r.read_u64()?,
+            peer: PeerId::decode(r)?,
+            op_id: OpId::decode(r)?,
+            count: r.read_u64()?,
         }),
         TAG_PNCOUNTER_SET => Ok(CrdtRecord::PnCounterSet {
-            namespace: cur.read_u16()?,
-            entity_id: cur.read_u64()?,
-            peer: PeerId(cur.read_u64()?),
-            op_id: cur.read_op_id()?,
-            pos: cur.read_u64()?,
-            neg: cur.read_u64()?,
+            namespace: r.read_u16()?,
+            entity_id: r.read_u64()?,
+            peer: PeerId::decode(r)?,
+            op_id: OpId::decode(r)?,
+            pos: r.read_u64()?,
+            neg: r.read_u64()?,
         }),
         TAG_ORSET_ADD_U64 => Ok(CrdtRecord::OrSetAddU64 {
-            namespace: cur.read_u16()?,
-            key: cur.read_u64()?,
-            op_id: cur.read_op_id()?,
+            namespace: r.read_u16()?,
+            key: r.read_u64()?,
+            op_id: OpId::decode(r)?,
         }),
         TAG_ORSET_REMOVE => Ok(CrdtRecord::OrSetRemove {
-            namespace: cur.read_u16()?,
-            removed_tag: cur.read_op_id()?,
-            remove_op: cur.read_op_id()?,
+            namespace: r.read_u16()?,
+            removed_tag: OpId::decode(r)?,
+            remove_op: OpId::decode(r)?,
         }),
         TAG_RGA_INSERT => {
-            let namespace = cur.read_u16()?;
-            let list_id = cur.read_u64()?;
-            let id = cur.read_op_id()?;
-            let after_id = match cur.read_u8()? {
-                0 => None,
-                1 => Some(cur.read_op_id()?),
-                _ => return Err(CrdtWireError::InvalidPayload("RGA anchor flag must be 0 or 1")),
-            };
+            let namespace = r.read_u16()?;
+            let list_id = r.read_u64()?;
+            let id = OpId::decode(r)?;
+            let after_id = r
+                .read_opt(OpId::decode)
+                .map_err(|e| match e {
+                    CodecError::BadBool(_) => {
+                        CrdtWireError::InvalidPayload("RGA anchor flag must be 0 or 1")
+                    }
+                    other => CrdtWireError::from(other),
+                })?;
             Ok(CrdtRecord::RgaInsert {
                 namespace,
                 list_id,
                 id,
                 after_id,
-                value: decode_value(cur)?,
+                value: decode_value(r)?,
             })
         }
         TAG_RGA_DELETE => Ok(CrdtRecord::RgaDelete {
-            namespace: cur.read_u16()?,
-            list_id: cur.read_u64()?,
-            target_id: cur.read_op_id()?,
-            remove_op: cur.read_op_id()?,
+            namespace: r.read_u16()?,
+            list_id: r.read_u64()?,
+            target_id: OpId::decode(r)?,
+            remove_op: OpId::decode(r)?,
         }),
         TAG_ORSET_ADD_STR => Ok(CrdtRecord::OrSetAddString {
-            namespace: cur.read_u16()?,
-            key: cur.read_string()?,
-            op_id: cur.read_op_id()?,
+            namespace: r.read_u16()?,
+            key: read_bounded_string(r)?,
+            op_id: OpId::decode(r)?,
         }),
         other => Err(CrdtWireError::UnknownOpTag(other)),
-    }
-}
-
-struct Cursor<'a> {
-    data: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Cursor<'a> {
-    const fn new(data: &'a [u8]) -> Self {
-        Self { data, pos: 0 }
-    }
-
-    const fn remaining(&self) -> usize {
-        self.data.len() - self.pos
-    }
-
-    fn ensure_remaining(&self, need: usize) -> Result<(), CrdtWireError> {
-        if need > self.remaining() {
-            Err(CrdtWireError::Truncated {
-                expected: need,
-                actual: self.remaining(),
-            })
-        } else {
-            Ok(())
-        }
-    }
-
-    fn read_slice(&mut self, len: usize) -> Result<&'a [u8], CrdtWireError> {
-        self.ensure_remaining(len)?;
-        let start = self.pos;
-        self.pos += len;
-        Ok(&self.data[start..self.pos])
-    }
-
-    fn read_array<const N: usize>(&mut self) -> Result<[u8; N], CrdtWireError> {
-        Ok(self.read_slice(N)?.try_into().expect("checked N bytes"))
-    }
-
-    fn read_u8(&mut self) -> Result<u8, CrdtWireError> {
-        Ok(self.read_array::<1>()?[0])
-    }
-
-    fn read_u16(&mut self) -> Result<u16, CrdtWireError> {
-        Ok(u16::from_le_bytes(self.read_array::<2>()?))
-    }
-
-    fn read_u32(&mut self) -> Result<u32, CrdtWireError> {
-        Ok(u32::from_le_bytes(self.read_array::<4>()?))
-    }
-
-    fn read_u64(&mut self) -> Result<u64, CrdtWireError> {
-        Ok(u64::from_le_bytes(self.read_array::<8>()?))
-    }
-
-    fn read_i64(&mut self) -> Result<i64, CrdtWireError> {
-        Ok(i64::from_le_bytes(self.read_array::<8>()?))
-    }
-
-    fn read_op_id(&mut self) -> Result<OpId, CrdtWireError> {
-        Ok(OpId::from_le_bytes(self.read_array::<OP_ID_ENCODED_LEN>()?))
-    }
-
-    fn read_hlc(&mut self) -> Result<HlcTimestamp, CrdtWireError> {
-        Ok(HlcTimestamp::decode_le(self.read_array::<HLC_ENCODED_LEN>()?))
-    }
-
-    fn read_bytes_vec(&mut self) -> Result<Vec<u8>, CrdtWireError> {
-        let len = self.read_u32()? as usize;
-        check_limit("field_bytes", len, MAX_FIELD_BYTES)?;
-        Ok(self.read_slice(len)?.to_vec())
-    }
-
-    fn read_string(&mut self) -> Result<String, CrdtWireError> {
-        let len = self.read_u32()? as usize;
-        check_limit("string_bytes", len, MAX_FIELD_BYTES)?;
-        std::str::from_utf8(self.read_slice(len)?)
-            .map(str::to_owned)
-            .map_err(|_| CrdtWireError::InvalidUtf8)
     }
 }

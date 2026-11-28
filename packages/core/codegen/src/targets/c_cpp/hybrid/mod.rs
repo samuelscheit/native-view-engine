@@ -259,7 +259,7 @@ fn emit_c11_header(spec: &HybridFileSpec) -> Result<String, CodegenError> {
 fn emit_c11_vtable(
     out: &mut CodeWriter,
     name: &str,
-    interface_id: u32,
+    interface_id: nve_abi::InterfaceId,
     schema_hash: u64,
     methods: &[HybridMethodSpec],
     is_view: bool,

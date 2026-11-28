@@ -2,7 +2,7 @@
 //! ancestor dirties exactly the text / text-input descendants that inherit it (paint-only
 //! changes move no rect), so retained hosts restyle `dirty_indices` without whole-tree walks.
 
-use nve_components::tables::{Layout, TextContent, TextInput, Typography};
+use nve_tables::tables::{Layout, TextContent, TextInput, Typography};
 use std::sync::Arc;
 
 use nve_engine::{LayoutRect, Viewport};

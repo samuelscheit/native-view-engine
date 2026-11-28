@@ -3,8 +3,8 @@
 //! iOS, Android, SwiftUI, and Flutter hosts.
 
 use nve_abi::{
-    FrameId, NveEventBatchRef, NveGestureDisposition, NveIntrinsicSize, NvePropsRef,
-    NveSizeConstraints, SurfaceId,
+    FrameId, NveGestureDisposition, NveIntrinsicSize, NvePropsRef, NveSizeConstraints, SurfaceId,
+    ValidatedEvents,
 };
 use nve_dioxus::DioxusSurface;
 use nve_docs::DocsViewport;
@@ -56,8 +56,8 @@ impl NveApp for DocsSiteModule {
         self.surface.render_nve2_slice(frame_id)
     }
 
-    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
-        self.surface.dispatch_direct_events(events)
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
+        self.surface.dispatch_events(events)
     }
 
     fn measure(&mut self, constraints: NveSizeConstraints) -> NveIntrinsicSize {

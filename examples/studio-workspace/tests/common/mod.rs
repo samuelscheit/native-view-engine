@@ -2,40 +2,40 @@
 
 use std::path::{Path, PathBuf};
 
-use nve_abi::{ColorRgba, EventPayload, NativeEvent, NativeEventKind, NodeId};
+use nve_abi::{ColorRgba, EventBatchBuf, FrameId, NodeId, SurfaceId, TimestampUs};
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::{PixelBuffer, SkiaBackend};
 use nve_backend_web::WebBackend;
 use nve_canvas_skia::CanvasSkiaSystem;
 use nve_canvas_web::CanvasWebSystem;
-use nve_components::tables::{DebugId, TextContent};
+use nve_tables::tables::{DebugId, TextContent};
 use nve_dioxus::DioxusSurface;
 use nve_engine::{StoreBackend, Viewport};
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::NodeStore;
 use nve_studio_workspace::{create_surface_for_viewport, StudioHostServices, StudioWorkspaceModule};
 use nve_web_html::{DataAttrList, HtmlDataAttrs};
 use nve_web_html_web::register_web_html_systems;
 
 /// A module over the Studio-default host services (dark, `en-US`), independent of the OS the
 /// tests run on (`NveApp::create` seeds from the OS appearance).
-pub fn headless_module(surface_id: u32) -> StudioWorkspaceModule {
+pub fn headless_module(surface_id: SurfaceId) -> StudioWorkspaceModule {
     StudioWorkspaceModule::with_services(surface_id, std::sync::Arc::new(StudioHostServices::new()))
 }
 
 pub fn register_studio_tables() {
-    nve_components::tables::register_core_tables();
+    nve_tables::tables::register_core_tables();
     let _ = <nve_canvas::Canvas as nve_store::NveTable>::slot();
     nve_web_html::register_web_html_tables();
 }
 
 pub fn find_in_store(store: &NodeStore, test_id: &str) -> Option<NodeId> {
-    let mut stack = vec![StoreNodeId::ROOT];
+    let mut stack = vec![NodeId::ROOT];
     while let Some(id) = stack.pop() {
-        if id != StoreNodeId::ROOT
+        if id != NodeId::ROOT
             && let Some(dbg) = store.try_row::<DebugId>(id)
             && dbg.test_id() == test_id
         {
-            return Some(id.raw());
+            return Some(id);
         }
         stack.extend_from_slice(store.children(id));
     }
@@ -43,18 +43,17 @@ pub fn find_in_store(store: &NodeStore, test_id: &str) -> Option<NodeId> {
 }
 
 pub fn data_attr_in_store(store: &NodeStore, id: NodeId, key: &str) -> Option<String> {
-    let res = store.try_row::<HtmlDataAttrs>(StoreNodeId(id))?.entries();
+    let res = store.try_row::<HtmlDataAttrs>(id)?.entries();
     let list = store.resource::<DataAttrList>(res)?;
     let stripped = key.strip_prefix("data-").unwrap_or(key);
-    list.0
-        .iter()
-        .find(|(k, _)| k == key || k == stripped)
-        .map(|(_, v)| v.clone())
+    list.iter()
+        .find(|(k, _)| *k == key || *k == stripped)
+        .map(|(_, v)| v.to_owned())
 }
 
-pub fn live_node_ids(store: &NodeStore) -> Vec<StoreNodeId> {
+pub fn live_node_ids(store: &NodeStore) -> Vec<NodeId> {
     let mut out = Vec::new();
-    let mut stack = vec![StoreNodeId::ROOT];
+    let mut stack = vec![NodeId::ROOT];
     while let Some(id) = stack.pop() {
         out.push(id);
         stack.extend_from_slice(store.children(id));
@@ -85,12 +84,12 @@ impl MultiBackendHarness {
         let mut web = WebBackend::new();
         register_web_html_systems(web.table_registry_mut());
         web.register_table_system(CanvasWebSystem);
-        headless.set_viewport(1, viewport);
-        skia.set_viewport(1, viewport);
-        web.set_viewport(1, viewport);
+        headless.set_viewport(SurfaceId::ROOT, viewport);
+        skia.set_viewport(SurfaceId::ROOT, viewport);
+        web.set_viewport(SurfaceId::ROOT, viewport);
 
         let mut h = Self {
-            surface: create_surface_for_viewport(1, width, height),
+            surface: create_surface_for_viewport(SurfaceId::ROOT, width, height),
             headless,
             skia,
             web,
@@ -104,7 +103,7 @@ impl MultiBackendHarness {
     pub fn render_next(&mut self) {
         let fid = self.next_frame;
         self.next_frame += 1;
-        self.surface.reconcile(fid);
+        self.surface.reconcile(FrameId(fid));
         let store = self.surface.store();
         let changes = self.surface.last_changes();
         self.headless
@@ -150,13 +149,15 @@ impl MultiBackendHarness {
             "hit_test at center of '{test_id}' hit Node#{hit} instead of Node#{node_id}"
         );
 
-        let handled = self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
-            node_id: hit,
-            timestamp_us: self.next_frame * 16_000,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: cx, y: cy },
-        }]);
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(
+            SurfaceId::ROOT,
+            hit,
+            TimestampUs(self.next_frame * 16_000),
+            cx,
+            cy,
+        );
+        let handled = self.surface.dispatch_events(batch.as_validated());
         assert!(handled, "press on '{test_id}' was not handled");
         self.render_next();
     }
@@ -169,13 +170,14 @@ impl MultiBackendHarness {
             self.ascii()
         );
         let node_id = node_id.expect("checked above");
-        let handled = self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+        let mut batch = EventBatchBuf::new();
+        batch.push_text_change(
+            SurfaceId::ROOT,
             node_id,
-            timestamp_us: self.next_frame * 16_000,
-            kind: NativeEventKind::TextChange,
-            payload: EventPayload::Text(text.to_owned()),
-        }]);
+            TimestampUs(self.next_frame * 16_000),
+            text,
+        );
+        let handled = self.surface.dispatch_events(batch.as_validated());
         assert!(handled, "text change on '{test_id}' was not handled");
         self.render_next();
     }
@@ -198,10 +200,10 @@ impl MultiBackendHarness {
         let vp_w = self.viewport.width;
         let store = self.surface.store();
         for id in live_node_ids(store) {
-            if id == StoreNodeId::ROOT {
+            if id == NodeId::ROOT {
                 continue;
             }
-            let Some(r) = self.headless.layout_of(id.raw()) else {
+            let Some(r) = self.headless.layout_of(id) else {
                 continue;
             };
             if r.width <= 0.0 || r.height <= 0.0 {

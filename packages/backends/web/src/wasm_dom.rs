@@ -2,11 +2,12 @@
 //! positional hydration), `COMPOSITE`-only 120 Hz fast lane, and `WebTableRegistry` plugin DOM
 //! synchronization.
 
+use crate::css::Keyword;
 use nve_abi::table::effect;
-use nve_components::tables::{
-    Accessibility, DebugId, Image, ImageSrc, Interaction, Link, LinkTarget, StreamBoundary,
-    TextContent, TextInput, Transform, Visual, NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_ROLE_ATTR,
-    NVE_SUSPENSE_ATTR,
+use nve_tables::tables::{
+    Accessibility, DebugId, Image, ImageSrc, Interaction, Link, LinkRel, LinkTarget,
+    StreamBoundary, TextContent, TextInput, Transform, Visual, NVE_STREAM_SLOT_ATTR,
+    NVE_STREAM_SLOT_ROLE_ATTR, NVE_SUSPENSE_ATTR,
 };
 use nve_store::{ChangeSet, NodeId, NodeStore};
 use wasm_bindgen::JsCast;
@@ -49,7 +50,6 @@ impl WebBackend {
         let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
             return 0;
         };
-        self.click_interceptors.borrow_mut().refresh(self.renderer.registry());
         if self.native_event_bridges.is_stale(self.renderer.registry()) {
             let sinks = self.event_sinks();
             self.native_event_bridges
@@ -60,7 +60,7 @@ impl WebBackend {
         self.renderer
             .remove_plugins(changes, Some(&self.live_elements));
         for &id in &changes.removed {
-            if let Some(el) = self.live_elements.remove(&id.raw()) {
+            if let Some(el) = self.live_elements.remove(&id) {
                 el.remove();
             }
         }
@@ -76,27 +76,27 @@ impl WebBackend {
             }
             created_set.insert(id);
             let (tag, ns) = self.renderer.registry().resolve_tag(store, id);
-            let el = if let Some(adopted) = self.live_elements.get(&id.raw()).cloned() {
+            let el = if let Some(adopted) = self.live_elements.get(&id).cloned() {
                 if adopted.tag_name().eq_ignore_ascii_case(tag) {
                     adopted
                 } else {
                     let fresh = create_dom_element(&doc, id, tag, ns);
                     move_dom_children(&adopted, &fresh);
                     let _ = adopted.replace_with_with_node_1(&fresh);
-                    self.live_elements.insert(id.raw(), fresh.clone());
+                    self.live_elements.insert(id, fresh.clone());
                     retagged.push(id);
                     fresh
                 }
             } else {
                 let fresh = create_dom_element(&doc, id, tag, ns);
-                self.live_elements.insert(id.raw(), fresh.clone());
+                self.live_elements.insert(id, fresh.clone());
                 fresh
             };
             self.sync_full_element(store, id, &el);
         }
 
         // Ensure ROOT is mounted into `mount_root` (unless the mount container IS the adopted root).
-        if let Some(root_el) = self.live_elements.get(&NodeId::ROOT.raw())
+        if let Some(root_el) = self.live_elements.get(&NodeId::ROOT)
             && root_el != &mount_root
             && root_el.parent_element().as_ref() != Some(&mount_root)
         {
@@ -109,7 +109,7 @@ impl WebBackend {
                 continue;
             }
             if fx == effect::COMPOSITE {
-                if let Some(el) = self.live_elements.get(&id.raw()) {
+                if let Some(el) = self.live_elements.get(&id) {
                     apply_compositor_properties_live(store, id, el);
                 }
                 continue;
@@ -119,7 +119,7 @@ impl WebBackend {
             } else {
                 self.renderer.registry().resolve_tag(store, id)
             };
-            let el = if let Some(existing) = self.live_elements.get(&id.raw()).cloned() {
+            let el = if let Some(existing) = self.live_elements.get(&id).cloned() {
                 if id != NodeId::ROOT
                     && fx & effect::REALIZE != 0
                     && !existing.tag_name().eq_ignore_ascii_case(tag)
@@ -127,7 +127,7 @@ impl WebBackend {
                     let fresh = create_dom_element(&doc, id, tag, ns);
                     move_dom_children(&existing, &fresh);
                     let _ = existing.replace_with_with_node_1(&fresh);
-                    self.live_elements.insert(id.raw(), fresh.clone());
+                    self.live_elements.insert(id, fresh.clone());
                     retagged.push(id);
                     fresh
                 } else {
@@ -135,7 +135,7 @@ impl WebBackend {
                 }
             } else {
                 let fresh = create_dom_element(&doc, id, tag, ns);
-                self.live_elements.insert(id.raw(), fresh.clone());
+                self.live_elements.insert(id, fresh.clone());
                 fresh
             };
             self.sync_full_element(store, id, &el);
@@ -161,7 +161,7 @@ impl WebBackend {
             if self.renderer.plugin_inner_html(parent).is_some() {
                 continue;
             }
-            let Some(parent_el) = self.live_elements.get(&parent.raw()).cloned() else {
+            let Some(parent_el) = self.live_elements.get(&parent).cloned() else {
                 continue;
             };
             let wanted = store.children(parent);
@@ -177,7 +177,7 @@ impl WebBackend {
             }
             let mut cursor = parent_el.first_element_child();
             for &cid in wanted {
-                let Some(child_el) = self.live_elements.get(&cid.raw()) else {
+                let Some(child_el) = self.live_elements.get(&cid) else {
                     continue;
                 };
                 if cursor.as_ref() == Some(child_el) {
@@ -218,7 +218,7 @@ impl WebBackend {
     }
 
     pub(crate) fn sync_full_element(&mut self, store: &NodeStore, id: NodeId, el: &web_sys::Element) {
-        let resolved = self.stylesheet.resolve_node(store, id);
+        let resolved = self.stylesheet.resolve_node(store, id, self.renderer.registry());
         if el.class_name() != resolved.classes {
             el.set_class_name(&resolved.classes);
         }
@@ -232,7 +232,7 @@ impl WebBackend {
                 sys.write_inline_css(store, id, &mut inline);
             }
         }
-        if let Some(patch) = self.patch_css.get(&id.raw()) {
+        if let Some(patch) = self.patch_css.get(&id) {
             inline.push_str(patch);
         }
         if inline.is_empty() {
@@ -255,7 +255,7 @@ impl WebBackend {
         set_or_remove_attr(
             el,
             NVE_STREAM_SLOT_ROLE_ATTR,
-            boundary.and_then(|b| b.slot_role().as_attr()).unwrap_or(""),
+            boundary.and_then(|b| b.slot_role()).map_or("", |r| r.as_attr()),
         );
 
         if let Some(link) = store.try_row::<Link>(id) {
@@ -277,15 +277,19 @@ impl WebBackend {
                     let _ = el.set_attribute("target", "_parent");
                 }
             }
-            let rel_bits = if is_blank {
-                link.rel() | 1 | 2
+            let rel_flags = if is_blank {
+                link.rel() | LinkRel::NOOPENER | LinkRel::NOREFERRER
             } else {
                 link.rel()
             };
-            if rel_bits != 0 {
+            if !rel_flags.is_empty() {
                 let mut rel = String::new();
-                for (bit, kw) in [(1u8, "noopener"), (2u8, "noreferrer"), (4u8, "nofollow")] {
-                    if rel_bits & bit != 0 {
+                for (flag, kw) in [
+                    (LinkRel::NOOPENER, "noopener"),
+                    (LinkRel::NOREFERRER, "noreferrer"),
+                    (LinkRel::NOFOLLOW, "nofollow"),
+                ] {
+                    if rel_flags.contains(flag) {
                         if !rel.is_empty() {
                             rel.push(' ');
                         }
@@ -304,7 +308,8 @@ impl WebBackend {
 
         if let Some(img) = store.try_row::<Image>(id) {
             if !img.src().is_none()
-                && let Some(ImageSrc::Url(url)) = store.resource::<ImageSrc>(img.src())
+                && let Some(nve_tables::tables::ImageSrcView::Url(url)) =
+                    store.resource::<ImageSrc>(img.src())
                 && is_safe_web_url(url)
             {
                 let _ = el.set_attribute("src", url);
@@ -320,33 +325,33 @@ impl WebBackend {
             let val = ti.value();
             // Adopted SSR controls keep their pre-hydration `.value` until 3-way reconciliation.
             #[cfg(feature = "hydrate")]
-            let defer_value = self.deferred_controls.contains(&id.raw());
+            let defer_value = self.deferred_controls.contains(&id);
             #[cfg(not(feature = "hydrate"))]
             let defer_value = false;
             let write_value = self
                 .input_sync
                 .borrow_mut()
-                .on_backend_value_commit(id.raw(), val, defer_value);
+                .on_backend_value_commit(id, val, defer_value);
             if write_value {
                 crate::input_attrs::write_dom_control_value(el, val);
             }
             if let Some(inp) = el.dyn_ref::<web_sys::HtmlInputElement>() {
                 if ti.secure() {
                     inp.set_type("password");
-                } else if ti.input_kind() == nve_components::tables::InputKind::Text {
+                } else if ti.input_kind() == nve_tables::tables::InputKind::Text {
                     let _ = el.remove_attribute("type");
                 } else {
-                    inp.set_type(ti.input_kind().as_html_type());
+                    inp.set_type(ti.input_kind().keyword());
                 }
             }
             set_or_remove_attr(el, "placeholder", ti.placeholder());
-            if let Some(ac) = ti.autofill().get() {
-                let _ = el.set_attribute("autocomplete", ac.as_html_autocomplete());
+            if let Some(ac) = ti.autofill() {
+                let _ = el.set_attribute("autocomplete", ac.whatwg_token());
             } else {
                 let _ = el.remove_attribute("autocomplete");
             }
-            if ti.input_mode() != nve_components::InputMode::Text {
-                let _ = el.set_attribute("inputmode", ti.input_mode().as_html_inputmode());
+            if ti.input_mode() != nve_tables::InputMode::Text {
+                let _ = el.set_attribute("inputmode", ti.input_mode().whatwg_token());
             } else {
                 let _ = el.remove_attribute("inputmode");
             }
@@ -360,8 +365,8 @@ impl WebBackend {
             } else {
                 let _ = el.remove_attribute("readonly");
             }
-            if ti.max_length() > 0 && ti.max_length() < u16::MAX {
-                let _ = el.set_attribute("maxlength", &ti.max_length().to_string());
+            if let Some(ml) = ti.max_length() {
+                let _ = el.set_attribute("maxlength", &ml.to_string());
             } else {
                 let _ = el.remove_attribute("maxlength");
             }
@@ -374,8 +379,8 @@ impl WebBackend {
                 let _ = el.remove_attribute("disabled");
                 let _ = el.remove_attribute("aria-disabled");
             }
-            if inter.tab_index_set() {
-                let _ = el.set_attribute("tabindex", &inter.tab_index().to_string());
+            if let Some(ti_idx) = inter.tab_index() {
+                let _ = el.set_attribute("tabindex", &ti_idx.to_string());
             } else {
                 let _ = el.remove_attribute("tabindex");
             }
@@ -386,9 +391,9 @@ impl WebBackend {
         }
         if id != NodeId::ROOT {
             if let Some(a11y) = store.try_row::<Accessibility>(id) {
-                set_or_remove_attr(el, "role", a11y.role().as_aria_str());
+                set_or_remove_attr(el, "role", a11y.role().map_or("", |r| r.as_aria_str()));
                 set_or_remove_attr(el, "aria-label", a11y.label());
-                set_or_remove_attr(el, "aria-live", a11y.live().as_aria_str().unwrap_or(""));
+                set_or_remove_attr(el, "aria-live", a11y.live().map_or("", |l| l.as_aria_str()));
                 for (attr, on) in [("aria-hidden", a11y.hidden()), ("aria-modal", a11y.modal())] {
                     if on {
                         let _ = el.set_attribute(attr, "true");
@@ -467,9 +472,9 @@ fn apply_compositor_properties_live(store: &NodeStore, id: NodeId, el: &web_sys:
             let mut first = true;
             if tx != 0.0 || ty != 0.0 {
                 val.push_str("translate(");
-                crate::css::write_compact_px(tx, &mut val);
+                crate::css::write_px(tx, &mut val);
                 val.push(',');
-                crate::css::write_compact_px(ty, &mut val);
+                crate::css::write_px(ty, &mut val);
                 val.push(')');
                 first = false;
             }
