@@ -28,8 +28,6 @@ class NveDrawListPainter : DrawList.Sink {
         private set
     private var stroke: Stroke? = null
     private var strokeWidth = Float.NaN
-    private var clipDepth = 0
-    private var overflowClipDepth = 0
 
     /**
      * Paints [list] in dp units scaled by [scale] (default: the scope's density). Validation is
@@ -54,17 +52,10 @@ class NveDrawListPainter : DrawList.Sink {
         if (error != null) return error
         this.scope = scope
         this.scale = if (scale.isFinite() && scale > 0f) scale else 1f
-        clipDepth = 0
-        overflowClipDepth = 0
         try {
             DrawList.streamValidated(buf, 0, this)
             return null
         } finally {
-            while (clipDepth > 0) {
-                scope.drawContext.canvas.restore()
-                clipDepth--
-            }
-            overflowClipDepth = 0
             this.scope = null
         }
     }
@@ -124,23 +115,13 @@ class NveDrawListPainter : DrawList.Sink {
     }
 
     override fun onClipRect(x: Float, y: Float, w: Float, h: Float) {
-        if (clipDepth < DrawList.MAX_CLIP_DEPTH) {
-            val canvas = s.drawContext.canvas
-            canvas.save()
-            canvas.clipRect(x * scale, y * scale, (x + w.coerceAtLeast(0f)) * scale, (y + h.coerceAtLeast(0f)) * scale)
-            clipDepth++
-        } else {
-            overflowClipDepth++
-        }
+        val canvas = s.drawContext.canvas
+        canvas.save()
+        canvas.clipRect(x * scale, y * scale, (x + w.coerceAtLeast(0f)) * scale, (y + h.coerceAtLeast(0f)) * scale)
     }
 
     override fun onRestoreClip() {
-        if (overflowClipDepth > 0) {
-            overflowClipDepth--
-        } else if (clipDepth > 0) {
-            s.drawContext.canvas.restore()
-            clipDepth--
-        }
+        s.drawContext.canvas.restore()
     }
 
     companion object {

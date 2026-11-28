@@ -23,7 +23,6 @@ struct PainterVisitor {
   QPainter& p;
   QRectF bounds;      // local (0, 0, w, h)
   bool replace_clear;  // image devices: `Clear` replaces pixels (transparent clears work)
-  uint32_t clip_depth = 0u;
 
   void on_clear(const DrawClearOp& op) {
     if (replace_clear) {
@@ -72,14 +71,11 @@ struct PainterVisitor {
 
   void on_clip_rect(const DrawClipRectOp& op) {
     p.save();
-    ++clip_depth;
     p.setClipRect(QRectF(op.x, op.y, std::max(0.0f, op.w), std::max(0.0f, op.h)), Qt::IntersectClip);
   }
 
   void on_restore_clip(const DrawRestoreClipOp&) {
-    if (clip_depth == 0u) return;
     p.restore();
-    --clip_depth;
   }
 };
 
@@ -100,10 +96,9 @@ DrawListDecodeResult paint_draw_list(QPainter& p, const QRectF& bounds, std::spa
   p.setClipRect(local, Qt::IntersectClip);
   const bool image_device = p.device() != nullptr && p.device()->devType() == QInternal::Image;
   PainterVisitor visitor{p, local, image_device};
-  const DrawListDecodeResult res = decode_draw_list(bytes, visitor);
-  for (; visitor.clip_depth > 0u; --visitor.clip_depth) p.restore();
+  (void)stream_validated_draw_list(bytes, visitor);
   p.restore();
-  return res;
+  return check;
 }
 
 QImage rasterize_draw_list(std::span<const uint8_t> bytes, QSizeF size, qreal dpr) {

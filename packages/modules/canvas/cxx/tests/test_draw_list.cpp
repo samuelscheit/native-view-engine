@@ -204,10 +204,105 @@ void test_rejections() {
     CHECK(validate_draw_list(v).error == DrawListError::PolylinePointCountExceedsLimit);
   }
 
-  // Encoder sanitizes non-finite input to 0 (matches `sanitize_finite`).
+  // Encoder sanitizes non-finite and negative radius/width input to 0.
   DrawListEncoder se;
-  se.fill_circle(nan, inf, -inf, DrawColorRgba::rgb(0, 0, 0));
+  se.fill_circle(nan, inf, -inf, DrawColorRgba::rgb(0, 0, 0))
+      .fill_rounded_rect(0.0f, 0.0f, 10.0f, 10.0f, -3.0f, DrawColorRgba::rgb(0, 0, 0))
+      .stroke_line(0.0f, 0.0f, 5.0f, 5.0f, -2.0f, DrawColorRgba::rgb(0, 0, 0))
+      .stroke_polyline(one_pt, -1.5f, DrawColorRgba::rgb(0, 0, 0));
   CHECK(validate_draw_list(se.finish()).ok());
+
+  // Negative radius/width rejected with NegativeFloat; -0.0f and negative x/y/w/h accepted.
+  {
+    DrawListEncoder neg_rr;
+    neg_rr.fill_rounded_rect(0.0f, 0.0f, 10.0f, 10.0f, 1.0f, DrawColorRgba::rgb(0, 0, 0));
+    v = neg_rr.finish();
+    patch_f32(v, 6u, -0.5f);  // radius
+    CHECK(validate_draw_list(v).error == DrawListError::NegativeFloat);
+    patch_f32(v, 6u, -0.0f);
+    CHECK(validate_draw_list(v).ok());
+
+    DrawListEncoder neg_c;
+    neg_c.fill_circle(0.0f, 0.0f, 1.0f, DrawColorRgba::rgb(0, 0, 0));
+    v = neg_c.finish();
+    patch_f32(v, 4u, -1.0f);  // radius
+    CHECK(validate_draw_list(v).error == DrawListError::NegativeFloat);
+
+    DrawListEncoder neg_l;
+    neg_l.stroke_line(0.0f, 0.0f, 1.0f, 1.0f, 1.0f, DrawColorRgba::rgb(0, 0, 0));
+    v = neg_l.finish();
+    patch_f32(v, 6u, -0.25f);  // width
+    CHECK(validate_draw_list(v).error == DrawListError::NegativeFloat);
+
+    DrawListEncoder neg_p;
+    neg_p.stroke_polyline(one_pt, 1.0f, DrawColorRgba::rgb(0, 0, 0));
+    v = neg_p.finish();
+    patch_f32(v, 2u, -2.0f);  // width
+    CHECK(validate_draw_list(v).error == DrawListError::NegativeFloat);
+
+    DrawListEncoder neg_coords;
+    neg_coords.fill_rect(-5.0f, -6.0f, -1.0f, -2.0f, DrawColorRgba::rgb(0, 0, 0))
+        .clip_rect(-1.0f, -2.0f, -3.0f, -4.0f);
+    CHECK(validate_draw_list(neg_coords.finish()).ok());
+  }
+
+  // Malformed second op invokes zero visitor callbacks (validate-before-stream).
+  {
+    DrawListEncoder two;
+    two.clear(DrawColorRgba::rgba(1, 2, 3, 4))
+        .fill_circle(5.0f, 5.0f, 2.0f, DrawColorRgba::rgb(1, 2, 3));
+    v = two.finish();
+    patch_f32(v, 6u, nan);  // circle radius word
+    Recorder no_calls;
+    const DrawListDecodeResult res = decode_draw_list(v, no_calls);
+    CHECK(res.error == DrawListError::NonFiniteFloat && no_calls.ops.empty());
+  }
+}
+
+void test_clip_depth_cap_and_unwind() {
+  // 66 nested clips + 2 restores + clear: 2 restores absorb overflow, 64 unwind after clear.
+  DrawListEncoder deep;
+  for (uint32_t i = 0u; i < kMaxClipDepth + 2u; ++i) {
+    deep.clip_rect(0.0f, 0.0f, 30.0f, 30.0f);
+  }
+  deep.restore_clip().restore_clip().clear(DrawColorRgba::rgba(1, 2, 3, 4));
+  Recorder r;
+  const DrawListDecodeResult res = decode_draw_list(deep.finish(), r);
+  CHECK(res.ok());
+  CHECK(r.ops.size() == static_cast<size_t>(kMaxClipDepth) * 2u + 1u);
+  CHECK(r.ops[kMaxClipDepth] == 1);  // clear runs while clip #64 is still active
+  for (size_t i = 0u; i < kMaxClipDepth; ++i) CHECK(r.ops[i] == 7);
+  for (size_t i = kMaxClipDepth + 1u; i < r.ops.size(); ++i) CHECK(r.ops[i] == 8);
+
+  // Unmatched leading restores are dropped; 3rd restore after 66 clips pops live clip #64.
+  DrawListEncoder three;
+  three.restore_clip();
+  for (uint32_t i = 0u; i < kMaxClipDepth + 2u; ++i) {
+    three.clip_rect(0.0f, 0.0f, 30.0f, 30.0f);
+  }
+  three.restore_clip().restore_clip().restore_clip().clear(DrawColorRgba::rgba(1, 2, 3, 4));
+  Recorder r3;
+  CHECK(decode_draw_list(three.finish(), r3).ok());
+  CHECK(r3.ops.size() == static_cast<size_t>(kMaxClipDepth) * 2u + 1u);
+  CHECK(r3.ops[kMaxClipDepth] == 8 && r3.ops[kMaxClipDepth + 1u] == 1);
+
+  // Throwing visitor still unwinds all already-opened clips via RAII ScopeGuard.
+  struct ThrowingVisitor : Recorder {
+    void on_clip_rect(const DrawClipRectOp& op) {
+      Recorder::on_clip_rect(op);
+      if (ops.size() == 2u) throw 42;
+    }
+  };
+  DrawListEncoder two_clips;
+  two_clips.clip_rect(0.0f, 0.0f, 30.0f, 30.0f).clip_rect(0.0f, 0.0f, 30.0f, 30.0f);
+  ThrowingVisitor tv;
+  bool caught = false;
+  try {
+    (void)decode_draw_list(two_clips.finish(), tv);
+  } catch (int code) {
+    caught = (code == 42);
+  }
+  CHECK(caught && (tv.ops == std::vector<int>{7, 7, 8, 8}));
 }
 
 }  // namespace
@@ -216,6 +311,7 @@ int main() {
   test_golden_bytes();
   test_round_trip();
   test_rejections();
+  test_clip_depth_cap_and_unwind();
   if (g_failures != 0) {
     std::fprintf(stderr, "nve_canvas_draw_list_test: %d failure(s)\n", g_failures);
     return 1;

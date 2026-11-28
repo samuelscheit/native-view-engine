@@ -88,6 +88,8 @@ class NveDrawListPainterTest {
         assertEquals(DrawList.Error.TRAILING_BYTES, paint(Canvas(image), good + 0.toByte()))
         assertEquals(DrawList.Error.TRAILING_BYTES, paint(Canvas(image), good + ByteArray(4)))
         assertEquals(DrawList.Error.TRUNCATED, paint(Canvas(image), good.copyOf(good.size - 1)))
+        val negWidth = DrawListBytes().polyline(-1f, red, 0f, 0f, 4f, 4f).build()
+        assertEquals(DrawList.Error.NEGATIVE_FLOAT, paint(Canvas(image), negWidth))
         assertEquals(0f, image.toPixelMap()[4, 4].alpha)
     }
 

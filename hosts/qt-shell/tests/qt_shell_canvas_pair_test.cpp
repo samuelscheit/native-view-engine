@@ -96,6 +96,28 @@ void test_qpainter_renderer() {
   NVE_CHECK(rasterize_draw_list(unaligned, QSizeF(40, 20), 1.0).isNull());
   NVE_CHECK(rasterize_draw_list(bytes, QSizeF(0, 20), 1.0).isNull());
   NVE_CHECK(rasterize_draw_list(bytes, QSizeF(std::nan(""), 20), 1.0).isNull());
+
+  // 66 nested clips + 2 restores: overflow absorbs clips #65/#66 so clip #64 stays active.
+  DrawListEncoder deep;
+  deep.clear(DrawColorRgba::rgb(0, 0, 0));
+  for (uint32_t i = 0u; i < kMaxClipDepth - 1u; ++i) deep.clip_rect(0.0f, 0.0f, 40.0f, 20.0f);
+  deep.clip_rect(0.0f, 0.0f, 10.0f, 10.0f)
+      .clip_rect(0.0f, 0.0f, 2.0f, 2.0f)
+      .clip_rect(0.0f, 0.0f, 1.0f, 1.0f)
+      .restore_clip()
+      .restore_clip()
+      .fill_rect(0.0f, 0.0f, 40.0f, 20.0f, DrawColorRgba::rgb(255, 0, 0))
+      .restore_clip()
+      .fill_rect(20.0f, 5.0f, 10.0f, 10.0f, DrawColorRgba::rgb(0, 0, 255));
+  QImage deep_img(40, 20, QImage::Format_ARGB32_Premultiplied);
+  deep_img.fill(Qt::transparent);
+  {
+    QPainter p(&deep_img);
+    NVE_CHECK(paint_draw_list(p, QRectF(0, 0, 40, 20), deep.finish()).ok());
+  }
+  NVE_CHECK(deep_img.pixelColor(5, 5) == QColor(255, 0, 0));
+  NVE_CHECK(deep_img.pixelColor(35, 5) == QColor(0, 0, 0));
+  NVE_CHECK(deep_img.pixelColor(25, 10) == QColor(0, 0, 255));
 }
 
 std::vector<uint8_t> sparkline(float y) {

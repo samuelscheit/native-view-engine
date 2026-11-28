@@ -189,6 +189,25 @@ void test_draw_list_pixels() {
   NVE_CHECK(s.pixel(25, 5) == 0xFF0000FFu);   // blue inside the clip
   NVE_CHECK(s.pixel(35, 5) == 0xFF00FF00u);   // circle centre
   NVE_CHECK(s.pixel(20, 18) == 0xFF000000u);  // polyline
+
+  // 66 nested clips + 2 restores: overflow absorbs clips #65/#66 so clip #64 stays active.
+  DrawListEncoder deep;
+  deep.clear(DrawColorRgba::rgb(0, 0, 0));
+  for (uint32_t i = 0u; i < kMaxClipDepth - 1u; ++i) deep.clip_rect(0.0f, 0.0f, 40.0f, 20.0f);
+  deep.clip_rect(0.0f, 0.0f, 10.0f, 10.0f)
+      .clip_rect(0.0f, 0.0f, 2.0f, 2.0f)
+      .clip_rect(0.0f, 0.0f, 1.0f, 1.0f)
+      .restore_clip()
+      .restore_clip()
+      .fill_rect(0.0f, 0.0f, 40.0f, 20.0f, DrawColorRgba::rgb(255, 0, 0))
+      .restore_clip()
+      .fill_rect(20.0f, 5.0f, 10.0f, 10.0f, DrawColorRgba::rgb(0, 0, 255));
+  s.rt->BeginDraw();
+  NVE_CHECK(render_draw_list_to_d2d(s.rt, s.brush, s.factory, D2D1::RectF(0, 0, 40, 20), deep.finish()).ok());
+  NVE_CHECK(SUCCEEDED(s.rt->EndDraw()));
+  NVE_CHECK(s.pixel(5, 5) == 0xFFFF0000u);
+  NVE_CHECK(s.pixel(35, 5) == 0xFF000000u);
+  NVE_CHECK(s.pixel(25, 10) == 0xFF0000FFu);
 }
 
 void place(h::Nve2Writer& w, uint32_t id, float x, float y, float width, float height) {

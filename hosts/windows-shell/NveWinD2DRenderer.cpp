@@ -283,7 +283,6 @@ canvas::DrawListDecodeResult render_draw_list_to_d2d(ID2D1RenderTarget* rt, ID2D
     ID2D1Factory* factory;
     ID2D1StrokeStyle* stroke;
     float w, h;
-    uint32_t clip_depth = 0u;
 
     void color(DrawColorRgba c) const {
       brush->SetColor(D2D1::ColorF(c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, c.a / 255.0f));
@@ -335,21 +334,17 @@ canvas::DrawListDecodeResult render_draw_list_to_d2d(ID2D1RenderTarget* rt, ID2D
     void on_clip_rect(const DrawClipRectOp& op) {
       rt->PushAxisAlignedClip(D2D1::RectF(op.x, op.y, op.x + std::max(0.0f, op.w), op.y + std::max(0.0f, op.h)),
                               D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-      ++clip_depth;
     }
     void on_restore_clip(const DrawRestoreClipOp&) {
-      if (clip_depth == 0u) return;
       rt->PopAxisAlignedClip();
-      --clip_depth;
     }
   } visitor{rt, brush, factory, round, bw, bh};
 
-  const DrawListDecodeResult res = decode_draw_list(bytes, visitor);
-  for (; visitor.clip_depth > 0u; --visitor.clip_depth) rt->PopAxisAlignedClip();  // unbalanced streams
+  (void)stream_validated_draw_list(bytes, visitor);
   rt->SetTransform(prev);
   rt->PopAxisAlignedClip();
   if (round != nullptr) round->Release();
-  return res;
+  return check;
 }
 
 HRESULT paint_visual_tree_d2d(ID2D1RenderTarget* rt, ID2D1Factory* factory, const NveWinVisualTree& tree,

@@ -37,8 +37,6 @@ public final class NveCanvasView extends View implements DrawList.Sink {
     /** Paint state of the current {@link #onDraw}. */
     private Canvas canvas;
     private boolean polyDrawn;
-    private int clipDepth;
-    private int overflowClipDepth;
 
     public NveCanvasView(Context context) {
         super(context);
@@ -91,16 +89,9 @@ public final class NveCanvasView extends View implements DrawList.Sink {
         super.onDraw(c);
         if (drawList == null) return;
         canvas = c;
-        clipDepth = 0;
-        overflowClipDepth = 0;
         try {
             DrawList.streamValidated(drawList, 0, this);
         } finally {
-            while (clipDepth > 0) {
-                c.restore();
-                clipDepth--;
-            }
-            overflowClipDepth = 0;
             canvas = null;
         }
     }
@@ -179,23 +170,13 @@ public final class NveCanvasView extends View implements DrawList.Sink {
 
     @Override
     public void onClipRect(float x, float y, float w, float h) {
-        if (clipDepth < DrawList.MAX_CLIP_DEPTH) {
-            canvas.save();
-            rect(x, y, w, h);
-            canvas.clipRect(scratchRect);
-            clipDepth++;
-        } else {
-            overflowClipDepth++;
-        }
+        canvas.save();
+        rect(x, y, w, h);
+        canvas.clipRect(scratchRect);
     }
 
     @Override
     public void onRestoreClip() {
-        if (overflowClipDepth > 0) {
-            overflowClipDepth--;
-        } else if (clipDepth > 0) {
-            canvas.restore();
-            clipDepth--;
-        }
+        canvas.restore();
     }
 }

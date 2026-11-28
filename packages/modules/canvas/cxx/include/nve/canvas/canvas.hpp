@@ -16,6 +16,7 @@ namespace nve::canvas {
 
 /// `<DrawList as FlatResource>::KIND`.
 inline constexpr host::Key64 kDrawListKind = host::Key64::of("nve.res.draw_list");
+static_assert(kDrawListKind.value == generated::draw_list::kKind);
 
 struct CanvasData {
   uint32_t draw_list = 0u;  // `ResourceId`, 0 = nothing drawn

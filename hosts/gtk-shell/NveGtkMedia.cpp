@@ -108,7 +108,6 @@ DrawListDecodeResult render_draw_list_to_cairo(
     cairo_t* ctx;
     double w;
     double h;
-    uint32_t clip_depth{0u};
 
     static void set_color(cairo_t* c, DrawColorRgba col) noexcept {
       cairo_set_source_rgba(
@@ -220,7 +219,6 @@ DrawListDecodeResult render_draw_list_to_cairo(
 
     void on_clip_rect(const DrawClipRectOp& op) noexcept {
       cairo_save(ctx);
-      ++clip_depth;
       const double cw = (op.w > 0.0f) ? static_cast<double>(op.w) : 0.0;
       const double ch = (op.h > 0.0f) ? static_cast<double>(op.h) : 0.0;
       cairo_rectangle(ctx, static_cast<double>(op.x), static_cast<double>(op.y), cw, ch);
@@ -228,21 +226,14 @@ DrawListDecodeResult render_draw_list_to_cairo(
     }
 
     void on_restore_clip(const DrawRestoreClipOp&) noexcept {
-      if (clip_depth > 0u) {
-        cairo_restore(ctx);
-        --clip_depth;
-      }
+      cairo_restore(ctx);
     }
   };
 
-  CairoDrawVisitor visitor{cr, bw, bh, 0u};
-  const DrawListDecodeResult res = decode_draw_list(bytes, visitor);
-  while (visitor.clip_depth > 0u) {
-    cairo_restore(cr);
-    --visitor.clip_depth;
-  }
+  CairoDrawVisitor visitor{cr, bw, bh};
+  (void)stream_validated_draw_list(bytes, visitor);
   cairo_restore(cr);
-  return res;
+  return check;
 }
 
 // -----------------------------------------------------------------------------

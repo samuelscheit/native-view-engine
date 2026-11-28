@@ -80,6 +80,23 @@ final class DrawListTest {
                 == DrawList.Error.NON_FINITE_FLOAT, "NaN polyline width");
         c.that(DrawList.validate(f(op(header(1), DrawList.OP_STROKE_POLYLINE), 1, 0, Float.intBitsToFloat(1), 0, Float.NaN))
                 == DrawList.Error.NON_FINITE_FLOAT, "NaN polyline point");
+        c.that(DrawList.validate(f(op(header(1), DrawList.OP_FILL_ROUNDED_RECT), 0, 0, 10, 10, -0.5f, 0))
+                == DrawList.Error.NEGATIVE_FLOAT, "negative rounded rect radius");
+        c.that(DrawList.validate(f(op(header(1), DrawList.OP_FILL_CIRCLE), 1, 2, -1.0f, 0))
+                == DrawList.Error.NEGATIVE_FLOAT, "negative circle radius");
+        c.that(DrawList.validate(f(op(header(1), DrawList.OP_STROKE_LINE), 0, 0, 1, 1, -0.25f, 0))
+                == DrawList.Error.NEGATIVE_FLOAT, "negative stroke line width");
+        c.that(DrawList.validate(f(op(header(1), DrawList.OP_STROKE_POLYLINE), -2.0f, 0, Float.intBitsToFloat(0)))
+                == DrawList.Error.NEGATIVE_FLOAT, "negative polyline width");
+        c.that(DrawList.validate(f(op(header(1), DrawList.OP_FILL_CIRCLE), 1, 2, -0.0f, 0)) == null,
+                "negative zero radius accepted");
+        c.that(DrawList.validate(f(op(header(1), DrawList.OP_FILL_RECT), -1, -2, -3, -4, 0)) == null,
+                "negative rect coords accepted");
+        final byte[] badSecondOp = f(op(f(op(header(2), DrawList.OP_CLEAR), rgba(1)), DrawList.OP_FILL_CIRCLE), 0, 0, -1.0f, 0);
+        final Log zeroCallbacks = new Log();
+        c.that(DrawList.decode(ByteBuffer.wrap(badSecondOp), 0, badSecondOp.length, zeroCallbacks)
+                == DrawList.Error.NEGATIVE_FLOAT && zeroCallbacks.ops.isEmpty(),
+                "malformed second op invokes zero sink callbacks");
         c.that(DrawList.validate(f(op(header(1), DrawList.OP_STROKE_POLYLINE), 2, 0,
                 Float.intBitsToFloat(DrawList.MAX_POLYLINE_POINTS + 1))) == DrawList.Error.POLYLINE_POINTS_EXCEEDS_LIMIT,
                 "polyline point limit");
