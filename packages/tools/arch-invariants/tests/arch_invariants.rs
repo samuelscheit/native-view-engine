@@ -112,7 +112,7 @@ fn no_duplicate_enum_match_arms_workspace_wide() {
     assert_staged_ratchet(
         Stage::Post1B1D,
         "Pre-existing allowlisted duplicate enum match/assignment tables",
-        22,
+        20,
         &report.allowlisted_violations,
     );
 }
@@ -139,7 +139,7 @@ fn cross_file_enums_converters_and_match_tables() {
     assert_staged_ratchet(
         Stage::Post1B1D,
         "Cross-file duplicate enums, redundant NVE->NVE converters, discriminant matches, core str tables",
-        101,
+        100,
         &violations,
     );
 }
@@ -449,13 +449,13 @@ fn benchmarks_and_counting_alloc_coverage() {
     assert_staged_ratchet(
         Stage::Post1B1D,
         "All non-proc-macro packages/* crates ship colocated benchmarks",
-        32,
+        31,
         &report.all_crate_benches,
     );
     assert_staged_ratchet(
         Stage::Post1B1D,
         "All packages/{core,backends,framework}/* crates ship GlobalAlloc/CountingAlloc guards",
-        8,
+        7,
         &report.alloc_guards,
     );
 }

@@ -15,5 +15,12 @@ builtin-fallback = []
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "i18n_bench"
+harness = false
+
 [lints]
 workspace = true
