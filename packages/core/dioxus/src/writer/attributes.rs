@@ -13,7 +13,7 @@ use nve_tables::tables::{
     AriaTriState, Image, ImageFit, ImageSrc, InputKind, Interaction, Layout, Link, LinkRel,
     LinkTarget, Responsive, TextInput, Typography, Visual,
 };
-use nve_store::{Length, NodeId};
+use nve_store::{Length, NodeId, Transaction};
 
 use crate::table_attr::TableAttr;
 use crate::typed_style::{pack_media_query, TypedStyle, NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR};
@@ -42,11 +42,14 @@ impl StoreMutationTx<'_, '_> {
                 if name == NVE_TYPED_STYLE_ATTR
                     && let Some(ts) = any.as_any().downcast_ref::<TypedStyle>()
                 {
-                    if let Some(prev) = self.typed_styles.get(&node) {
+                    if let Some(prev) = self.typed_styles.get_mut(node) {
                         prev.clear_diff_from(Some(ts), self.tx, node);
+                        ts.apply_to_tx(self.tx, node);
+                        *prev = ts.clone();
+                    } else {
+                        ts.apply_to_tx(self.tx, node);
+                        self.typed_styles.insert(node, ts.clone());
                     }
-                    ts.apply_to_tx(self.tx, node);
-                    self.typed_styles.insert(node, ts.clone());
                     self.replay_standalone_and_inline(node, nve_tables::STYLE_LAYER_ALL);
                     return;
                 }
@@ -62,17 +65,17 @@ impl StoreMutationTx<'_, '_> {
                 }
                 if let Some(table_attr) = any.as_any().downcast_ref::<TableAttr>() {
                     let pool = &mut *self.buffer_pool;
-                    let list = self
-                        .attached_tables
-                        .entry(node)
-                        .or_insert_with(|| pool.table_list());
-                    if let Some((_, prev)) = list.iter_mut().find(|(k, _)| *k == name) {
-                        if !prev.same_writer_kind(table_attr) {
-                            prev.clear_from(self.tx, node);
+                    if let Some(list) =
+                        self.attached_tables.get_or_insert_with(node, || pool.table_list())
+                    {
+                        if let Some((_, prev)) = list.iter_mut().find(|(k, _)| *k == name) {
+                            if !prev.same_writer_kind(table_attr) {
+                                prev.clear_from(self.tx, node);
+                            }
+                            *prev = table_attr.clone();
+                        } else {
+                            list.push((name, table_attr.clone()));
                         }
-                        *prev = table_attr.clone();
-                    } else {
-                        list.push((name, table_attr.clone()));
                     }
                     table_attr.write_to(self.tx, node);
                     return;
@@ -99,121 +102,9 @@ impl StoreMutationTx<'_, '_> {
 
     #[inline]
     fn apply_numeric_attr(&mut self, node: NodeId, name: &str, v: f64) {
-        if self.apply_numeric_attr_untracked(node, name, v) {
+        if apply_numeric_attr_untracked(self.tx, node, name, v) {
             self.finish_standalone_style(node, name, StandaloneStyleRef::Float(v));
         }
-    }
-
-    /// Applies a numeric attribute directly to the store. Returns `true` iff `name` is a style
-    /// attribute that should be preserved across `style`/`nve_style` clears/updates.
-    #[inline]
-    pub(crate) fn apply_numeric_attr_untracked(&mut self, node: NodeId, name: &str, v: f64) -> bool {
-        let max = nve_abi::num::MAX_STYLE_SCALAR;
-        let f = if v.is_finite() { (v as f32).clamp(-max, max) } else { 0.0 };
-        match name {
-            "width" => {
-                self.tx.edit::<Layout>(node).width(Length::points(f.max(0.0)));
-            }
-            "height" => {
-                self.tx.edit::<Layout>(node).height(Length::points(f.max(0.0)));
-            }
-            "min-width" | "minWidth" => {
-                self.tx
-                    .edit::<Layout>(node)
-                    .min_width(Length::points(f.max(0.0)));
-            }
-            "min-height" | "minHeight" => {
-                self.tx
-                    .edit::<Layout>(node)
-                    .min_height(Length::points(f.max(0.0)));
-            }
-            "max-width" | "maxWidth" => {
-                self.tx
-                    .edit::<Layout>(node)
-                    .max_width(Length::points(f.max(0.0)));
-            }
-            "max-height" | "maxHeight" => {
-                self.tx
-                    .edit::<Layout>(node)
-                    .max_height(Length::points(f.max(0.0)));
-            }
-            "flex" | "flex-grow" | "flexGrow" => {
-                self.tx.edit::<Layout>(node).flex_grow(f.max(0.0));
-            }
-            "flex-shrink" | "flexShrink" => {
-                self.tx.edit::<Layout>(node).flex_shrink(f.max(0.0));
-            }
-            "flex-basis" | "flexBasis" => {
-                self.tx.edit::<Layout>(node).flex_basis(Length::points(f.max(0.0)));
-            }
-            "gap" => {
-                let l = Length::points(f.max(0.0));
-                self.tx.edit::<Layout>(node).row_gap(l).column_gap(l);
-            }
-            "row-gap" | "rowGap" => {
-                self.tx.edit::<Layout>(node).row_gap(Length::points(f.max(0.0)));
-            }
-            "column-gap" | "columnGap" => {
-                self.tx
-                    .edit::<Layout>(node)
-                    .column_gap(Length::points(f.max(0.0)));
-            }
-            "padding" => {
-                let l = Length::points(f.max(0.0));
-                self.tx
-                    .edit::<Layout>(node)
-                    .padding_top(l)
-                    .padding_right(l)
-                    .padding_bottom(l)
-                    .padding_left(l);
-            }
-            "padding-horizontal" | "paddingHorizontal" => {
-                let l = Length::points(f.max(0.0));
-                self.tx.edit::<Layout>(node).padding_left(l).padding_right(l);
-            }
-            "padding-vertical" | "paddingVertical" => {
-                let l = Length::points(f.max(0.0));
-                self.tx.edit::<Layout>(node).padding_top(l).padding_bottom(l);
-            }
-            "margin" => {
-                let l = Length::points(f);
-                self.tx
-                    .edit::<Layout>(node)
-                    .margin_top(l)
-                    .margin_right(l)
-                    .margin_bottom(l)
-                    .margin_left(l);
-            }
-            "border-width" | "borderWidth" => {
-                self.tx.edit::<Visual>(node).border_width(f.max(0.0));
-            }
-            "border-radius" | "borderRadius" => {
-                self.tx.edit::<Visual>(node).border_radius(f.max(0.0));
-            }
-            "opacity" => {
-                self.tx.edit::<Visual>(node).opacity(f.clamp(0.0, 1.0));
-            }
-            "font-size" | "fontSize" => {
-                self.tx.edit::<Typography>(node).font_size(f.max(1.0));
-            }
-            "z-index" | "zIndex" => {
-                self.tx.edit::<Visual>(node).z_index(f as i32);
-            }
-            "ariaValueNow" | "aria-valuenow" | "aria_valuenow" => {
-                self.tx.edit::<Accessibility>(node).value_now(Some(f));
-                return false;
-            }
-            "ariaValueMin" | "aria-valuemin" | "aria_valuemin" => {
-                self.tx.edit::<Accessibility>(node).value_min(Some(f));
-                return false;
-            }
-            "ariaValueMax" | "aria-valuemax" | "aria_valuemax" => {
-                self.tx.edit::<Accessibility>(node).value_max(Some(f));
-                return false;
-            }
-            _ => return false,
-        }
-        true
     }
 
     #[inline]
@@ -509,14 +400,13 @@ impl StoreMutationTx<'_, '_> {
             self.rebuild_style_layers_mask(node, layer);
             return;
         }
-        if let Some(list) = self.attached_tables.get_mut(&node)
+        if let Some(list) = self.attached_tables.get_mut(node)
             && let Some(pos) = list.iter().position(|(k, _)| *k == name)
         {
             let (_, prev) = list.swap_remove(pos);
+            let empty = list.is_empty();
             prev.clear_from(self.tx, node);
-            if list.is_empty()
-                && let Some(list) = self.attached_tables.remove(&node)
-            {
+            if empty && let Some(list) = self.attached_tables.remove(node) {
                 self.buffer_pool.recycle_table_list(list);
             }
             return;
@@ -526,7 +416,7 @@ impl StoreMutationTx<'_, '_> {
         }
         match name {
             "style" => {
-                if let Some((inline, prev_mask)) = self.inline_styles.remove(&node) {
+                if let Some((inline, prev_mask)) = self.inline_styles.remove(node) {
                     self.buffer_pool.recycle_inline(inline);
                     if nve_tables::mask_border_color_source(prev_mask).is_some() {
                         self.refresh_current_color_border(node);
@@ -538,7 +428,7 @@ impl StoreMutationTx<'_, '_> {
                 }
             }
             NVE_TYPED_STYLE_ATTR => {
-                if let Some(prev) = self.typed_styles.remove(&node) {
+                if let Some(prev) = self.typed_styles.remove(node) {
                     prev.clear_diff_from(None, self.tx, node);
                 }
                 self.replay_standalone_and_inline(node, nve_tables::STYLE_LAYER_ALL);
@@ -626,6 +516,111 @@ impl StoreMutationTx<'_, '_> {
             _ => {}
         }
     }
+}
+
+/// Applies a numeric attribute directly to the store. Returns `true` iff `name` is a style
+/// attribute that should be preserved across `style`/`nve_style` clears/updates.
+#[inline]
+pub(crate) fn apply_numeric_attr_untracked(
+    tx: &mut Transaction<'_>,
+    node: NodeId,
+    name: &str,
+    v: f64,
+) -> bool {
+    let max = nve_abi::num::MAX_STYLE_SCALAR;
+    let f = if v.is_finite() { (v as f32).clamp(-max, max) } else { 0.0 };
+    match name {
+        "width" => {
+            tx.edit::<Layout>(node).width(Length::points(f.max(0.0)));
+        }
+        "height" => {
+            tx.edit::<Layout>(node).height(Length::points(f.max(0.0)));
+        }
+        "min-width" | "minWidth" => {
+            tx.edit::<Layout>(node).min_width(Length::points(f.max(0.0)));
+        }
+        "min-height" | "minHeight" => {
+            tx.edit::<Layout>(node).min_height(Length::points(f.max(0.0)));
+        }
+        "max-width" | "maxWidth" => {
+            tx.edit::<Layout>(node).max_width(Length::points(f.max(0.0)));
+        }
+        "max-height" | "maxHeight" => {
+            tx.edit::<Layout>(node).max_height(Length::points(f.max(0.0)));
+        }
+        "flex" | "flex-grow" | "flexGrow" => {
+            tx.edit::<Layout>(node).flex_grow(f.max(0.0));
+        }
+        "flex-shrink" | "flexShrink" => {
+            tx.edit::<Layout>(node).flex_shrink(f.max(0.0));
+        }
+        "flex-basis" | "flexBasis" => {
+            tx.edit::<Layout>(node).flex_basis(Length::points(f.max(0.0)));
+        }
+        "gap" => {
+            let l = Length::points(f.max(0.0));
+            tx.edit::<Layout>(node).row_gap(l).column_gap(l);
+        }
+        "row-gap" | "rowGap" => {
+            tx.edit::<Layout>(node).row_gap(Length::points(f.max(0.0)));
+        }
+        "column-gap" | "columnGap" => {
+            tx.edit::<Layout>(node).column_gap(Length::points(f.max(0.0)));
+        }
+        "padding" => {
+            let l = Length::points(f.max(0.0));
+            tx.edit::<Layout>(node)
+                .padding_top(l)
+                .padding_right(l)
+                .padding_bottom(l)
+                .padding_left(l);
+        }
+        "padding-horizontal" | "paddingHorizontal" => {
+            let l = Length::points(f.max(0.0));
+            tx.edit::<Layout>(node).padding_left(l).padding_right(l);
+        }
+        "padding-vertical" | "paddingVertical" => {
+            let l = Length::points(f.max(0.0));
+            tx.edit::<Layout>(node).padding_top(l).padding_bottom(l);
+        }
+        "margin" => {
+            let l = Length::points(f);
+            tx.edit::<Layout>(node)
+                .margin_top(l)
+                .margin_right(l)
+                .margin_bottom(l)
+                .margin_left(l);
+        }
+        "border-width" | "borderWidth" => {
+            tx.edit::<Visual>(node).border_width(f.max(0.0));
+        }
+        "border-radius" | "borderRadius" => {
+            tx.edit::<Visual>(node).border_radius(f.max(0.0));
+        }
+        "opacity" => {
+            tx.edit::<Visual>(node).opacity(f.clamp(0.0, 1.0));
+        }
+        "font-size" | "fontSize" => {
+            tx.edit::<Typography>(node).font_size(f.max(1.0));
+        }
+        "z-index" | "zIndex" => {
+            tx.edit::<Visual>(node).z_index(f as i32);
+        }
+        "ariaValueNow" | "aria-valuenow" | "aria_valuenow" => {
+            tx.edit::<Accessibility>(node).value_now(Some(f));
+            return false;
+        }
+        "ariaValueMin" | "aria-valuemin" | "aria_valuemin" => {
+            tx.edit::<Accessibility>(node).value_min(Some(f));
+            return false;
+        }
+        "ariaValueMax" | "aria-valuemax" | "aria_valuemax" => {
+            tx.edit::<Accessibility>(node).value_max(Some(f));
+            return false;
+        }
+        _ => return false,
+    }
+    true
 }
 
 #[inline]

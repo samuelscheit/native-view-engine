@@ -23,16 +23,17 @@ mod native {
 
     use crate::counting_alloc::count_allocs;
     use crate::writer_list::{
-        ITEMS, Values, changed_attributes, keyed_reorder, mount_list, remove_and_reinstantiate,
-        same_value_attributes, store_changed, values,
+        ITEMS, Values, all_side_tables_attributes, changed_attributes, keyed_reorder, mount_list,
+        remove_and_reinstantiate, same_value_attributes, store_changed, values,
     };
 
     type Lane = fn(&mut NveMutationWriter, &Values, usize);
 
     /// `(name, lane, whether every frame changes the store)`.
-    const LANES: [(&str, Lane, bool); 4] = [
+    const LANES: [(&str, Lane, bool); 5] = [
         ("same_value_attributes_32", same_value_attributes, false),
         ("changed_attributes_32", changed_attributes, true),
+        ("all_side_tables_32", all_side_tables_attributes, true),
         ("keyed_reorder", |w, _, i| keyed_reorder(w, i), true),
         ("remove_and_reinstantiate", remove_and_reinstantiate, true),
     ];

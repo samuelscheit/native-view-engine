@@ -14,8 +14,9 @@ use nve_tables::tables::{Layout, Visual};
 use nve_dioxus::NveMutationWriter;
 use nve_store::{Length, NodeId, Rgba};
 use writer_list::{
-    ITEMS, TABLE_BORDER, changed_attributes, inner, item, keyed_reorder, mount_list,
-    remove_and_reinstantiate, same_value_attributes, store_changed, values,
+    ITEMS, TABLE_BORDER, all_side_tables_attributes, changed_attributes, inner, item,
+    keyed_reorder, mount_list, remove_and_reinstantiate, same_value_attributes, store_changed,
+    values,
 };
 
 /// Asserts item `k`'s stored attribute values for value set `pick` of
@@ -144,6 +145,29 @@ fn writer_steady_state_mutations_allocate_nothing() {
     let last = (end - 1) % 2;
     for k in 0..ITEMS {
         assert_item_attributes(&writer, k, last);
+    }
+
+    let end = assert_zero_steady_state(
+        "all side tables (typed_style + table_attr + standalone + inline)",
+        &mut writer,
+        0,
+        true,
+        |w, i| all_side_tables_attributes(w, &v, i),
+    );
+    let side_pick = (end - 1) % 2;
+    for k in 0..ITEMS {
+        let node = writer.resolve_el(item(k)).expect("item bound");
+        let store = writer.store();
+        assert_eq!(
+            store.try_row::<Layout>(node).map(|l| l.width()),
+            Some(Length::points([120.0, 160.0][side_pick])),
+            "item {k} typed_style width"
+        );
+        assert_eq!(
+            store.try_row::<Visual>(node).map(|vis| vis.border_color()),
+            Some(TABLE_BORDER[side_pick]),
+            "item {k} table_attr border_color"
+        );
     }
 
     let container = writer

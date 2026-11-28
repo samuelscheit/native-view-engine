@@ -111,6 +111,13 @@ impl ElementMap {
             self.node_to_el[node.node_index()] = UNBOUND;
         }
     }
+
+    /// Drops every binding and restores only the root `ElementId(0) ↔ NodeId::ROOT` mapping.
+    pub(crate) fn reset_to_root(&mut self) {
+        self.el_to_node = IndexVec::new();
+        self.node_to_el = IndexVec::new();
+        self.bind(ElementId(0), NodeId::ROOT);
+    }
 }
 
 #[cfg(test)]
