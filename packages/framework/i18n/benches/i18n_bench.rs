@@ -175,6 +175,36 @@ fn bench_native_vs_builtin_formatting(c: &mut Criterion) {
         b.iter(|| black_box(NativeI18nBackend.first_day_of_week(black_box(&de))));
     });
 
+    // Multi-locale warm cache scan across 24 distinct locales (within 32-entry cache capacity).
+    let locales_24: Vec<LocaleId> = [
+        "en-US", "en-GB", "de-DE", "de-CH", "fr-FR", "es-ES", "it-IT", "pt-BR", "ja-JP",
+        "zh-Hans-CN", "ko-KR", "ar-EG", "sv-SE", "th-TH", "he-IL", "uk-UA", "hi-IN", "cs-CZ",
+        "pl-PL", "ru-RU", "nl-NL", "da-DK", "fi-FI", "nb-NO",
+    ]
+    .into_iter()
+    .map(loc)
+    .collect();
+    for locale in &locales_24 {
+        out.clear();
+        NativeI18nBackend.format_number_into(locale, 123_456.78, opts, &mut out);
+    }
+    g.bench_function("number_native_24_locale_cache_scan", |b| {
+        b.iter(|| {
+            let mut total_len = 0usize;
+            for locale in &locales_24 {
+                out.clear();
+                NativeI18nBackend.format_number_into(
+                    black_box(locale),
+                    black_box(123_456.78),
+                    opts,
+                    &mut out,
+                );
+                total_len += out.len();
+            }
+            black_box(total_len)
+        });
+    });
+
     g.finish();
 }
 

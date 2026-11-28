@@ -2,6 +2,7 @@
 //! RAII [`CfRef`] reference-counting guards (`CFRetain` / `CFRelease` on `Drop`).
 
 use std::ffi::{CStr, c_char, c_void};
+use std::ptr::NonNull;
 
 pub(super) type CfTypeRef = *const c_void;
 pub(super) type CfAllocatorRef = *const c_void;
@@ -9,6 +10,7 @@ pub(super) type CfStringRef = *const c_void;
 pub(super) type CfLocaleRef = *const c_void;
 pub(super) type CfNumberRef = *const c_void;
 pub(super) type CfBooleanRef = *const c_void;
+pub(super) type CfDateRef = *const c_void;
 pub(super) type CfNumberFormatterRef = *const c_void;
 pub(super) type CfDateFormatterRef = *const c_void;
 pub(super) type CfCalendarRef = *const c_void;
@@ -77,11 +79,13 @@ unsafe extern "C" {
 
     // `CFDateFormatter` property keys (`<CoreFoundation/CFDateFormatter.h>`).
     pub(super) static kCFDateFormatterTimeZone: CfStringRef;
+    pub(super) static kCFDateFormatterGregorianStartDate: CfStringRef;
 
     pub(super) fn CFRetain(cf: CfTypeRef) -> CfTypeRef;
     pub(super) fn CFRelease(cf: CfTypeRef);
 
     pub(super) fn CFBooleanGetValue(boolean: CfBooleanRef) -> CfBoolean;
+    pub(super) fn CFDateCreate(allocator: CfAllocatorRef, at: CfAbsoluteTime) -> CfDateRef;
 
     pub(super) fn CFNumberCreate(
         allocator: CfAllocatorRef,
@@ -168,32 +172,44 @@ unsafe extern "C" {
 }
 
 /// RAII owned CoreFoundation reference guard (`CFRetain` on clone/borrow-upgrade,
-/// `CFRelease` on `Drop`). Guarantees zero leaks across early returns and panics.
-pub(super) struct CfRef(CfTypeRef);
+/// `CFRelease` on `Drop`). Guarantees zero leaks across early returns and panics,
+/// and uses [`NonNull`] for null-pointer niche optimization in `Option<CfRef>`.
+pub(super) struct CfRef(NonNull<c_void>);
+
+const _: () = assert!(std::mem::size_of::<Option<CfRef>>() == std::mem::size_of::<CfRef>());
 
 impl CfRef {
     /// Wraps an already-owned (`+1` retain count, Create/Copy rule) CF pointer.
+    ///
+    /// # Safety
+    /// If `ptr` is non-null, it must be a valid CoreFoundation object pointer carrying
+    /// an owned `+1` retain count transferred to this [`CfRef`] (released on `Drop`).
     #[inline]
-    pub(super) fn from_create(ptr: CfTypeRef) -> Option<Self> {
-        (!ptr.is_null()).then_some(Self(ptr))
+    pub(super) unsafe fn from_create(ptr: CfTypeRef) -> Option<Self> {
+        NonNull::new(ptr.cast_mut()).map(Self)
     }
 
     /// Retains a borrowed (Get rule) CF pointer into an owned RAII [`CfRef`].
+    ///
+    /// # Safety
+    /// If `ptr` is non-null, it must be a valid borrowed CoreFoundation object pointer
+    /// live for the duration of this call.
     #[inline]
-    pub(super) fn retain_borrowed(ptr: CfTypeRef) -> Option<Self> {
+    pub(super) unsafe fn retain_borrowed(ptr: CfTypeRef) -> Option<Self> {
         if ptr.is_null() {
             return None;
         }
-        // SAFETY: Caller passes a valid non-null borrowed CoreFoundation object; `CFRetain`
-        // increments its reference count by 1 so `Drop` releases our balanced retain.
+        // SAFETY: Caller guarantees `ptr` is a valid non-null borrowed CoreFoundation object;
+        // `CFRetain` increments its reference count by 1 so `Drop` releases our balanced retain.
         let retained = unsafe { CFRetain(ptr) };
-        Self::from_create(retained)
+        // SAFETY: `CFRetain` returns an owned `+1` retain of `ptr`.
+        unsafe { Self::from_create(retained) }
     }
 
     /// Returns the raw CoreFoundation object pointer for FFI calls.
     #[inline]
     pub(super) fn as_ptr(&self) -> CfTypeRef {
-        self.0
+        self.0.as_ptr().cast_const()
     }
 }
 
@@ -201,18 +217,19 @@ impl Clone for CfRef {
     #[inline]
     fn clone(&self) -> Self {
         // SAFETY: `self.0` is always a valid non-null owned CFTypeRef while `self` is alive.
-        let retained = unsafe { CFRetain(self.0) };
-        Self(retained)
+        let retained = unsafe { CFRetain(self.as_ptr()) };
+        Self(
+            NonNull::new(retained.cast_mut())
+                .expect("CFRetain returned null for live CFTypeRef"),
+        )
     }
 }
 
 impl Drop for CfRef {
     #[inline]
     fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: `self.0` holds a balanced `+1` CoreFoundation retain owned exclusively by `self`.
-            unsafe { CFRelease(self.0) };
-        }
+        // SAFETY: `self.0` holds a balanced `+1` CoreFoundation retain owned exclusively by `self`.
+        unsafe { CFRelease(self.as_ptr()) };
     }
 }
 
@@ -220,39 +237,44 @@ impl Drop for CfRef {
 #[inline]
 pub(super) fn cf_string_from_bytes(bytes: &[u8]) -> Option<CfRef> {
     let len = CfIndex::try_from(bytes.len()).ok()?;
-    // SAFETY: `bytes.as_ptr()` is valid UTF-8 for `len` bytes; CoreFoundation copies the buffer.
-    let ptr = unsafe {
-        CFStringCreateWithBytes(
+    // SAFETY: `bytes.as_ptr()` is valid UTF-8 for `len` bytes; CoreFoundation copies the buffer
+    // and returns an owned `+1` `CFStringRef`.
+    unsafe {
+        CfRef::from_create(CFStringCreateWithBytes(
             kCFAllocatorDefault,
             bytes.as_ptr(),
             len,
             CF_STRING_ENCODING_UTF8,
             0,
-        )
-    };
-    CfRef::from_create(ptr)
+        ))
+    }
 }
 
 /// Creates an owned `CFNumberRef` wrapping an `i32`.
 #[inline]
 pub(super) fn cf_number_i32(val: i32) -> Option<CfRef> {
-    // SAFETY: `&val` points to a valid `i32` matching `kCFNumberSInt32Type`.
-    let ptr = unsafe {
-        CFNumberCreate(
+    // SAFETY: `&val` points to a valid `i32` matching `kCFNumberSInt32Type`;
+    // `CFNumberCreate` returns an owned `+1` `CFNumberRef`.
+    unsafe {
+        CfRef::from_create(CFNumberCreate(
             kCFAllocatorDefault,
             CF_NUMBER_SINT32_TYPE,
             (&raw const val).cast::<c_void>(),
-        )
-    };
-    CfRef::from_create(ptr)
+        ))
+    }
+}
+
+/// Creates an owned `CFDateRef` for `at` seconds since Apple reference epoch (`2001-01-01`).
+#[inline]
+pub(super) fn cf_date_from_absolute_time(at: CfAbsoluteTime) -> Option<CfRef> {
+    // SAFETY: `CFDateCreate` takes any `CFAbsoluteTime` and returns an owned `+1` `CFDateRef`.
+    unsafe { CfRef::from_create(CFDateCreate(kCFAllocatorDefault, at)) }
 }
 
 /// Appends the UTF-8 contents of `cf_str` directly into `out` without intermediate
 /// Rust heap allocations for strings up to 256 UTF-8 bytes.
-pub(super) fn append_cf_string(cf_str: CfStringRef, out: &mut String) -> bool {
-    if cf_str.is_null() {
-        return false;
-    }
+pub(super) fn append_cf_string(cf_str: &CfRef, out: &mut String) -> bool {
+    let cf_str = cf_str.as_ptr();
 
     // Fast path: direct zero-copy UTF-8 pointer when CoreFoundation stores ASCII/UTF-8 inline.
     // SAFETY: `cf_str` is a valid non-null `CFStringRef`; returned C string pointer (if non-null)

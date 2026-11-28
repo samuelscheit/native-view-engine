@@ -18,10 +18,12 @@ pub(crate) struct InlineSubtag<const N: usize> {
 impl<const N: usize> InlineSubtag<N> {
     /// Constructs an inline subtag from a compile-time ASCII byte slice.
     pub(crate) const fn from_ascii_static(bytes: &[u8]) -> Self {
+        const { assert!(N <= u8::MAX as usize) };
         assert!(bytes.len() <= N, "static subtag exceeds InlineSubtag capacity");
         let mut buf = [0u8; N];
         let mut i = 0;
         while i < bytes.len() {
+            assert!(bytes[i].is_ascii(), "static subtag must be ASCII");
             buf[i] = bytes[i];
             i += 1;
         }
@@ -35,6 +37,7 @@ impl<const N: usize> InlineSubtag<N> {
     /// exceeds `N` bytes or contains non-ASCII bytes.
     #[inline]
     pub(crate) fn from_ascii_lower(s: &str) -> Option<Self> {
+        const { assert!(N <= u8::MAX as usize) };
         let bytes = s.as_bytes();
         if bytes.len() > N {
             return None;
@@ -55,6 +58,7 @@ impl<const N: usize> InlineSubtag<N> {
     /// Copies `s` uppercased into an inline ASCII buffer.
     #[inline]
     pub(crate) fn from_ascii_upper(s: &str) -> Option<Self> {
+        const { assert!(N <= u8::MAX as usize) };
         let bytes = s.as_bytes();
         if bytes.len() > N {
             return None;
@@ -75,6 +79,7 @@ impl<const N: usize> InlineSubtag<N> {
     /// Copies `s` in TitleCase (`First` uppercase, remainder lowercase).
     #[inline]
     pub(crate) fn from_ascii_title(s: &str) -> Option<Self> {
+        const { assert!(N <= u8::MAX as usize) };
         let bytes = s.as_bytes();
         if bytes.len() > N {
             return None;
@@ -99,6 +104,7 @@ impl<const N: usize> InlineSubtag<N> {
     /// Appends `-<seg>` lowercased onto an existing subtag (used for compound
     /// BCP-47 calendar tags like `islamic-umalqura`).
     pub(crate) fn push_hyphen_lower(&mut self, seg: &str) -> bool {
+        const { assert!(N <= u8::MAX as usize) };
         let cur = usize::from(self.len);
         let bytes = seg.as_bytes();
         if cur + 1 + bytes.len() > N {

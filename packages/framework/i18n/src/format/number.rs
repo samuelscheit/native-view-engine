@@ -163,6 +163,41 @@ pub(crate) fn builtin_format_integer(locale: &LocaleId, value: i64) -> String {
 }
 
 #[cfg(feature = "builtin-fallback")]
+#[inline]
+fn push_percent_suffix(locale: &LocaleId, out: &mut String) {
+    if matches!(locale.language(), "de" | "fr" | "sv" | "fi" | "cs" | "sk") {
+        out.push('\u{00A0}');
+    }
+    out.push('%');
+}
+
+#[cfg(feature = "builtin-fallback")]
+#[inline]
+fn normalize_fraction_bounds(opts: NumberFormatOptions) -> (usize, Option<usize>) {
+    let min_f = opts.min_fraction_digits.unwrap_or(0).min(20);
+    let eff_max = opts
+        .max_fraction_digits
+        .map(|max_f| max_f.max(min_f).min(20) as usize);
+    (min_f as usize, eff_max)
+}
+
+#[cfg(feature = "builtin-fallback")]
+fn finalize_fraction(frac: Option<String>, min_f: usize) -> Option<String> {
+    match frac {
+        Some(mut f) => {
+            while f.len() > min_f && f.ends_with('0') {
+                f.pop();
+            }
+            while f.len() < min_f {
+                f.push('0');
+            }
+            if f.is_empty() { None } else { Some(f) }
+        }
+        None => (min_f > 0).then(|| "0".repeat(min_f)),
+    }
+}
+
+#[cfg(feature = "builtin-fallback")]
 pub(crate) fn builtin_format_number_into(
     locale: &LocaleId,
     value: f64,
@@ -179,6 +214,9 @@ pub(crate) fn builtin_format_number_into(
         } else {
             out.push('∞');
         }
+        if opts.style == NumberStyle::Percent {
+            push_percent_suffix(locale, out);
+        }
         return;
     }
 
@@ -193,16 +231,24 @@ pub(crate) fn builtin_format_number_into(
         }
         NumberStyle::Percent => {
             let scaled = normalized * 100.0;
+            if scaled.is_infinite() {
+                if scaled.is_sign_negative() {
+                    out.push_str("-∞");
+                } else {
+                    out.push('∞');
+                }
+                push_percent_suffix(locale, out);
+                return;
+            }
+            let min_f = opts.min_fraction_digits.unwrap_or(0);
+            let eff_max = opts.max_fraction_digits.unwrap_or(min_f).max(min_f);
             let eff_opts = NumberFormatOptions {
                 style: NumberStyle::Decimal,
-                max_fraction_digits: opts.max_fraction_digits.or(Some(0)),
+                max_fraction_digits: Some(eff_max),
                 ..opts
             };
             format_decimal_into(scaled, syms, digits_map, eff_opts, out);
-            if matches!(locale.language(), "de" | "fr" | "sv" | "fi" | "cs" | "sk") {
-                out.push('\u{00A0}');
-            }
-            out.push('%');
+            push_percent_suffix(locale, out);
             return;
         }
         NumberStyle::Decimal => {}
@@ -264,30 +310,63 @@ fn format_scientific_into(
 ) {
     let negative = normalized.is_sign_negative();
     let abs = normalized.abs();
-    let (mantissa, exp) = if abs == 0.0 {
-        (0.0, 0i32)
-    } else {
-        let e = abs.log10().floor() as i32;
-        (abs / 10_f64.powi(e), e)
+    let (min_f, eff_max) = normalize_fraction_bounds(opts);
+
+    // Rust's shortest round-trip `{abs:e}` formatting handles subnormals down to `5e-324`
+    // and huge floats up to `f64::MAX` without `log10` or `10_f64.powi(exp)` underflow.
+    let sci = format!("{abs:e}");
+    let (mant_str, exp_str) = sci.split_once('e').unwrap_or((&sci, "0"));
+    let mut exp: i32 = exp_str.parse().unwrap_or(0);
+    let (int_raw, frac_raw) = mant_str.split_once('.').unwrap_or((mant_str, ""));
+
+    let (mut int_digits, mut frac_opt) = match eff_max {
+        Some(prec) => round_decimal_str(int_raw, frac_raw, negative, prec, opts.rounding_mode),
+        None => (
+            int_raw.to_owned(),
+            (!frac_raw.is_empty()).then(|| frac_raw.to_owned()),
+        ),
     };
-    let mant_opts = NumberFormatOptions {
-        use_grouping: false,
-        style: NumberStyle::Decimal,
-        ..opts
-    };
-    let signed_mant = if negative && abs != 0.0 {
-        -mantissa
-    } else {
-        mantissa
-    };
-    format_decimal_into(signed_mant, syms, digits_map, mant_opts, out);
+
+    // Decade carry: rounding `9.999` at 2 fraction digits produces `10.00`; re-normalize
+    // to a single leading digit (`1.00`) and increment the exponent (`E1`).
+    if int_digits.len() > 1 {
+        let shift = int_digits.len() - 1;
+        exp = exp.saturating_add(shift as i32);
+        let mut shifted_frac = String::with_capacity(eff_max.unwrap_or(shift));
+        shifted_frac.push_str(&int_digits[1..]);
+        if let Some(f) = &frac_opt {
+            shifted_frac.push_str(f);
+        }
+        if let Some(prec) = eff_max {
+            shifted_frac.truncate(prec);
+        }
+        int_digits.truncate(1);
+        frac_opt = (!shifted_frac.is_empty()).then_some(shifted_frac);
+    }
+
+    let frac_final = finalize_fraction(frac_opt, min_f);
+    let is_zero = int_digits.bytes().all(|b| b == b'0')
+        && frac_final
+            .as_deref()
+            .is_none_or(|f| f.bytes().all(|b| b == b'0'));
+
+    if negative && !is_zero {
+        out.push('-');
+    }
+    push_digits_mapped(&int_digits, digits_map, out);
+    if let Some(frac) = frac_final
+        && !frac.is_empty()
+    {
+        out.push_str(syms.decimal_sep);
+        push_digits_mapped(&frac, digits_map, out);
+    }
     out.push('E');
     if exp < 0 {
         out.push('-');
     }
     let mut buf = [0u8; 20];
-    let exp_str = write_u64_ascii(exp.unsigned_abs() as u64, &mut buf);
-    push_digits_mapped(exp_str, digits_map, out);
+    let exp_digits = write_u64_ascii(exp.unsigned_abs() as u64, &mut buf);
+    push_digits_mapped(exp_digits, digits_map, out);
 }
 
 #[cfg(feature = "builtin-fallback")]
@@ -296,63 +375,44 @@ fn format_abs_decimal_parts(
     negative: bool,
     opts: NumberFormatOptions,
 ) -> (String, Option<String>) {
-    let raw = match opts.max_fraction_digits {
-        Some(max_f) => {
-            let p = (max_f as usize).min(18);
-            round_decimal_digits(abs, negative, p, opts.rounding_mode)
+    debug_assert!(abs.is_finite(), "non-finite f64 must be handled before decimal formatting");
+    let (min_f, eff_max) = normalize_fraction_bounds(opts);
+    let (int_part, frac_opt) = match eff_max {
+        Some(prec) => {
+            let work_prec = prec + 4;
+            let expanded = format!("{abs:.work_prec$}");
+            let (int_str, frac_str) = expanded.split_once('.').unwrap_or((&expanded, ""));
+            round_decimal_str(int_str, frac_str, negative, prec, opts.rounding_mode)
         }
         None => {
             let s = format!("{abs}");
-            if s.contains(['e', 'E']) {
-                format!("{abs:.12}")
-            } else {
-                s
+            match s.split_once('.') {
+                Some((i, f)) => (i.to_owned(), Some(f.to_owned())),
+                None => (s, None),
             }
         }
     };
 
-    let (int_part, frac_opt) = match raw.split_once('.') {
-        Some((i, f)) => (i.to_owned(), Some(f.to_owned())),
-        None => (raw, None),
-    };
-
-    let min_f = opts.min_fraction_digits.unwrap_or(0) as usize;
-    let frac_final = match frac_opt {
-        Some(mut f) => {
-            if opts.max_fraction_digits.is_none() || f.len() > min_f {
-                while f.len() > min_f && f.ends_with('0') {
-                    f.pop();
-                }
-            }
-            while f.len() < min_f {
-                f.push('0');
-            }
-            if f.is_empty() { None } else { Some(f) }
-        }
-        None => {
-            if min_f > 0 {
-                Some("0".repeat(min_f))
-            } else {
-                None
-            }
-        }
-    };
-
-    (int_part, frac_final)
+    (int_part, finalize_fraction(frac_opt, min_f))
 }
 
-/// Formats `abs` to `prec` fractional digits using `mode` with exact decimal
-/// carry propagation (e.g. `999.995` -> `1000.00`).
+/// Rounds a non-negative ASCII decimal (`int_str`, `frac_str`) to `prec` fractional
+/// digits using `mode` with exact decimal carry propagation (e.g. `999.995` -> `1000.00`).
 #[cfg(feature = "builtin-fallback")]
-fn round_decimal_digits(abs: f64, negative: bool, prec: usize, mode: RoundingMode) -> String {
-    let work_prec = (prec + 4).min(20);
-    let expanded = format!("{abs:.work_prec$}");
-    let (int_str, frac_str) = expanded.split_once('.').unwrap_or((&expanded, ""));
-
+fn round_decimal_str(
+    int_str: &str,
+    frac_str: &str,
+    negative: bool,
+    prec: usize,
+    mode: RoundingMode,
+) -> (String, Option<String>) {
     let mut digits: Vec<u8> = Vec::with_capacity(int_str.len() + prec + 1);
     digits.extend(int_str.bytes().map(|b| b - b'0'));
     let keep_frac = frac_str.len().min(prec);
     digits.extend(frac_str.as_bytes()[..keep_frac].iter().map(|b| b - b'0'));
+    if keep_frac < prec {
+        digits.resize(digits.len() + (prec - keep_frac), 0);
+    }
 
     let rem = frac_str.as_bytes().get(prec..).unwrap_or(&[]);
     let first_rem = rem.first().copied().unwrap_or(b'0');
@@ -389,17 +449,20 @@ fn round_decimal_digits(abs: f64, negative: bool, prec: usize, mode: RoundingMod
     }
 
     let split_at = digits.len().saturating_sub(prec);
-    let mut out = String::with_capacity(digits.len() + 2);
+    let mut int_out = String::with_capacity(split_at);
     for &d in &digits[..split_at] {
-        out.push((b'0' + d) as char);
+        int_out.push((b'0' + d) as char);
     }
-    if prec > 0 {
-        out.push('.');
+    let frac_out = if prec > 0 {
+        let mut f = String::with_capacity(prec);
         for &d in &digits[split_at..] {
-            out.push((b'0' + d) as char);
+            f.push((b'0' + d) as char);
         }
-    }
-    out
+        Some(f)
+    } else {
+        None
+    };
+    (int_out, frac_out)
 }
 
 #[cfg(feature = "builtin-fallback")]

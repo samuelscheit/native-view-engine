@@ -526,6 +526,9 @@ impl I18nBackend for NativeI18nBackend {
     }
 
     fn first_day_of_week(&self, locale: &LocaleId) -> Weekday {
+        if let Some(fw) = locale.first_day_of_week_override() {
+            return fw;
+        }
         #[cfg(target_arch = "wasm32")]
         if let Some(day) = wasm_intl::first_day_of_week(locale) {
             return day;
