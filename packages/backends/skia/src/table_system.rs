@@ -58,7 +58,7 @@ impl<'a> NativeSkiaSurface<'a> {
     /// Lazily establishes the clipped, translated, isolated offscreen layer on `canvas` and
     /// returns it ready for logical-coordinate `(0..width, 0..height)` drawing.
     #[inline]
-    pub fn begin(&mut self) -> &'a skia_safe::Canvas {
+    pub fn begin(&mut self) -> &skia_safe::Canvas {
         if self.saved.is_none() {
             let saved = self.canvas.save();
             self.saved = Some(saved);

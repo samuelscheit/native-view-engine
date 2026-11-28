@@ -536,3 +536,91 @@ fn connected_sync_subtree_top_down_chain_is_linear_and_resyncs_detached_attach()
     renderer.drain_connected_sync(&store, &live, |sys, nid, _| synced.push((sys.slot(), nid)));
     assert_eq!(synced, vec![(Disclosure::slot(), detached_dlg)]);
 }
+
+struct DataAttrSys {
+    slot: TableSlot,
+    write_open: bool,
+}
+impl WebTableSystem for DataAttrSys {
+    fn slot(&self) -> TableSlot {
+        self.slot
+    }
+    fn commit_node(&self, ctx: &mut WebSystemCommitCtx<'_>, _s: &NodeStore, node: NodeId, _: u32) {
+        ctx.set_attr(node, "data-shared", "same");
+        if self.write_open {
+            ctx.set_attr(node, "open", "");
+        }
+    }
+}
+
+/// `set_attr` short-circuits unchanged `data-*` on non-retagged elements when this slot owns the
+/// newest `seq`, writes on retag, NEVER skips `open`, and preserves multi-slot `seq` ordering.
+#[test]
+fn set_attr_short_circuits_only_newest_data_attrs_and_never_skips_open_or_retag() {
+    let mut store = NodeStore::new();
+    let mut renderer = WebStoreRenderer::new()
+        .with_table_system(DataAttrSys {
+            slot: Disclosure::slot(),
+            write_open: true,
+        })
+        .with_table_system(DataAttrSys {
+            slot: OpenHint::slot(),
+            write_open: false,
+        });
+
+    let mut n = NodeId::ROOT;
+    let c1 = frame(&mut store, |tx| {
+        n = tx.create();
+        tx.set_children(NodeId::ROOT, &[n]);
+        tx.edit::<Disclosure>(n).open(true);
+    });
+    renderer.commit(&store, &c1).expect("commit 1");
+    let seq_data_1 = renderer.latest_attr_seq_for_test(n, "data-shared");
+    let seq_open_1 = renderer.latest_attr_seq_for_test(n, "open");
+    assert!(seq_data_1 > 0 && seq_open_1 > 0);
+
+    // 1. Steady-state unchanged: `data-shared` short-circuits, `open` MUST NOT short-circuit.
+    let c2 = frame(&mut store, |tx| {
+        tx.edit::<Disclosure>(n).imperative(true);
+    });
+    renderer.commit(&store, &c2).expect("commit 2");
+    assert_eq!(renderer.latest_attr_seq_for_test(n, "data-shared"), seq_data_1);
+    let seq_open_2 = renderer.latest_attr_seq_for_test(n, "open");
+    assert!(seq_open_2 > seq_open_1, "`open` must never short-circuit");
+
+    // 2. Retag with unchanged `data-shared`: MUST write directly and not double-replay.
+    let c3 = frame(&mut store, |tx| {
+        tx.edit::<Disclosure>(n).imperative(false);
+    });
+    let mut live: HashMap<NodeId, MockEl> = HashMap::default();
+    live.insert(n, MockEl::default());
+    renderer.commit_plugins_active_with(
+        &store,
+        &c3,
+        #[cfg(target_arch = "wasm32")]
+        None,
+        Some(&live),
+        &[n],
+        |_, _, _| {},
+    );
+    let seq_retag = renderer.latest_attr_seq_for_test(n, "data-shared");
+    assert!(seq_retag > seq_data_1, "retag must write unchanged data-*");
+    assert!(live[&n].attrs.borrow().is_empty(), "no duplicate Step-2a replay");
+
+    // 3. Multi-slot `seq`: Slot B writes newer `data-shared`, then Slot A rewrites `"same"` ->
+    //    Slot A MUST advance `seq` above Slot B!
+    let c4 = frame(&mut store, |tx| {
+        tx.edit::<OpenHint>(n).value(1);
+    });
+    renderer.commit(&store, &c4).expect("slot B commit");
+    let seq_b = renderer.latest_attr_seq_for_test(n, "data-shared");
+    assert!(seq_b > seq_retag);
+    let c5 = frame(&mut store, |tx| {
+        tx.edit::<Disclosure>(n).open(false);
+    });
+    renderer.commit(&store, &c5).expect("slot A over slot B");
+    assert!(
+        renderer.latest_attr_seq_for_test(n, "data-shared") > seq_b,
+        "slot A must advance OwnedAttr::seq above slot B's newer write"
+    );
+}

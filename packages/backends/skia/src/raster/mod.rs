@@ -321,7 +321,8 @@ fn rasterize_display_list_inner(
     text_engine: Option<&CosmicTextEngine>,
     plugins: Option<(&NodeStore, &SkiaTableRegistry, &mut EventBatchBuf)>,
 ) {
-    let mut ctx = SoftwareRasterCtx::new(buffer, scale_factor, clear_color, text_engine, plugins);
+    let mut ctx =
+        SoftwareRasterCtx::new(buffer, scale_factor, clear_color, text_engine, plugins, None);
 
     for op in &display_list.ops {
         match op {

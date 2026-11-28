@@ -349,3 +349,116 @@ fn native_skia_surface_drop_guard_unwinds_outer_save_and_layer_on_panic() {
         "NativeSkiaSurface + GuardedPainter Drop guards must unwind all nested clips, save_layer, and outer save"
     );
 }
+
+#[derive(nve_store::NveTable)]
+#[nve_table(name = "test.canvas.overlay_marker", storage = "sparse")]
+#[allow(dead_code)]
+struct OverlayMarker {
+    #[effect(paint)]
+    stamp: u32,
+}
+
+struct CachedOnlyOverlayPlugin;
+impl nve_backend_skia::SkiaTableSystem for CachedOnlyOverlayPlugin {
+    fn slot(&self) -> nve_store::TableSlot {
+        <OverlayMarker as nve_store::NveTable>::slot()
+    }
+
+    fn paint_node(
+        &self,
+        ctx: &mut nve_backend_skia::SkiaSystemPaintCtx<'_>,
+        store: &NodeStore,
+        node: NodeId,
+    ) {
+        if store.try_row::<OverlayMarker>(node).is_some_and(|r| r.stamp() > 0) {
+            let x0 = ctx.rect.x as i32 + 20;
+            let y0 = ctx.rect.y as i32 + 20;
+            ctx.buffer
+                .fill_rect_rgba(x0, y0, x0 + 16, y0 + 16, ColorRgba::rgb(255, 220, 0));
+        }
+    }
+}
+
+#[test]
+fn multi_plugin_mixed_native_and_cached_falls_back_cleanly_without_double_painting() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    let reg = DirectCanvasRegistry::new();
+    let direct_calls = Arc::new(AtomicU32::new(0));
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let node = {
+        let mut tx = store.tx();
+        let n = tx.create();
+        tx.set_children(NodeId::ROOT, &[n]);
+        tx.edit::<Layout>(n)
+            .width(Length::points(48.0))
+            .height(Length::points(48.0));
+        let dc = Arc::clone(&direct_calls);
+        reg.bind(&mut tx, n, move |p, size| {
+            dc.fetch_add(1, Ordering::Relaxed);
+            p.clear(ColorRgba::rgb(20, 120, 220));
+            p.fill_rect(0.0, 0.0, size.width, size.height, ColorRgba::rgb(20, 120, 220));
+        });
+        tx.edit::<OverlayMarker>(n).stamp(1);
+        tx.commit_into(&mut changes);
+        n
+    };
+
+    let mut backend = SkiaBackend::new();
+    backend.register_table_system(CanvasSkiaSystem::with_direct(reg));
+    backend.register_table_system(CachedOnlyOverlayPlugin);
+    backend.set_viewport(
+        SurfaceId::ROOT,
+        Viewport {
+            width: 64.0,
+            height: 64.0,
+            scale_factor: 1.0,
+        },
+    );
+    backend.commit(&store, &changes).expect("commit");
+
+    let mut surface = CpuSkiaSurface::new(64, 64).expect("CpuSkiaSurface");
+    let (scene, table_reg, ev) = backend.scene_paint_parts_mut();
+    // Direct check: `try_paint_skia_canvas` MUST decline because `CachedOnlyOverlayPlugin` does
+    // not prefer native Skia — and MUST NOT invoke `direct_calls`!
+    let native_handled = table_reg.try_paint_skia_canvas(
+        &store,
+        node,
+        surface.canvas(),
+        LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: 48.0,
+            height: 48.0,
+        },
+        1.0,
+    );
+    assert!(!native_handled);
+    assert_eq!(
+        direct_calls.load(Ordering::Relaxed),
+        0,
+        "declining mixed native/cached node must never invoke the native plugin closure"
+    );
+
+    // Full render falls back to `get_or_render_plugin`: paints BOTH plugins exactly once via
+    // `PixelBuffer` and uploads 1 cached texture!
+    surface
+        .render_scene_cached_with_plugins(
+            scene,
+            1.0,
+            ColorRgba::BLACK,
+            Some((&store, table_reg, ev)),
+        )
+        .expect("render");
+    assert_eq!(surface.cache_stats().plugin_rasterizations, 1);
+    assert_eq!(direct_calls.load(Ordering::Relaxed), 1);
+
+    let mut readback = PixelBuffer::new(64, 64);
+    surface
+        .copy_to_pixel_buffer(&mut readback)
+        .expect("readback");
+    assert_eq!(readback.get_rgb(8, 8), Some((20, 120, 220)));
+    assert_eq!(readback.get_rgb(28, 28), Some((255, 220, 0)));
+}

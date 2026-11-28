@@ -230,7 +230,15 @@ impl CompositorScene {
         clear_color: ColorRgba,
         text_engine: &CosmicTextEngine,
     ) {
-        rasterize_scene_inner(self, buffer, scale_factor, clear_color, Some(text_engine), None);
+        rasterize_scene_inner(
+            self,
+            buffer,
+            scale_factor,
+            clear_color,
+            Some(text_engine),
+            None,
+            None,
+        );
     }
 
     /// Software-rasterizes this scene including registered [`SkiaTableRegistry`] plugins.
@@ -252,6 +260,32 @@ impl CompositorScene {
             clear_color,
             Some(text_engine),
             Some((store, registry, events)),
+            None,
+        );
+    }
+
+    /// Software-rasterizes this scene with registered plugins reusing a caller-owned RGBA scratch
+    /// buffer (zero allocations on steady-state frames).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn rasterize_with_plugins_and_scratch(
+        &self,
+        buffer: &mut PixelBuffer,
+        scale_factor: f32,
+        clear_color: ColorRgba,
+        text_engine: &CosmicTextEngine,
+        store: &NodeStore,
+        registry: &SkiaTableRegistry,
+        events: &mut EventBatchBuf,
+        plugin_scratch: &mut PixelBuffer,
+    ) {
+        rasterize_scene_inner(
+            self,
+            buffer,
+            scale_factor,
+            clear_color,
+            Some(text_engine),
+            Some((store, registry, events)),
+            Some(plugin_scratch),
         );
     }
 
@@ -262,7 +296,7 @@ impl CompositorScene {
         scale_factor: f32,
         clear_color: ColorRgba,
     ) {
-        rasterize_scene_inner(self, buffer, scale_factor, clear_color, None, None);
+        rasterize_scene_inner(self, buffer, scale_factor, clear_color, None, None, None);
     }
 
     /// Classifies the minimal sync tier needed for `changes`.

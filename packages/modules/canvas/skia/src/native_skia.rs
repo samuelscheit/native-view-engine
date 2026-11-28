@@ -64,7 +64,7 @@ impl CanvasSink for SkiaNativeSink<'_> {
         // and `a == 255` (matching `WebCanvas2dSink` and isolated RGBA `SkiaPixelSink`).
         let bounds = Rect::from_xywh(0.0, 0.0, self.width, self.height);
         self.paint.set_style(PaintStyle::Fill);
-        self.paint.set_anti_alias(false);
+        self.paint.set_anti_alias(true);
         self.paint.set_blend_mode(if color.a == 0 {
             BlendMode::Clear
         } else {
@@ -184,7 +184,7 @@ impl CanvasSink for SkiaNativeSink<'_> {
         self.canvas.clip_rect(
             Rect::from_xywh(x, y, w, h),
             Some(ClipOp::Intersect),
-            Some(false),
+            Some(true),
         );
     }
 

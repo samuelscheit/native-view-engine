@@ -1,5 +1,6 @@
-//! Interactive `"canvas-draw1"` demo compiling flat `DrawList` (`nve.res.draw_list`) streams
-//! rendered by `<skia_canvas>` across Skia GPU, HTML5 Canvas2D, CoreGraphics, and Flutter/Compose.
+//! Interactive `"canvas-draw1"` demo driving one shared `CanvasPainter` via `write_canvas` (direct
+//! in-process or flat `DrawList` `nve.res.draw_list` streams) across Skia, HTML5 Canvas2D,
+//! CoreGraphics, and Flutter/Compose.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -19,7 +20,7 @@ static DEMO_RECORDED_GEN: AtomicU32 = AtomicU32::new(1);
 pub const CANVAS_DRAW1_SOURCE: &str = r#"use nve_canvas::{write_canvas, CanvasPaintSize, CanvasPainter, DirectCanvasRegistry};
 use nve_dioxus::prelude::*;
 use nve_dioxus::table_attr_fn;
-use nve_ui::{use_theme, with_alpha};
+use nve_ui::{Theme, use_theme, with_alpha};
 
 fn paint_scene(p: &mut (impl CanvasPainter + ?Sized), size: CanvasPaintSize, theme: &Theme) {
     p.clear(theme.surface.sunken);

@@ -233,6 +233,7 @@ pub struct SkiaBackend<L: StoreLayoutEngine = TaffyStoreLayout> {
     pub(crate) motion_scratch: Vec<NodeId>,
     pub(crate) motion_paint_scratch: Vec<NodeId>,
     pub(crate) plugin_dirty_scratch: Vec<NodeId>,
+    pub(crate) plugin_scratch: PixelBuffer,
 }
 
 impl Default for SkiaBackend<TaffyStoreLayout> {
@@ -274,6 +275,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             motion_scratch: Vec::new(),
             motion_paint_scratch: Vec::new(),
             plugin_dirty_scratch: Vec::new(),
+            plugin_scratch: PixelBuffer::new_transparent_rgba(0, 0),
         }
     }
 
@@ -344,6 +346,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             motion_scratch: self.motion_scratch,
             motion_paint_scratch: self.motion_paint_scratch,
             plugin_dirty_scratch: self.plugin_dirty_scratch,
+            plugin_scratch: self.plugin_scratch,
         }
     }
 
@@ -454,7 +457,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         buffer: &mut PixelBuffer,
         clear_color: ColorRgba,
     ) {
-        self.scene.rasterize_with_plugins(
+        self.scene.rasterize_with_plugins_and_scratch(
             buffer,
             self.viewport.scale_factor,
             clear_color,
@@ -462,6 +465,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             store,
             &self.table_registry,
             &mut self.table_events,
+            &mut self.plugin_scratch,
         );
     }
 }
@@ -595,5 +599,6 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
         self.plugin_epochs.clear();
         self.base_plugin_epoch = next_plugin_epoch();
         self.plugin_base_epoch_dirty = false;
+        self.plugin_scratch.shrink_if_capacity_exceeds(0);
     }
 }

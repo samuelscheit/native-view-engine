@@ -174,6 +174,18 @@ impl PixelBuffer {
     }
 
     #[inline]
+    pub fn get_alpha(&self, x: u32, y: u32) -> Option<u8> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        if !self.has_alpha {
+            return Some(255);
+        }
+        let idx = (y as usize) * (self.width as usize) + (x as usize);
+        self.alpha.get(idx).copied()
+    }
+
+    #[inline]
     pub fn set_rgb(&mut self, x: u32, y: u32, r: u8, g: u8, b: u8) {
         if x < self.width && y < self.height {
             let idx = (y as usize) * (self.width as usize) + (x as usize);
@@ -289,6 +301,67 @@ impl PixelBuffer {
                 let g = (sg + dg * inv_a + 127) / 255;
                 let b = (sb + db * inv_a + 127) / 255;
                 *px = (r << 16) | (g << 8) | b;
+            }
+        }
+    }
+
+    /// Src-over composites an alpha-tracking `src` buffer onto `self` at `(dst_x, dst_y)`,
+    /// honoring `clip` (including rounded clips) and `opacity` with zero heap allocations.
+    pub(crate) fn composite_rgba_over(
+        &mut self,
+        src: &PixelBuffer,
+        dst_x: i32,
+        dst_y: i32,
+        clip: &super::clip::ClipStack,
+        opacity: f32,
+    ) {
+        if !src.has_alpha || !opacity.is_finite() || opacity <= 0.0 || clip.is_empty() {
+            return;
+        }
+        let opacity = opacity.clamp(0.0, 1.0);
+        let [cx0, cy0, cx1, cy1] = clip.bounds();
+        let x0 = dst_x.max(cx0).max(0);
+        let y0 = dst_y.max(cy0).max(0);
+        let x1 = (dst_x + src.width as i32).min(cx1).min(self.width as i32);
+        let y1 = (dst_y + src.height as i32).min(cy1).min(self.height as i32);
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        let rounded_clip = clip.has_rounded();
+        let opaque_pass = opacity >= 1.0 && !rounded_clip;
+        let src_stride = src.width as usize;
+        let dst_stride = self.width as usize;
+
+        for py in y0..y1 {
+            let sy = (py - dst_y) as usize;
+            let src_row = sy * src_stride;
+            let dst_row = (py as usize) * dst_stride;
+            let fy = py as f32 + 0.5;
+            for px in x0..x1 {
+                let sx = (px - dst_x) as usize;
+                let sidx = src_row + sx;
+                let sa = src.alpha[sidx];
+                if sa == 0 {
+                    continue;
+                }
+                let rgb = src.pixels[sidx];
+                if opaque_pass && sa == 255 {
+                    let didx = dst_row + (px as usize);
+                    self.pixels[didx] = rgb;
+                    if self.has_alpha {
+                        self.alpha[didx] = 255;
+                    }
+                    continue;
+                }
+                let cov = if rounded_clip {
+                    clip.rounded_coverage(px as f32 + 0.5, fy) * opacity
+                } else {
+                    opacity
+                };
+                if cov > 0.0 {
+                    let (r, g, b) = Self::unpack_rgb(rgb);
+                    self.blend_pixel(px, py, ColorRgba::rgba(r, g, b, sa), cov);
+                }
             }
         }
     }

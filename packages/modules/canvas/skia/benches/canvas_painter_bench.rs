@@ -57,7 +57,7 @@ fn bench_skia_canvas_painter(c: &mut Criterion) {
                 let node = tx.create();
                 tx.set_children(NodeId::ROOT, &[node]);
                 reg.bind(&mut tx, node, move |p, _size| {
-                    emit_compact_primitives(p, n);
+                    emit_compact_primitives(p, black_box(n));
                 });
                 tx.commit_into(&mut changes);
                 node
@@ -77,7 +77,7 @@ fn bench_skia_canvas_painter(c: &mut Criterion) {
                     events: &mut events,
                 };
                 sys.paint_node(&mut ctx, black_box(&store), node);
-                black_box(buf.pixels()[0])
+                black_box(buf.pixels());
             });
         });
 
@@ -94,7 +94,7 @@ fn bench_skia_canvas_painter(c: &mut Criterion) {
                     let node = tx.create();
                     tx.set_children(NodeId::ROOT, &[node]);
                     reg.bind(&mut tx, node, move |p, _size| {
-                        emit_compact_primitives(p, n);
+                        emit_compact_primitives(p, black_box(n));
                     });
                     tx.commit_into(&mut changes);
                     node
@@ -120,7 +120,7 @@ fn bench_skia_canvas_painter(c: &mut Criterion) {
                         events: &mut events,
                     };
                     sys.paint_node(&mut ctx, black_box(&store), node);
-                    black_box(buf.pixels()[0])
+                    black_box(buf.pixels());
                 });
             },
         );
@@ -166,7 +166,7 @@ fn bench_skia_canvas_painter(c: &mut Criterion) {
                         events: &mut events,
                     };
                     sys.paint_node(&mut ctx, black_box(&store), node);
-                    black_box(buf.pixels()[0])
+                    black_box(buf.pixels());
                 });
             },
         );
@@ -214,7 +214,7 @@ fn bench_skia_canvas_painter(c: &mut Criterion) {
                         events: &mut events,
                     };
                     sys.paint_node(&mut ctx, black_box(&store), node);
-                    black_box(buf.pixels()[0])
+                    black_box(buf.pixels());
                 });
             },
         );
@@ -252,7 +252,7 @@ fn bench_skia_canvas_painter(c: &mut Criterion) {
                         events: &mut events,
                     };
                     sys.paint_node(&mut ctx, black_box(&store), node);
-                    black_box(buf.pixels()[0])
+                    black_box(buf.pixels());
                 });
             },
         );
@@ -301,7 +301,7 @@ fn bench_skia_native_gpu_vs_cached(c: &mut Criterion) {
                     tx.edit::<Layout>(node)
                         .width(Length::points(256.0))
                         .height(Length::points(256.0));
-                    reg.bind(&mut tx, node, move |p, _| emit_compact_primitives(p, n));
+                    reg.bind(&mut tx, node, move |p, _| emit_compact_primitives(p, black_box(n)));
                     tx.commit_into(&mut changes);
                     node
                 };

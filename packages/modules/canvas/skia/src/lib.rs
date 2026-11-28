@@ -178,8 +178,8 @@ mod tests {
             height: 64.0,
         };
 
-        // 1. Direct SkiaCanvasPainter
-        let mut direct_buf = PixelBuffer::new(64, 64);
+        // 1. Direct SkiaCanvasPainter on an isolated RGBA buffer (matching `draw_plugin` / GPU cache)
+        let mut direct_buf = PixelBuffer::new_transparent_rgba(64, 64);
         {
             let (mut painter, size) =
                 SkiaCanvasPainter::new(&mut direct_buf, rect, None, 1.0, 1.0)
@@ -193,7 +193,7 @@ mod tests {
         let mut words = Vec::new();
         assert!(dl.write_words(&mut words));
         let vw = ValidatedWords::<DrawList>::try_new(&words).expect("valid wire DrawList");
-        let mut recorded_buf = PixelBuffer::new(64, 64);
+        let mut recorded_buf = PixelBuffer::new_transparent_rgba(64, 64);
         {
             let (mut painter, _) =
                 SkiaCanvasPainter::new(&mut recorded_buf, rect, None, 1.0, 1.0)
@@ -206,7 +206,7 @@ mod tests {
             recorded_buf.pixels(),
             "direct SkiaCanvasPainter and recorded DrawListView::replay must be byte-identical"
         );
-        // Verify transparent clear overwrites prior pixels identically in both paths.
+        // Verify transparent clear overwrites prior pixels + alpha to 0 identically in both paths.
         {
             let (mut p, _) =
                 SkiaCanvasPainter::new(&mut direct_buf, rect, None, 1.0, 1.0).expect("painter");
@@ -225,6 +225,78 @@ mod tests {
         }
         assert_eq!(direct_buf.pixels(), recorded_buf.pixels());
         assert_eq!(direct_buf.get_rgb(12, 12), Some((0, 0, 0)));
+        assert_eq!(direct_buf.get_alpha(12, 12), Some(0));
+        assert_eq!(recorded_buf.get_alpha(12, 12), Some(0));
+    }
+
+    #[test]
+    fn software_rasterize_with_store_isolates_clear_transparent_and_translucent_over_backdrop() {
+        use nve_tables::tables::Visual;
+
+        let reg = DirectCanvasRegistry::new();
+        let mut store = NodeStore::new();
+        let mut changes = ChangeSet::default();
+        {
+            let mut tx = store.tx();
+            let bg = tx.create();
+            let canvas_node = tx.create();
+            tx.set_children(NodeId::ROOT, &[bg]);
+            tx.set_children(bg, &[canvas_node]);
+
+            tx.edit::<Layout>(bg)
+                .width(Length::points(64.0))
+                .height(Length::points(64.0));
+            tx.edit::<Visual>(bg).background(Rgba::rgb(200, 40, 20));
+
+            tx.edit::<Layout>(canvas_node)
+                .width(Length::points(64.0))
+                .height(Length::points(64.0));
+            reg.bind(&mut tx, canvas_node, |p, _| {
+                // Initial transparent clear (like `paint_sparkline`) must preserve backdrop!
+                p.clear(ColorRgba::TRANSPARENT);
+                // Solid white left half, then post-draw transparent clear over top-left quadrant.
+                p.fill_rect(0.0, 0.0, 32.0, 64.0, ColorRgba::WHITE);
+                p.clip_rect(0.0, 0.0, 32.0, 32.0);
+                p.clear(ColorRgba::TRANSPARENT);
+                p.restore_clip();
+                // Yellow bottom-right replaced by translucent blue `Src` clear over red backdrop.
+                p.clip_rect(32.0, 32.0, 32.0, 32.0);
+                p.fill_rect(32.0, 32.0, 32.0, 32.0, ColorRgba::rgb(255, 255, 0));
+                p.clear(ColorRgba::rgba(0, 80, 240, 128));
+                p.restore_clip();
+            });
+            tx.commit_into(&mut changes);
+        }
+
+        let mut backend = SkiaBackend::new();
+        backend.register_table_system(CanvasSkiaSystem::with_direct(reg));
+        backend.set_viewport(
+            SurfaceId::ROOT,
+            Viewport {
+                width: 64.0,
+                height: 64.0,
+                scale_factor: 1.0,
+            },
+        );
+        backend.commit(&store, &changes).expect("commit");
+
+        let mut buf = PixelBuffer::new(64, 64);
+        backend.rasterize_with_store(&store, &mut buf, ColorRgba::BLACK);
+
+        // Top-right untouched after initial `clear(TRANSPARENT)` -> red backdrop `(200, 40, 20)`.
+        assert_eq!(buf.get_rgb(48, 16), Some((200, 40, 20)));
+        // Top-left post-draw `clear(TRANSPARENT)` -> red backdrop `(200, 40, 20)` (never black!).
+        assert_eq!(buf.get_rgb(16, 16), Some((200, 40, 20)));
+        // Bottom-left white fill -> `(255, 255, 255)`.
+        assert_eq!(buf.get_rgb(16, 48), Some((255, 255, 255)));
+        // Bottom-right translucent `clear(0, 80, 240, 128)` replaced yellow -> ~`(100, 60, 130)`.
+        let (r, g, b) = buf.get_rgb(48, 48).expect("bottom-right pixel");
+        assert!(
+            (i16::from(r) - 100).abs() <= 2
+                && (i16::from(g) - 60).abs() <= 2
+                && (i16::from(b) - 130).abs() <= 2,
+            "expected translucent clear over red backdrop ~(100,60,130), got ({r},{g},{b})"
+        );
     }
 
     #[test]

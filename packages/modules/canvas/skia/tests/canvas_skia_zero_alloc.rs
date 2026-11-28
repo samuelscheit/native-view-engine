@@ -517,9 +517,18 @@ fn skia_native_sink_matches_pixel_sink_across_all_8_ops_and_clips() {
         "translucent polyline mismatch: native=({nr},{ng},{nb}) pixel=({pr},{pg},{pb})"
     );
     // Translucent `clear(rgba(30, 140, 250, 128))` inside `(2..14, 46..54)` replaces prior pixels
-    // (readback returns unpremultiplied `(30, 140, 250)` or premul-rounded close to `(15, 70, 125)`
-    // over transparent, strictly matching non-bg).
-    assert_ne!(native_buf.get_rgb(8, 50), Some((12, 16, 24)));
+    // with exact `Src` overwrite: `CpuSkiaSurface::copy_to_pixel_buffer` reads `AlphaType::Unpremul`,
+    // matching `pixel_buf`'s unpremultiplied `(30, 140, 250)` within +-2 premul-roundtrip LSB.
+    let (cr, cg, cb) = native_buf.get_rgb(8, 50).expect("native translucent clear");
+    let (pcr, pcg, pcb) = pixel_buf.get_rgb(8, 50).expect("pixel translucent clear");
+    assert_eq!((pcr, pcg, pcb), (30, 140, 250));
+    assert_eq!(pixel_buf.get_alpha(8, 50), Some(128));
+    assert!(
+        (i16::from(cr) - i16::from(pcr)).abs() <= 2
+            && (i16::from(cg) - i16::from(pcg)).abs() <= 2
+            && (i16::from(cb) - i16::from(pcb)).abs() <= 2,
+        "translucent clear Src mismatch: native=({cr},{cg},{cb}) pixel=({pcr},{pcg},{pcb})"
+    );
 
     // 3. Hostile wire `DrawList::from_ops` (unmatched leading restore + 66 clips) replayed into
     //    `SkiaNativeCanvasPainter` must also leave `save_count` strictly balanced AND actually clear

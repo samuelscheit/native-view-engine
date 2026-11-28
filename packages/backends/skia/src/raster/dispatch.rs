@@ -28,6 +28,11 @@ pub(crate) struct SoftwareRasterCtx<'a> {
     scale: f32,
     text_engine: Option<&'a CosmicTextEngine>,
     plugins: Option<(&'a NodeStore, &'a SkiaTableRegistry, &'a mut EventBatchBuf)>,
+    /// Optional caller-owned reusable `has_alpha = true` scratch buffer for 0-alloc steady-state
+    /// plugin isolation across frames (`SkiaBackend::rasterize_with_store`).
+    plugin_scratch: Option<&'a mut PixelBuffer>,
+    /// Lazy per-frame fallback scratch buffer when `plugin_scratch` is `None`.
+    local_plugin_scratch: PixelBuffer,
     opacity_stack: OpacityStack,
     clip_stack: ClipStack,
     transform_stack: TransformStack,
@@ -41,6 +46,7 @@ impl<'a> SoftwareRasterCtx<'a> {
         clear_color: ColorRgba,
         text_engine: Option<&'a CosmicTextEngine>,
         plugins: Option<(&'a NodeStore, &'a SkiaTableRegistry, &'a mut EventBatchBuf)>,
+        plugin_scratch: Option<&'a mut PixelBuffer>,
     ) -> Self {
         let scale = if scale_factor.is_finite() && scale_factor > 0.0 {
             scale_factor
@@ -54,6 +60,8 @@ impl<'a> SoftwareRasterCtx<'a> {
             scale,
             text_engine,
             plugins,
+            plugin_scratch,
+            local_plugin_scratch: PixelBuffer::new_transparent_rgba(0, 0),
             opacity_stack: OpacityStack::new(),
             clip_stack,
             transform_stack: TransformStack::new(),
@@ -365,32 +373,70 @@ impl<'a> SoftwareRasterCtx<'a> {
         if self.clip_stack.is_empty() {
             return;
         }
-        if let Some((store, registry, ref mut events)) = self.plugins {
-            let cur_opacity = self.opacity_stack.current();
-            let scale = self.scale;
-            let eff = if !self.transform_stack.is_identity() {
-                map_logical_rect_approx(self.transform_stack.current(), rect, scale)
-            } else {
-                rect
-            };
-            let scaled = scale_rect(eff, scale);
-            let [cx0, cy0, cx1, cy1] = self.clip_stack.bounds();
-            let clip_rect = LayoutRect {
-                x: cx0 as f32,
-                y: cy0 as f32,
-                width: (cx1 - cx0).max(0) as f32,
-                height: (cy1 - cy0).max(0) as f32,
-            };
-            let mut ctx = SkiaSystemPaintCtx {
-                buffer: self.buffer,
-                rect: scaled,
-                clip_rect: Some(clip_rect),
-                scale_factor: scale,
-                opacity: cur_opacity,
-                inherited_text_color,
-                events,
-            };
-            registry.paint_node(&mut ctx, store, node_id);
+        let cur_opacity = self.opacity_stack.current();
+        if !cur_opacity.is_finite() || cur_opacity <= 0.0 {
+            return;
+        }
+        let Some((store, registry, ref mut events)) = self.plugins else {
+            return;
+        };
+        let scale = self.scale;
+        let eff = if !self.transform_stack.is_identity() {
+            map_logical_rect_approx(self.transform_stack.current(), rect, scale)
+        } else {
+            rect
+        };
+        let scaled = scale_rect(eff, scale);
+        if !scaled.x.is_finite()
+            || !scaled.y.is_finite()
+            || !scaled.width.is_finite()
+            || !scaled.height.is_finite()
+            || scaled.width <= 0.0
+            || scaled.height <= 0.0
+        {
+            return;
+        }
+        let [cx0, cy0, cx1, cy1] = self.clip_stack.bounds();
+        let vis_x0 = (scaled.x.floor() as i32).max(cx0).max(0);
+        let vis_y0 = (scaled.y.floor() as i32).max(cy0).max(0);
+        let vis_x1 = ((scaled.x + scaled.width).ceil() as i32)
+            .min(cx1)
+            .min(self.buffer.width() as i32);
+        let vis_y1 = ((scaled.y + scaled.height).ceil() as i32)
+            .min(cy1)
+            .min(self.buffer.height() as i32);
+        if vis_x0 >= vis_x1 || vis_y0 >= vis_y1 {
+            return;
+        }
+        let vis_w = (vis_x1 - vis_x0) as u32;
+        let vis_h = (vis_y1 - vis_y0) as u32;
+
+        // Isolate plugin rendering in a reusable `has_alpha = true` RGBA scratch buffer (matching
+        // GPU `SkiaRendererCaches::plugin_buf` and `NativeSkiaSurface`'s `save_layer`): `clear(TRANSPARENT)`
+        // and translucent `clear` replace only the plugin's pixels and composite cleanly with `cur_opacity`.
+        let scratch = match self.plugin_scratch.as_deref_mut() {
+            Some(buf) => buf,
+            None => &mut self.local_plugin_scratch,
+        };
+        scratch.reset_transparent_rgba(vis_w, vis_h);
+        let local_rect = LayoutRect {
+            x: scaled.x - vis_x0 as f32,
+            y: scaled.y - vis_y0 as f32,
+            width: scaled.width,
+            height: scaled.height,
+        };
+        let mut ctx = SkiaSystemPaintCtx {
+            buffer: scratch,
+            rect: local_rect,
+            clip_rect: None,
+            scale_factor: scale,
+            opacity: 1.0,
+            inherited_text_color,
+            events,
+        };
+        if registry.paint_node(&mut ctx, store, node_id) > 0 {
+            self.buffer
+                .composite_rgba_over(scratch, vis_x0, vis_y0, &self.clip_stack, cur_opacity);
         }
     }
 }

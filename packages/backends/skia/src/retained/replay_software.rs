@@ -199,9 +199,17 @@ pub(crate) fn rasterize_scene_inner(
     clear_color: ColorRgba,
     text_engine: Option<&CosmicTextEngine>,
     plugins: Option<(&NodeStore, &SkiaTableRegistry, &mut EventBatchBuf)>,
+    plugin_scratch: Option<&mut PixelBuffer>,
 ) {
     let mut sink = SoftwareReplaySink {
-        ctx: SoftwareRasterCtx::new(buffer, scale_factor, clear_color, text_engine, plugins),
+        ctx: SoftwareRasterCtx::new(
+            buffer,
+            scale_factor,
+            clear_color,
+            text_engine,
+            plugins,
+            plugin_scratch,
+        ),
     };
     replay_scene_into(scene, &mut sink);
 }

@@ -209,6 +209,22 @@ impl WebSystemCommitCtx<'_> {
     }
 
     #[inline]
+    fn has_newer_other_slot_attr(&self, node: NodeId, name: &str, owned_seq: u64) -> bool {
+        for sys in self.registry.iter() {
+            let slot = sys.slot();
+            if slot == self.current_slot {
+                continue;
+            }
+            if let Some(list) = self.slot_attrs.get(&(node, slot))
+                && list.iter().any(|e| e.name == name && e.seq > owned_seq)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[inline]
     fn find_latest_other_slot_inline_css(&self, node: NodeId) -> Option<(String, u64)> {
         let mut best: Option<(&str, u64)> = None;
         for sys in self.registry.iter() {
@@ -294,17 +310,26 @@ impl WebSystemCommitCtx<'_> {
     }
 
     pub fn set_attr(&mut self, node: NodeId, name: &str, value: &str) {
-        // Short-circuit unchanged steady-state writes on non-retagged elements (avoids redundant
-        // WASM->JS `set_attribute` FFI on 120 Hz canvas repaints while preserving retag replay).
+        // Short-circuit unchanged steady-state writes ONLY for NVE-owned `data-*` attributes on
+        // non-retagged elements when this slot already holds the newest `OwnedAttr::seq` for
+        // `name` (never skip browser-mutable HTML attributes like `open`, and preserve multi-slot
+        // `seq` ordering whenever another slot wrote `name` more recently).
         if !self.is_retagged
+            && name.starts_with("data-")
+            && let Some(owned_seq) = self
+                .slot_attrs
+                .get(&(node, self.current_slot))
+                .and_then(|owned| {
+                    owned
+                        .iter()
+                        .find(|e| e.name == name && e.value == value)
+                        .map(|e| e.seq)
+                })
             && self
                 .attrs
                 .get(&node)
                 .is_some_and(|list| list.iter().any(|(k, v)| k == name && v == value))
-            && self
-                .slot_attrs
-                .get(&(node, self.current_slot))
-                .is_some_and(|owned| owned.iter().any(|e| e.name == name && e.value == value))
+            && !self.has_newer_other_slot_attr(node, name, owned_seq)
         {
             return;
         }
@@ -532,6 +557,11 @@ impl crate::table_system::WebStoreRenderer {
                 el.set_inner_html(html);
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn latest_attr_seq_for_test(&self, node: NodeId, name: &str) -> u64 {
+        self.latest_attr_seq(node, name)
     }
 
     fn latest_attr_seq(&self, node: NodeId, name: &str) -> u64 {
