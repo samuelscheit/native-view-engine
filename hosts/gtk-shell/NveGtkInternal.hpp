@@ -71,6 +71,11 @@ void apply_accessibility(GtkWidget* widget, const GtkNodeSemantics& sem);
 /// and CSS block punctuation dropped; bounded length). The painter's CSS and the measurer's
 /// Pango description use the same string, so both resolve the same font.
 [[nodiscard]] std::string font_family_list(std::string_view authored);
+/// The same list as a CSS `font-family` value: each family a quoted CSS string, unquoted
+/// generics (`monospace`, ASCII case-insensitive) as keywords.
+[[nodiscard]] std::string font_family_css(std::string_view authored);
+/// Pango's wrap mode for a resolved `TextWrap` (`None` keeps Pango's default; callers unset the width).
+[[nodiscard]] PangoWrapMode pango_wrap(host::TextWrap wrap) noexcept;
 [[nodiscard]] std::string css_float(double value);
 [[nodiscard]] const char* cursor_name(uint8_t cursor) noexcept;
 void load_css(GtkCssProvider* provider, const std::string& css);

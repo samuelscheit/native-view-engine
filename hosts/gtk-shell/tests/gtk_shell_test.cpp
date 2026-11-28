@@ -7,7 +7,9 @@
 
 #include <nve/host/demo_counter_app.hpp>
 
+#include <algorithm>
 #include <filesystem>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -35,6 +37,11 @@ void test_measure_typography(const NveGtkHost& host) {
   // bytes dropped, empties skipped.
   NVE_CHECK(gtk_internal::font_family_list(" 'Fira Code' , \"x;}\" ,, monospace ") == "Fira Code,x,monospace");
   NVE_CHECK(gtk_internal::font_family_list("").empty() && gtk_internal::font_family_list(" , ").empty());
+  // CSS: one quoted string per family, unquoted generics as keywords (ASCII case-insensitive);
+  // a quoted "serif" is a family name; Pango cannot name a family containing `,`: skipped.
+  NVE_CHECK(gtk_internal::font_family_css("'Fira Code', MonoSpace, \"serif\", \"A, B\", Inter") ==
+            "\"Fira Code\", monospace, \"serif\", \"Inter\"");
+  NVE_CHECK(gtk_internal::font_family_list("\"A, B\", SANS-SERIF") == "sans-serif");
   // A family list falls back past unknown names exactly like the label's CSS.
   const NveRuntimeTextStyle listed =
       with([](NveRuntimeTextStyle& s) { s.font_family = str_slice("NoSuchFontNve, monospace"); });
@@ -50,10 +57,24 @@ void test_measure_typography(const NveGtkHost& host) {
     NVE_CHECK(m.width == one_line.width && m.height == one_line.height);
     NVE_CHECK(host.measure_text(sentence, s, 0.0f).width == one_line.width);  // min-content too
   }
+  // `normal` wraps at words only: a line is at most the width or its longest word, and
+  // min-content is exactly the longest word; only `break-all` / `overflow-wrap: anywhere` may
+  // break between characters.
+  const float longest_word = host.measure_text("wrapping", sans).width;
   const NveIntrinsicSize wrapped = host.measure_text(sentence, sans, 60.0f);
-  NVE_CHECK(wrapped.width <= 61.0f && wrapped.height > one_line.height * 2.0f);
+  NVE_CHECK(wrapped.width <= std::max(61.0f, longest_word) && wrapped.height > one_line.height * 2.0f);
   const NveIntrinsicSize min_content = host.measure_text(sentence, sans, 0.0f);
-  NVE_CHECK(min_content.width > 0.0f && min_content.width < one_line.width && min_content.height > wrapped.height);
+  NVE_CHECK(min_content.width == longest_word && min_content.height > wrapped.height);
+  NVE_CHECK(host.measure_text("Supercalifragilistic", sans, 30.0f).width >
+            host.measure_text("Super", sans).width);  // an over-long word overflows
+  for (const auto& [word_break, overflow_wrap] :
+       {std::pair{uint8_t{NVE_WORD_BREAK_BREAK_ALL}, uint8_t{NVE_OVERFLOW_WRAP_NORMAL}},
+        std::pair{uint8_t{NVE_WORD_BREAK_NORMAL}, uint8_t{NVE_OVERFLOW_WRAP_ANYWHERE}}}) {
+    NveRuntimeTextStyle s = sans;
+    s.word_break = word_break;
+    s.overflow_wrap = overflow_wrap;
+    NVE_CHECK(host.measure_text(sentence, s, 0.0f).width < longest_word);
+  }
 
   // Letter spacing widens by about one spacing per character.
   const NveRuntimeTextStyle spaced = with([](NveRuntimeTextStyle& s) { s.letter_spacing = 3.0f; });
@@ -173,7 +194,9 @@ void test_counter_widgets_measurement_and_events() {
   NVE_CHECK(small.width > 0.0f && small.height > 0.0f);
   NVE_CHECK(big.width > small.width * 1.5f && big.height > small.height);
   NVE_CHECK(bold.width >= small.width);
-  NVE_CHECK(wrapped.width <= 41.0f && wrapped.height > small.height * 1.5f);
+  // Wraps at words; "wrapping" alone is wider than 40px and overflows rather than splitting.
+  const float wrapping = host.measure_text("wrapping", text_style(16.0f)).width;
+  NVE_CHECK(wrapping > 41.0f && wrapped.width == wrapping && wrapped.height > small.height * 1.5f);
   NVE_CHECK(host.measure_text("", text_style(16.0f)).width == 0.0f);
   test_measure_typography(host);
 

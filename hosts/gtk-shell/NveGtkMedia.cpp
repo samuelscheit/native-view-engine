@@ -64,7 +64,8 @@ GdkTexture* decode_url(std::string_view uri) {
     }
     const std::string path = filename != nullptr ? std::string(filename) : std::string(*local);
     g_free(filename);
-    tex = gdk_texture_new_from_filename(path.c_str(), &err);
+    // GLib decoded the URL: the decoded path must still be local (never `//host/...`).
+    if (host::local_decoded_path(path)) tex = gdk_texture_new_from_filename(path.c_str(), &err);
   }
 
   if (err != nullptr) {

@@ -186,7 +186,9 @@ void NveGtkHost::set_event_callback(EventCallback callback) { session_->set_even
 
 size_t NveGtkHost::pump() {
   if (syncing_) return 0u;  // re-entrant wake from a widget signal raised during sync
+  const auto alive = alive_;  // the event sink may destroy this host during the pump
   (void)session_->pump();
+  if (!alive->load(std::memory_order_acquire)) return 0u;
   const size_t before = static_cast<size_t>(reconcile_update_count_);
   sync_views();
   return static_cast<size_t>(reconcile_update_count_) - before;
@@ -213,7 +215,9 @@ void NveGtkHost::sync_views() {
 
 bool NveGtkHost::dispatch(const NveDirectEvent& ev) {
   if (syncing_) return false;
+  const auto alive = alive_;  // the event sink may destroy this host during the dispatch
   const bool changed = session_->dispatch(ev);
+  if (!alive->load(std::memory_order_acquire)) return changed;
   sync_views();
   return changed;
 }
@@ -223,22 +227,7 @@ bool NveGtkHost::simulate_press(uint32_t node_id, float x, float y) {
 }
 
 bool NveGtkHost::dispatch_text_change(uint32_t node_id, std::string_view text) {
-  const bool changed = dispatch(session_->events().text(node_id, NVE_EVENT_TEXT_CHANGE, text));
-  // In-process apps answer synchronously: write back a transformed or rejected edit (a rejecting
-  // app republishes nothing, so no reconcile would ever revert the field). Paired answers are
-  // async and arrive through `app_published`.
-  GtkNodeView* const* found = is_paired() ? nullptr : tree_.find(node_id);  // the dispatch may remove it
-  GtkNodeView* v = found != nullptr ? *found : nullptr;
-  if (v != nullptr && (v->kind == WidgetKind::Entry || v->kind == WidgetKind::TextView) &&
-      v->text.app_answered(v->text.app_value())) {
-    const auto write = v->text.host_write();
-    if (v->kind == WidgetKind::TextView) {
-      gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(v->widget)), v->text.app_value().c_str(), -1);
-    } else {
-      gtk_editable_set_text(GTK_EDITABLE(v->widget), v->text.app_value().c_str());
-    }
-  }
-  return changed;
+  return dispatch(session_->events().text(node_id, NVE_EVENT_TEXT_CHANGE, text));
 }
 
 bool NveGtkHost::dispatch_submit(uint32_t node_id, std::string_view text) {
@@ -317,8 +306,9 @@ NveIntrinsicSize NveGtkHost::measure_text(std::string_view text, const NveRuntim
                                           float max_width) const {
   if (text.empty()) return NveIntrinsicSize{0.0f, 0.0f};
   if (measure_layout_ == nullptr) measure_layout_ = gtk_widget_create_pango_layout(root_widget_, nullptr);
+  // The layout shares the widget's Pango context, which GTK updates on font settings / scale /
+  // font map changes; the layout notices through the context serial on its own.
   PangoLayout* layout = measure_layout_;
-  pango_layout_context_changed(layout);  // the widget's font settings / scale may have changed
   PangoContext* ctx = pango_layout_get_context(layout);
   const PangoFontDescription* base = ctx != nullptr ? pango_context_get_font_description(ctx) : nullptr;
   PangoFontDescription* desc =
@@ -351,11 +341,13 @@ NveIntrinsicSize NveGtkHost::measure_text(std::string_view text, const NveRuntim
                         static_cast<int>(std::min<size_t>(text.size(), std::numeric_limits<int>::max())));
 
   // Wrapping, lines, and ellipsizing mirror `gtk_label_set_wrap` / `_lines` / `_ellipsize`.
-  const bool wraps = host::white_space_wraps(style.white_space) && std::isfinite(max_width) && max_width >= 0.0f;
+  // `max_width == 0` (min-content) yields the longest unbreakable run of the wrap mode.
+  const host::TextWrap wrap = host::text_wrap(style.white_space, style.word_break, style.overflow_wrap);
+  const bool wraps = wrap != host::TextWrap::None && std::isfinite(max_width) && max_width >= 0.0f;
   pango_layout_set_width(layout, wraps ? static_cast<int>(std::min(static_cast<double>(max_width) * PANGO_SCALE,
                                                                    static_cast<double>(std::numeric_limits<int>::max())))
                                        : -1);
-  pango_layout_set_wrap(layout, PANGO_WRAP_WORD_CHAR);
+  pango_layout_set_wrap(layout, gtk_internal::pango_wrap(wrap));
   const bool limited = style.max_lines > 0u;
   pango_layout_set_ellipsize(layout, limited ? PANGO_ELLIPSIZE_END : PANGO_ELLIPSIZE_NONE);
   pango_layout_set_height(
