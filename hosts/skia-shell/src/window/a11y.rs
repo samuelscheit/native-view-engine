@@ -11,9 +11,7 @@ use nve_accessibility::{
 };
 use nve_engine::LayoutRect;
 use nve_store::{ChangeSet, NodeStore};
-use nve_tables::tables::{
-    is_node_display_none, is_subtree_display_none, Interaction, Scroll, TextInput,
-};
+use nve_tables::tables::{is_node_display_none, Interaction, TextInput};
 use winit::window::WindowId;
 
 use super::multi_window::SurfaceWindow;
@@ -21,8 +19,6 @@ use super::session::{now_us, DesktopSession, ShellSkiaBackend};
 use super::text_edit::{insert_text_at, sanitize_pasted_multiline, sanitize_pasted_single_line};
 use super::window_host::DesktopWindowHost;
 use super::{DesktopApp, DesktopHostError};
-
-const MAX_SCROLL_ANCESTOR_DEPTH: usize = 256;
 
 /// Zero-copy [`A11yGeometryProvider`] adapter over `(&NodeStore, &ShellSkiaBackend)`.
 pub(crate) struct SkiaA11yGeometry<'a> {
@@ -105,103 +101,6 @@ impl A11yGeometryProvider for SkiaA11yGeometry<'_> {
         }
         self.root_has_layout && self.backend.layout_tree().layout_of(id).is_none()
     }
-}
-
-/// Scrolls every ancestor `Scroll` container minimally so `target` becomes visible within its
-/// viewport (accounting for `virtual_top_spacer` and rejecting `display: none` subtrees).
-/// Returns `true` if any scroll offset changed.
-fn scroll_node_into_view(
-    store: &NodeStore,
-    backend: &mut ShellSkiaBackend,
-    target: NodeId,
-) -> bool {
-    if !store.is_live(target) || is_subtree_display_none(store, target) {
-        return false;
-    }
-    let Some(target_rect) = backend.layout_tree().layout_of(target) else {
-        return false;
-    };
-    let mut changed = false;
-    let mut cur_x0 = target_rect.x;
-    let mut cur_y0 = target_rect.y;
-    let mut cur_x1 = target_rect.x + target_rect.width;
-    let mut cur_y1 = target_rect.y + target_rect.height;
-
-    let mut ancestor = store.parent(target);
-    for _ in 0..MAX_SCROLL_ANCESTOR_DEPTH {
-        let Some(pid) = ancestor else {
-            break;
-        };
-        if let Some(scroll) = store.try_row::<Scroll>(pid)
-            && let Some(view) = backend.layout_tree().layout_of(pid)
-        {
-            let spacer = scroll
-                .virtual_top_spacer()
-                .filter(|v| v.is_finite() && *v > 0.0)
-                .unwrap_or(0.0);
-            let (sx, sy) = backend.scroll_offset(pid);
-            let shift_x = sx;
-            let shift_y = if spacer > 0.0 {
-                (sy - spacer).max(0.0)
-            } else {
-                sy
-            };
-            let vis_x0 = cur_x0 - shift_x;
-            let vis_x1 = cur_x1 - shift_x;
-            let vis_y0 = cur_y0 - shift_y;
-            let vis_y1 = cur_y1 - shift_y;
-
-            let dx = if vis_x0 < view.x {
-                vis_x0 - view.x
-            } else if vis_x1 > view.x + view.width {
-                (vis_x1 - (view.x + view.width)).min(vis_x0 - view.x)
-            } else {
-                0.0
-            };
-            let dy = if vis_y0 < view.y {
-                vis_y0 - view.y
-            } else if vis_y1 > view.y + view.height {
-                (vis_y1 - (view.y + view.height)).min(vis_y0 - view.y)
-            } else {
-                0.0
-            };
-
-            if dx.abs() > 1e-3 || dy.abs() > 1e-3 {
-                let target_x = (sx + dx).max(0.0);
-                let target_y = if dy.abs() > 1e-3 {
-                    let desired_shift_y = (shift_y + dy).max(0.0);
-                    if spacer > 0.0 {
-                        spacer + desired_shift_y
-                    } else {
-                        desired_shift_y
-                    }
-                } else {
-                    sy
-                };
-                let next = backend.set_scroll_offset(store, pid, target_x, target_y);
-                if (sx - next.0).abs() > 1e-4 || (sy - next.1).abs() > 1e-4 {
-                    changed = true;
-                }
-            }
-            let (nx, ny) = backend.scroll_offset(pid);
-            let new_shift_x = nx;
-            let new_shift_y = if spacer > 0.0 {
-                (ny - spacer).max(0.0)
-            } else {
-                ny
-            };
-            cur_x0 -= new_shift_x;
-            cur_x1 -= new_shift_x;
-            cur_y0 -= new_shift_y;
-            cur_y1 -= new_shift_y;
-        }
-        let next_parent = store.parent(pid);
-        if next_parent == Some(pid) {
-            break;
-        }
-        ancestor = next_parent;
-    }
-    changed
 }
 
 impl<A: DesktopApp> DesktopSession<A> {
@@ -391,7 +290,7 @@ impl<A: DesktopApp> DesktopSession<A> {
             A11yAction::ScrollIntoView => {
                 let changed = {
                     let (store, backend) = self.replica.store_and_backend_mut();
-                    scroll_node_into_view(store, backend, target)
+                    backend.scroll_into_view(store, target)
                 };
                 if changed {
                     self.rasterize_current();
