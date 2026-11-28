@@ -77,35 +77,38 @@ fn hash_open_file(file: &mut std::fs::File) -> std::io::Result<FileDigest> {
 struct InPlaceEntry {
     /// `(device, inode)` from `fstat` on the open fd on Unix (`None` on non-Unix).
     inode: Option<(u64, u64)>,
-    /// Canonical path when resolvable (catches atomic-rename replacement at the same path).
-    canonical_path: Option<PathBuf>,
+    /// Canonical (or absolute/fallback) path resolved before opening and passed to `Library::new`.
+    resolved_path: PathBuf,
     digest: FileDigest,
-    /// Unsealed in-flight claims sharing this exact `(inode, canonical_path, digest)` entry.
+    /// Unsealed in-flight claims sharing this exact `(inode, resolved_path, digest)` entry.
     pending: usize,
     /// `true` once `Library::new` mapped this image (kept for process lifetime).
     sealed: bool,
 }
 
-/// Files claimed for in-place loading in this process, keyed by `(dev, ino)` and canonical path
+/// Files claimed for in-place loading in this process, keyed by `(dev, ino)` and resolved path
 /// together with `(file_len, xxh64)`. Re-opening an unchanged bundled library (Activity recreation,
 /// multi-surface open, `detachApp()` -> `attachApp()`) is allowed; attempting to reload an inode
-/// or canonical path whose bytes changed since an earlier load is rejected because `RTLD_NODELETE`
+/// or resolved path whose bytes changed since an earlier load is rejected because `RTLD_NODELETE`
 /// platforms (iOS/macOS dyld, Android Bionic, musl) would silently execute the old mapped image.
 static IN_PLACE_FILES: Mutex<Vec<InPlaceEntry>> = Mutex::new(Vec::new());
 
 /// Reservation for an in-place load. Dropping before [`Self::seal`] rolls it back (a failed
 /// `dlopen` never mapped the image); after [`Self::seal`] the recorded digest stays sealed for the
-/// lifetime of the process so only unchanged bytes can re-open that inode or canonical path.
+/// lifetime of the process so only unchanged bytes can re-open that inode or resolved path.
 struct InPlaceClaim {
     inode: Option<(u64, u64)>,
-    canonical_path: Option<PathBuf>,
+    resolved_path: PathBuf,
     digest: FileDigest,
     sealed: bool,
 }
 
 impl InPlaceClaim {
     fn new(path: &Path) -> Result<Self, LoaderError> {
-        let mut file = std::fs::File::open(path).map_err(LoaderError::Io)?;
+        let resolved_path = std::fs::canonicalize(path)
+            .or_else(|_| std::path::absolute(path))
+            .unwrap_or_else(|_| path.to_path_buf());
+        let mut file = std::fs::File::open(&resolved_path).map_err(LoaderError::Io)?;
         let meta = file.metadata().map_err(LoaderError::Io)?;
         #[cfg(unix)]
         let inode = {
@@ -118,30 +121,33 @@ impl InPlaceClaim {
             None
         };
         let digest = hash_open_file(&mut file).map_err(LoaderError::Io)?;
-        let canonical_path = std::fs::canonicalize(path).ok();
 
         let mut loaded = IN_PLACE_FILES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         for entry in loaded.iter() {
             let same_inode = inode.is_some() && entry.inode == inode;
-            let same_path = canonical_path.is_some() && entry.canonical_path == canonical_path;
+            let same_path = entry.resolved_path == resolved_path;
             if (same_inode || same_path) && entry.digest != digest {
-                return Err(LoaderError::AlreadyLoadedInPlace(path.to_path_buf()));
+                return Err(LoaderError::AlreadyLoadedInPlace(resolved_path));
             }
         }
         if let Some(existing) = loaded.iter_mut().find(|e| {
-            e.inode == inode && e.canonical_path == canonical_path && e.digest == digest
+            e.inode == inode && e.resolved_path == resolved_path && e.digest == digest
         }) {
             existing.pending += 1;
         } else {
             loaded.push(InPlaceEntry {
                 inode,
-                canonical_path: canonical_path.clone(),
+                resolved_path: resolved_path.clone(),
                 digest,
                 pending: 1,
                 sealed: false,
             });
         }
-        Ok(Self { inode, canonical_path, digest, sealed: false })
+        Ok(Self { inode, resolved_path, digest, sealed: false })
+    }
+
+    fn resolved_path(&self) -> &Path {
+        &self.resolved_path
     }
 
     /// Seals the recorded digest for the lifetime of the process once `dlopen` mapped the file.
@@ -153,7 +159,7 @@ impl InPlaceClaim {
         let mut loaded = IN_PLACE_FILES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(entry) = loaded.iter_mut().find(|e| {
             e.inode == self.inode
-                && e.canonical_path == self.canonical_path
+                && e.resolved_path == self.resolved_path
                 && e.digest == self.digest
         }) {
             entry.sealed = true;
@@ -170,7 +176,7 @@ impl Drop for InPlaceClaim {
         let mut loaded = IN_PLACE_FILES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(at) = loaded.iter().position(|e| {
             e.inode == self.inode
-                && e.canonical_path == self.canonical_path
+                && e.resolved_path == self.resolved_path
                 && e.digest == self.digest
         }) {
             loaded[at].pending = loaded[at].pending.saturating_sub(1);
@@ -211,7 +217,10 @@ impl StagedDylib {
     ) -> Result<Self, LoaderError> {
         let (loaded_path, owns_copy, mut in_place) = match root {
             Some(root) => (stage_private_copy(root, dylib_path, subdir, label)?, true, None),
-            None => (dylib_path.to_path_buf(), false, Some(InPlaceClaim::new(dylib_path)?)),
+            None => {
+                let claim = InPlaceClaim::new(dylib_path)?;
+                (claim.resolved_path().to_path_buf(), false, Some(claim))
+            }
         };
         let discard = |path: &Path| {
             if owns_copy {
@@ -221,8 +230,8 @@ impl StagedDylib {
         // SAFETY: Loading an NVE app `cdylib` via `libloading`.
         let lib = match unsafe { Library::new(&loaded_path) } {
             Ok(lib) => {
-                // The OS loader has mapped this image; keep the inode tombstoned even if symbol
-                // lookup fails or this handle is later dropped (`RTLD_NODELETE`).
+                // The OS loader has mapped this image; seal the digest-based claim for this
+                // process even if symbol lookup fails or this handle is later dropped (`RTLD_NODELETE`).
                 if let Some(claim) = in_place.as_mut() {
                     claim.seal();
                 }
@@ -257,7 +266,7 @@ impl StagedDylib {
         self.get_interface
     }
 
-    /// The file the OS loaded: the private staged copy on desktop, the source path on mobile.
+    /// The file the OS loaded: the private staged copy on desktop, the resolved source path on mobile.
     pub fn loaded_copy_path(&self) -> &Path {
         &self.loaded_path
     }
@@ -606,5 +615,36 @@ mod staging_tests {
         assert!(open_private_dir(&link).is_err(), "a file is not a directory");
         std::fs::remove_file(&link).expect("test fs op");
         std::fs::remove_dir_all(&target).expect("test fs op");
+    }
+
+    #[test]
+    fn in_place_symlink_repoint_loads_new_target_via_canonical_path() {
+        let dir = scratch("symlink");
+        std::fs::create_dir(&dir).expect("test fs op");
+        let build = |name: &str, tag: usize| {
+            let (src, out) = (dir.join(format!("{name}.rs")), dir.join(format!("lib{name}.{}", std::env::consts::DLL_EXTENSION)));
+            let code = format!("#[unsafe(no_mangle)] pub extern \"C\" fn nve_get_interface(_: u32) -> *const core::ffi::c_void {{ {tag} as *const _ }}");
+            std::fs::write(&src, code).expect("test fs op");
+            let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
+            let args = ["--crate-type=cdylib", "--edition=2024", "-C", "opt-level=0", "-o"];
+            assert!(std::process::Command::new(rustc).args(args).arg(&out).arg(&src).status().expect("rustc").success());
+            out
+        };
+        let (v1, v2, link) = (build("sym_v1", 1), build("sym_v2", 2), dir.join("current.so"));
+        std::os::unix::fs::symlink(&v1, &link).expect("test fs op");
+        let d1 = StagedDylib::load_with_root(&link, None, "mods", "g1").expect("load v1 via symlink");
+        assert_eq!(d1.loaded_copy_path(), std::fs::canonicalize(&v1).expect("canon v1"));
+        // SAFETY: Test fixture returns its integer tag without dereferencing.
+        assert_eq!(unsafe { (d1.get_interface())(0) as usize }, 1);
+        std::fs::remove_file(&link).expect("test fs op");
+        std::os::unix::fs::symlink(&v2, &link).expect("test fs op");
+        let d2 = StagedDylib::load_with_root(&link, None, "mods", "g2").expect("load v2 via repointed symlink");
+        assert_eq!(d2.loaded_copy_path(), std::fs::canonicalize(&v2).expect("canon v2"));
+        // SAFETY: Test fixture returns its integer tag without dereferencing.
+        assert_eq!(unsafe { (d2.get_interface())(0) as usize }, 2);
+        drop((d1, d2));
+        std::fs::write(&v1, b"overwritten-v1").expect("test fs op");
+        assert!(matches!(StagedDylib::load_with_root(&v1, None, "mods", "g3"), Err(LoaderError::AlreadyLoadedInPlace(_))));
+        std::fs::remove_dir_all(&dir).expect("test fs op");
     }
 }
