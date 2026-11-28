@@ -3,13 +3,13 @@
 //! iOS, Android, SwiftUI, and Flutter hosts.
 
 use nve_abi::{
-    FrameId, NveGestureDisposition, NveIntrinsicSize, NvePropsRef, NveSizeConstraints, SurfaceId,
-    ValidatedEvents,
+    FrameId, NveGestureDisposition, NveHostEventBatchRef, NveHostEventKind, NveIntrinsicSize,
+    NvePropsRef, NveSizeConstraints, SurfaceId, ValidatedEvents, SERVICE_SYSTEM_ENV,
 };
 use nve_dioxus::DioxusSurface;
 use nve_docs::DocsViewport;
 use nve_engine::{HotPatchMsg, NveApp};
-use nve_system_env::ThemeSnapshot;
+use nve_system_env::{ThemeSnapshot, EVENT_THEME_CHANGED};
 
 use crate::host::DocsHost;
 use crate::site::embedded_compiled_site;
@@ -97,16 +97,25 @@ impl NveApp for DocsSiteModule {
         false
     }
 
-    /// Host appearance changes (`ThemeSnapshot` repr-C payloads from the Skia shell's
-    /// `ThemeChanged`) re-theme the mounted docs through `nve-system-env`, with no rebuild.
+    /// Host appearance changes (canonical `NveHostEventBatch` `Push` records for
+    /// `SERVICE_SYSTEM_ENV` / `EVENT_THEME_CHANGED`) re-theme the mounted docs through
+    /// `nve-system-env`, with no rebuild.
     fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
-        match ThemeSnapshot::from_repr_c_bytes(batch) {
-            Ok(theme) => {
+        let Ok(parsed) = NveHostEventBatchRef::parse(batch) else {
+            return false;
+        };
+        let mut applied = false;
+        for rec in parsed.iter() {
+            if rec.kind == NveHostEventKind::Push
+                && rec.service_id == SERVICE_SYSTEM_ENV
+                && rec.method_or_event_or_channel == EVENT_THEME_CHANGED
+                && let Ok(theme) = ThemeSnapshot::from_repr_c_bytes(rec.payload)
+            {
                 self.host.publish_theme(theme);
-                true
+                applied = true;
             }
-            Err(_) => false,
         }
+        applied
     }
 
     fn apply_hot_patch(&mut self, msg: &HotPatchMsg) -> bool {

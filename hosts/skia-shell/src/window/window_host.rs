@@ -493,6 +493,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 }
                 sw.sync_title();
                 sw.sync_ime_state();
+                sw.sync_a11y_state(false);
                 sw.window.request_redraw();
             }
         }
