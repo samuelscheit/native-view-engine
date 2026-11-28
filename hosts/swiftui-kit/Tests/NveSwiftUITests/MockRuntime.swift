@@ -190,6 +190,11 @@ final class MockRuntime: @unchecked Sendable {
     var patches: [Int] = []
     var wake: (NveRuntimeWakeFn?, UnsafeMutableRawPointer?) = (nil, nil)
     var measurer: (NveRuntimeMeasureTextFn?, UnsafeMutableRawPointer?) = (nil, nil)
+    var intrinsicInvalidated: (NveRuntimeIntrinsicSizeInvalidatedFn?, UnsafeMutableRawPointer?) = (nil, nil)
+    var intrinsicInvalidatedSetCount = 0
+    var intrinsicInvalidatedClearCount = 0
+    var measureCalls: [(constraints: NveSizeConstraints, flags: UInt32)] = []
+    var measureHandler: ((NveSizeConstraints, UInt32) -> NveSurfaceMeasure)?
 
     private var pinned: [UnsafeMutableRawPointer] = []
     private var view = NveSceneView()
@@ -204,6 +209,8 @@ final class MockRuntime: @unchecked Sendable {
         creates = 0; destroys = 0; acquires = 0; releases = 0; ticks = 0; attaches = 0; detaches = 0; loads = []
         propCounts = []; dispatched = []; viewports = []; pairedUri = ""; paired = false; restored = []; patches = []
         wake = (nil, nil); measurer = (nil, nil)
+        intrinsicInvalidated = (nil, nil); intrinsicInvalidatedSetCount = 0; intrinsicInvalidatedClearCount = 0
+        measureCalls = []; measureHandler = nil
     }
 
     fileprivate func pin<T>(_ values: [T]) -> UnsafePointer<T>? {
@@ -388,11 +395,36 @@ final class MockRuntime: @unchecked Sendable {
             }
             return msg.count
         }
-        a.measure_surface = { _, _, _, out in
-            out?.pointee = NveSurfaceMeasure(width: 120, height: 40, first_baseline: .nan, last_baseline: .nan)
-            return MockRuntime.shared.status()
+        a.measure_surface = { _, constraintsPtr, flags, out in
+            let m = MockRuntime.shared
+            let c = constraintsPtr?.pointee ?? NveSizeConstraints(min_w: 0, min_h: 0, max_w: .infinity, max_h: .infinity)
+            m.measureCalls.append((c, flags))
+            let st = m.status()
+            guard st == 0 else { return st }
+            if let handler = m.measureHandler {
+                out?.pointee = handler(c, flags)
+            } else {
+                let root = m.scene.rects.count > NodeId.root.index ? m.scene.rects[NodeId.root.index] : NveLayoutRect()
+                let ideal = (flags & UInt32(NVE_MEASURE_FLAG_IDEAL)) != 0
+                let w = ideal ? root.width : min(max(root.width, c.min_w), c.max_w)
+                let h = ideal ? root.height : min(max(root.height, c.min_h), c.max_h)
+                out?.pointee = NveSurfaceMeasure(width: w, height: h, first_baseline: .nan, last_baseline: .nan)
+            }
+            return 0
         }
-        a.set_intrinsic_size_invalidated_callback = { _, _, _ in MockRuntime.shared.status() }
+        a.set_intrinsic_size_invalidated_callback = { _, cb, ctx in
+            let m = MockRuntime.shared
+            let st = m.status()
+            if st == 0 {
+                m.intrinsicInvalidated = (cb, ctx)
+                if cb == nil {
+                    m.intrinsicInvalidatedClearCount += 1
+                } else {
+                    m.intrinsicInvalidatedSetCount += 1
+                }
+            }
+            return st
+        }
         a.save_frame0_file = { _, _, _, _ in MockRuntime.shared.status() }
         a.boot_frame0_file = { _, _, _, _ in Int32(NVE_RUNTIME_NOT_FOUND.rawValue) }
         a.boot_frame0_bytes = { _, _, _, _ in Int32(NVE_RUNTIME_NOT_FOUND.rawValue) }

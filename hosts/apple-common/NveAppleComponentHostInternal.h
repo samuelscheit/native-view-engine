@@ -33,6 +33,7 @@ NS_ASSUME_NONNULL_BEGIN
 /// running app's state into it), replacing any app or pairing, and pumps.
 - (BOOL)_loadAppModule:(NSString *)path carryState:(BOOL)carry error:(NSError *_Nullable *_Nullable)error;
 - (NSError *)_errorWithCode:(NSInteger)code description:(NSString *)description;
+- (NSError *)_runtimeError:(NSString *)what status:(NveRuntimeStatus)status;
 /// Runs `block` with this host on the next main-queue turn, unless the host is gone by then (the
 /// block never retains it). For calls made during reconcile, which must not re-enter the runtime.
 - (void)_deferToNextTurn:(void (^)(NveAppleComponentHost *host))block;

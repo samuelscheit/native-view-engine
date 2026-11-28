@@ -5,11 +5,24 @@ import NveHostAbi
 import QuartzCore
 import SwiftUI
 
-/// Weak controller reference handed to the runtime wake callback, which may fire on any thread;
-/// it is only dereferenced on the main queue.
+/// Weak controller reference handed to runtime callbacks (`wake`, `intrinsic_size_invalidated`);
+/// only dereferenced on the main queue.
 private final class WeakController: @unchecked Sendable {
     weak var value: NveSurfaceController?
     init(_ value: NveSurfaceController) { self.value = value }
+}
+
+/// Measured surface dimensions and optional text baselines returned by ABI v6 `measure_surface`.
+public struct NveSurfaceMeasurement: Equatable, Sendable {
+    public let size: CGSize
+    public let firstBaseline: CGFloat?
+    public let lastBaseline: CGFloat?
+
+    public init(size: CGSize, firstBaseline: CGFloat? = nil, lastBaseline: CGFloat? = nil) {
+        self.size = size
+        self.firstBaseline = firstBaseline
+        self.lastBaseline = lastBaseline
+    }
 }
 
 // MARK: - Surface Controller (`libnve_runtime` surface + attached `nve_get_interface` app)
@@ -17,8 +30,8 @@ private final class WeakController: @unchecked Sendable {
 /// One NVE surface hosted by `libnve_runtime`: attaches an app (static, explicit, process image,
 /// or a `.dylib` the runtime loads and hot-reloads with state carried over), pairs with a remote
 /// dev server, forwards props / input / hot patches / state snapshots, drives frames from the
-/// runtime wake callback, and publishes the zero-copy scene through ``store``. Main-thread only
-/// (the runtime binds the surface to its creating thread).
+/// runtime wake callback, negotiates Model A intrinsic sizing/baselines via ABI v6
+/// `measure_surface`, and publishes the zero-copy scene through ``store``.
 public final class NveSurfaceController: ObservableObject {
     private static var nextSurfaceId: UInt32 = 1
     private static let idLock = NSLock()
@@ -28,19 +41,24 @@ public final class NveSurfaceController: ObservableObject {
     public let store: NveSceneStore
     public private(set) var resolutionSource: NveInterfaceResolutionSource?
     @Published public private(set) var isPaired = false
+    /// Monotonically increments whenever the runtime fires `intrinsic_size_invalidated_callback`.
+    @Published public private(set) var intrinsicSizeRevision: UInt64 = 0
 
     public var onEvent: ((NveEvent) -> Void)?
+
+    /// `true` when `dispatchEvents` runs synchronously against an in-process / dylib app.
+    public var dispatchesSynchronously: Bool { !isPaired }
 
     private var lastPropsValue: NveBinValue?
     private var lastDirectPropsEqual: ((Any) -> Bool)?
     private var inboundBatch = EventBatchBuilder()
     private var lastTick: CFTimeInterval = 0
     private var pumpScheduled = false
+    private var intrinsicInvalidationScheduled = false
 
     /// Creates a runtime surface and attaches the app: `getInterface` when given, else the
     /// `dylibPath` module (loaded by the runtime), else `vtableSymbol` from the static table or the
-    /// process image. Throws when `libnve_runtime` is not linked or incompatible, or the module
-    /// does not load.
+    /// process image.
     public init(
         surfaceId: UInt32? = nil,
         vtableSymbol: String = "nve_get_interface",
@@ -63,6 +81,7 @@ public final class NveSurfaceController: ObservableObject {
         try session.setTextMeasurer(textMeasurer)
         let weakSelf = WeakController(self)
         try session.setWakeHandler { DispatchQueue.main.async { weakSelf.value?.schedulePump() } }
+        try installIntrinsicSizeInvalidationCallback()
         if getInterface == nil, let dylibPath, !dylibPath.isEmpty {
             try load(dylibPath: dylibPath)
         } else if let resolved = NveInterfaceResolver.resolve(
@@ -72,11 +91,30 @@ public final class NveSurfaceController: ObservableObject {
         }
     }
 
+    deinit {
+        // Explicitly unregister and drain runtime callbacks before `session` tears down.
+        _ = try? session.setIntrinsicSizeInvalidatedHandler(nil)
+        _ = try? session.setWakeHandler(nil)
+    }
+
+    private func installIntrinsicSizeInvalidationCallback() throws {
+        let weakSelf = WeakController(self)
+        try session.setIntrinsicSizeInvalidatedHandler {
+            DispatchQueue.main.async { weakSelf.value?.noteIntrinsicSizeInvalidated() }
+        }
+    }
+
+    private func noteIntrinsicSizeInvalidated() {
+        guard !intrinsicInvalidationScheduled else { return }
+        intrinsicInvalidationScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.intrinsicInvalidationScheduled = false
+            self.intrinsicSizeRevision &+= 1
+        }
+    }
+
     // MARK: App lifecycle
-    //
-    // The runtime swaps apps atomically (a rejected one leaves the running app untouched) and owns
-    // every loaded module, unloading it only after its app is destroyed: the host never `dlopen`s
-    // or `dlclose`s app code.
 
     /// Attaches an in-process app (explicit, static, or process image), replacing any previous one.
     public func attach(_ resolved: NveResolvedInterface) throws {
@@ -98,6 +136,7 @@ public final class NveSurfaceController: ObservableObject {
     }
 
     public func detach() throws {
+        _ = try? session.setIntrinsicSizeInvalidatedHandler(nil)
         try session.attachApp(nil)
         releaseLocalApp()
     }
@@ -105,11 +144,10 @@ public final class NveSurfaceController: ObservableObject {
     private func adopt(_ source: NveInterfaceResolutionSource) {
         releaseLocalApp()
         resolutionSource = source
+        _ = try? installIntrinsicSizeInvalidationCallback()
         pump()
     }
 
-    /// Forgets the local app the runtime no longer runs (detached, replaced, or dropped by a
-    /// successful pair) and the props it was last sent.
     private func releaseLocalApp() {
         resolutionSource = nil
         lastPropsValue = nil
@@ -120,12 +158,10 @@ public final class NveSurfaceController: ObservableObject {
 
     // MARK: Pairing
 
-    /// Pairs with a remote `nve dev` server (`nve://pair?...` or `ws(s)://...`).
-    /// A successful pair atomically replaces (and drops) the attached local app; a failed one
-    /// keeps it running.
     public func pair(uri: String, token: String = "") throws {
         try session.pairConnect(uri: uri, token: token)
         releaseLocalApp()
+        _ = try? installIntrinsicSizeInvalidationCallback()
         isPaired = session.isPaired
     }
 
@@ -171,7 +207,6 @@ public final class NveSurfaceController: ObservableObject {
         return setProps(entries)
     }
 
-    /// Encodes props into a borrowed `NveMapEntry` array and pushes them through the runtime.
     private func push(
         _ encode: ((UnsafePointer<NveMapEntry>?, UInt32) throws -> Bool) throws -> Bool
     ) -> Bool? {
@@ -195,7 +230,6 @@ public final class NveSurfaceController: ObservableObject {
     @discardableResult
     public func dispatchEvent(_ event: NveEvent) -> Bool { dispatchEvents([event]) }
 
-    /// Imperative command as a custom event carrying a typed `NveBinValue`.
     public func dispatchCommand(name: String, value: NveBinValue, nodeId: UInt32 = 1) {
         inboundBatch.clear()
         guard (try? inboundBatch.pushCustomEvent(
@@ -210,7 +244,6 @@ public final class NveSurfaceController: ObservableObject {
         dispatchCommand(name: name, value: .map(entries))
     }
 
-    /// Applies one binary `NVP1` Tier-1 hot-patch frame (as broadcast by `nve dev`).
     @discardableResult
     public func applyHotPatch(_ patchNvp1: Data) -> Bool {
         let changed = (try? session.applyHotPatch(patchNvp1)) ?? false
@@ -218,21 +251,55 @@ public final class NveSurfaceController: ObservableObject {
         return changed
     }
 
-    // MARK: Layout
+    // MARK: Model A Layout Measurement & Baselines (ABI v6)
 
-    /// SwiftUI `sizeThatFits`: the proposal on constrained axes; unconstrained axes take the
-    /// laid-out root, else `fallbackIntrinsicSize`.
+    /// Fallback intrinsic size used only when `measure_surface` fails or no scene is laid out yet.
     public var fallbackIntrinsicSize = CGSize(width: 240, height: 120)
 
+    /// Queries ABI v6 `measure_surface(constraints, NVE_MEASURE_FLAG_DRY_RUN | (unspecified ? NVE_MEASURE_FLAG_IDEAL : 0))`
+    /// and converts finite `first_baseline` / `last_baseline` (`NaN` -> `nil`).
+    public func measureSurface(proposal: ProposedViewSize) -> NveSurfaceMeasurement {
+        let isUnspecified = proposal.width == nil && proposal.height == nil
+        let maxW: Float = if let w = proposal.width, w.isFinite { Float(max(0, w)) } else { .infinity }
+        let maxH: Float = if let h = proposal.height, h.isFinite { Float(max(0, h)) } else { .infinity }
+        let constraints = NveSizeConstraints(min_w: 0, min_h: 0, max_w: maxW, max_h: maxH)
+        let flags = UInt32(NVE_MEASURE_FLAG_DRY_RUN) | (isUnspecified ? UInt32(NVE_MEASURE_FLAG_IDEAL) : 0)
+
+        if let m = try? session.measureSurface(constraints: constraints, flags: flags),
+           m.width.isFinite, m.height.isFinite
+        {
+            let zeroRequested = maxW == 0 && maxH == 0
+            if m.width > 0 || m.height > 0 || zeroRequested {
+                let first = m.first_baseline.isFinite ? CGFloat(m.first_baseline) : nil
+                let last = m.last_baseline.isFinite ? CGFloat(m.last_baseline) : nil
+                return NveSurfaceMeasurement(
+                    size: CGSize(width: CGFloat(max(0, m.width)), height: CGFloat(max(0, m.height))),
+                    firstBaseline: first,
+                    lastBaseline: last
+                )
+            }
+        }
+        return fallbackMeasurement(proposal: proposal)
+    }
+
+    /// SwiftUI `sizeThatFits` convenience over `CGSize` (non-finite axes mean unspecified).
     public func measure(proposal: CGSize) -> CGSize {
+        let proposed = ProposedViewSize(
+            width: proposal.width.isFinite ? proposal.width : nil,
+            height: proposal.height.isFinite ? proposal.height : nil
+        )
+        return measureSurface(proposal: proposed).size
+    }
+
+    private func fallbackMeasurement(proposal: ProposedViewSize) -> NveSurfaceMeasurement {
         let root = (try? session.withScene { scene -> CGSize? in
             guard let i = scene.index(of: .root), let r = scene.rect(i), r.width > 0, r.height > 0 else { return nil }
             return CGSize(width: CGFloat(r.width), height: CGFloat(r.height))
         }) ?? nil
         let natural = root ?? fallbackIntrinsicSize
-        return CGSize(
-            width: proposal.width.isFinite ? proposal.width : natural.width,
-            height: proposal.height.isFinite ? proposal.height : natural.height)
+        let w: CGFloat = if let pw = proposal.width, pw.isFinite { max(0, pw) } else { natural.width }
+        let h: CGFloat = if let ph = proposal.height, ph.isFinite { max(0, ph) } else { natural.height }
+        return NveSurfaceMeasurement(size: CGSize(width: w, height: h))
     }
 
     /// Propagates the hosting view's size (and display scale) to the runtime viewport.

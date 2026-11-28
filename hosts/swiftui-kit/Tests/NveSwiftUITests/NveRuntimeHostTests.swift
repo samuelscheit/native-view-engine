@@ -379,13 +379,17 @@ final class NveRuntimeHostTests: XCTestCase {
         XCTAssertEqual(m.loads.map(\.1), [0, 1, 1], "only reloads carry state")
         XCTAssertEqual(m.detaches, 0)
 
-        // Unconstrained axes take the laid-out root rect (fallback when it is empty).
+        // Model A `measure_surface`: constrained axes pass max constraints, unspecified passes IDEAL.
         let rootRect = m.scene.rects[NodeId.root.index]
-        let natural = rootRect.width > 0 && rootRect.height > 0
-            ? CGSize(width: CGFloat(rootRect.width), height: CGFloat(rootRect.height)) : controller.fallbackIntrinsicSize
-        XCTAssertEqual(controller.measure(proposal: CGSize(width: 320, height: CGFloat.infinity)), CGSize(width: 320, height: natural.height))
-        XCTAssertEqual(controller.measure(proposal: CGSize(width: CGFloat.infinity, height: 50)), CGSize(width: natural.width, height: 50))
+        XCTAssertEqual(controller.measure(proposal: CGSize(width: 320, height: CGFloat.infinity)),
+                       CGSize(width: CGFloat(rootRect.width), height: CGFloat(rootRect.height)))
+        XCTAssertEqual(m.measureCalls.last?.flags, UInt32(NVE_MEASURE_FLAG_DRY_RUN))
+        XCTAssertEqual(controller.measure(proposal: CGSize(width: CGFloat.infinity, height: 50)),
+                       CGSize(width: CGFloat(rootRect.width), height: 50))
         XCTAssertEqual(controller.measure(proposal: CGSize(width: 10, height: 20)), CGSize(width: 10, height: 20))
+        XCTAssertEqual(controller.measure(proposal: CGSize(width: CGFloat.infinity, height: CGFloat.infinity)),
+                       CGSize(width: CGFloat(rootRect.width), height: CGFloat(rootRect.height)))
+        XCTAssertEqual(m.measureCalls.last?.flags, UInt32(NVE_MEASURE_FLAG_DRY_RUN | NVE_MEASURE_FLAG_IDEAL))
         controller.resize(CGSize(width: 320, height: 480), scale: 2)
         XCTAssertEqual(m.viewports.last?.0, 320)
         XCTAssertEqual(m.viewports.last?.2, 2)

@@ -104,6 +104,20 @@ void update_image_view(NveAppleImageView *view, NvePlatformImage *image, ImageRe
 
 - (void)disconnectPaired { [_nveHost disconnectPaired]; }
 
+- (BOOL)saveFrame0ToPath:(NSString *)path appBuildId:(uint64_t)appBuildId envHash:(uint64_t)envHash error:(NSError **)error {
+  return [_nveHost saveFrame0ToPath:path appBuildId:appBuildId envHash:envHash error:error];
+}
+
+- (BOOL)bootFrame0FromPath:(NSString *)path appBuildId:(uint64_t)appBuildId envHash:(uint64_t)envHash error:(NSError **)error {
+  [self propagateBoundsToNveHost];
+  return [_nveHost bootFrame0FromPath:path appBuildId:appBuildId envHash:envHash error:error];
+}
+
+- (BOOL)bootFrame0FromBytes:(NSData *)envelope appBuildId:(uint64_t)appBuildId envHash:(uint64_t)envHash error:(NSError **)error {
+  [self propagateBoundsToNveHost];
+  return [_nveHost bootFrame0FromBytes:envelope appBuildId:appBuildId envHash:envHash error:error];
+}
+
 - (BOOL)applyPropsDictionary:(NSDictionary<NSString *, id> *)props { return [_nveHost applyPropsDictionary:props]; }
 - (void)renderNveFrame { [_nveHost renderFrame]; }
 - (void)drainNveEmittedEvents { [_nveHost drainEmittedEvents]; }

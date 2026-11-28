@@ -25,9 +25,21 @@ public struct NveSceneAccessibilityElement: Identifiable, Equatable, Sendable {
     public var isImage: Bool { role == .image }
 }
 
+/// Mounted overlay descriptor for one live visible `nve.text_input` node in surface coordinates.
+public struct NveTextInputDescriptor: Identifiable, Equatable, Sendable {
+    public let id: NodeId
+    public let frame: CGRect
+    public let visibleClip: CGRect?
+    public let props: NveTextInputProps
+    public let style: NveTextStyle
+    public let opacity: Double
+    public let accessibilityLabel: String
+    public let accessibilityHint: String?
+}
+
 /// Host-side view state over a runtime surface's zero-copy scene: publishes frame changes to
 /// SwiftUI, tracks scroll offsets (owned by the runtime, mirrored per frame), and resolves image
-/// resources. Scene slabs are never copied: every read borrows the published scene.
+/// and canvas draw-list resources. Scene slabs are never copied: every read borrows the scene.
 public final class NveSceneStore: ObservableObject {
     /// Font size from which an un-annotated leaf text is announced as a heading.
     public static let inferredHeadingFontSize: CGFloat = 20
@@ -41,9 +53,11 @@ public final class NveSceneStore: ObservableObject {
     public let imageCache: NveImageCache
     /// Decoded `ImageSrc` per resource id, valid while the id's bytes are (see `sync()`).
     private var imageSources: [UInt32: CachedImageSource] = [:]
-    private var imagesEpoch: UInt32 = 0
-    /// Frame the image cache is valid for (`nil`: none synced yet).
-    private var imagesFrame: UInt64?
+    /// Cached flat `nve.res.draw_list` bytes per resource id, invalidated alongside `imageSources`.
+    private var drawLists: [UInt32: [UInt8]] = [:]
+    private var resourcesEpoch: UInt32 = 0
+    /// Frame the resource caches are valid for (`nil`: none synced yet).
+    private var resourcesFrame: UInt64?
 
     private struct CachedImageSource {
         let source: NveImageSource
@@ -70,16 +84,20 @@ public final class NveSceneStore: ObservableObject {
             // Resource ids keep their bytes unless listed in `dirtyResources`; a new scene epoch
             // (ids reused by another app / pairing) or a skipped frame invalidates every entry. A
             // repeated sync of the same frame changes nothing.
-            let sameEpoch = scene.sceneEpoch == imagesEpoch
-            if sameEpoch, scene.frameId == imagesFrame {
+            let sameEpoch = scene.sceneEpoch == resourcesEpoch
+            if sameEpoch, scene.frameId == resourcesFrame {
                 // already absorbed
-            } else if sameEpoch, let last = imagesFrame, scene.frameId == last &+ 1 {
-                for id in scene.dirtyResources { imageSources.removeValue(forKey: id) }
+            } else if sameEpoch, let last = resourcesFrame, scene.frameId == last &+ 1 {
+                for id in scene.dirtyResources {
+                    imageSources.removeValue(forKey: id)
+                    drawLists.removeValue(forKey: id)
+                }
             } else {
                 imageSources.removeAll(keepingCapacity: true)
+                drawLists.removeAll(keepingCapacity: true)
             }
-            imagesEpoch = scene.sceneEpoch
-            imagesFrame = scene.frameId
+            resourcesEpoch = scene.sceneEpoch
+            resourcesFrame = scene.frameId
             // The runtime owns scroll offsets (incl. programmatic `requested_scroll_*`) and publishes
             // every container's visual child shift with the frame.
             scrollOffsets.removeAll(keepingCapacity: true)
@@ -136,12 +154,10 @@ public final class NveSceneStore: ObservableObject {
     /// borrows the published scene for the read.
     private func cachedImageSource(_ id: UInt32, in scene: NveScene?) -> CachedImageSource? {
         if let cached = imageSources[id] { return cached }
-        let res: (kind: Key64, bytes: [UInt8])? = if let scene {
-            try? session.resource(id, in: scene)
-        } else {
-            try? session.withScene { try session.resource(id, in: $0) }
-        }
-        guard let res, res.kind == Self.imageSrcKind, let src = NveImageSource(resourceBytes: res.bytes) else { return nil }
+        guard let res = fetchResource(id, in: scene),
+              res.kind == Self.imageSrcKind,
+              let src = NveImageSource(resourceBytes: res.bytes)
+        else { return nil }
         let key: String? = if case let .encoded(data) = src { "nve.res.image_src#\(Xxh64.hash(data))" } else { nil }
         let cached = CachedImageSource(source: src, encodedKey: key)
         imageSources[id] = cached
@@ -154,6 +170,94 @@ public final class NveSceneStore: ObservableObject {
         switch cached.source {
         case let .url(url): return imageCache.image(for: url)
         case let .encoded(bytes): return imageCache.image(encoded: bytes, key: cached.encodedKey ?? "")
+        }
+    }
+
+    /// Flat `nve.res.draw_list` bytes for an `nve.canvas` resource (strictly kind-checked and cached).
+    public func drawList(resource id: UInt32, in scene: NveScene? = nil) -> [UInt8]? {
+        if let cached = drawLists[id] { return cached }
+        guard let res = fetchResource(id, in: scene), res.kind == NveDrawList.kind, !res.bytes.isEmpty else {
+            return nil
+        }
+        drawLists[id] = res.bytes
+        return res.bytes
+    }
+
+    private func fetchResource(_ id: UInt32, in scene: NveScene?) -> (kind: Key64, bytes: [UInt8])? {
+        if let scene {
+            return try? session.resource(id, in: scene)
+        }
+        return try? session.withScene { try session.resource(id, in: $0) }
+    }
+
+    // MARK: Mounted Editable Text Inputs
+
+    /// Returns every live visible `nve.text_input` node in paint order with surface-space bounds.
+    public func textInputs() -> [NveTextInputDescriptor] {
+        withTables { tables in
+            var out: [NveTextInputDescriptor] = []
+            if let root = tables.scene.index(of: .root) {
+                collectTextInputs(tables, root, inheritedVisible: true, opacity: 1, translate: .zero, clip: nil, into: &out)
+            }
+            return out
+        } ?? []
+    }
+
+    /// Reads the latest app-published `nve.text_input.value` for `nodeId` (if still live).
+    public func textInputValue(for nodeId: NodeId) -> String? {
+        withTables { tables -> String? in
+            guard let index = tables.scene.index(of: nodeId) else { return nil }
+            return tables.textInput(index)?.value
+        } ?? nil
+    }
+
+    private func collectTextInputs(
+        _ t: NveRuntimeTables,
+        _ i: Int,
+        inheritedVisible: Bool,
+        opacity inheritedOpacity: Double,
+        translate: CGPoint,
+        clip: CGRect?,
+        into out: inout [NveTextInputDescriptor]
+    ) {
+        let opacity = inheritedOpacity * t.opacity(i)
+        guard opacity > 0, let id = t.scene.nodeId(at: i) else { return }
+        let visible: Bool = switch t.visibility(i) {
+        case .visible: true
+        case .hidden: false
+        case .inherit: inheritedVisible
+        }
+        let rect = t.rect(i).offsetBy(dx: translate.x, dy: translate.y)
+        let clipped = clip.map { rect.intersection($0) } ?? rect
+        let hasArea = !clipped.isNull && clipped.width > 0 && clipped.height > 0
+
+        if visible && hasArea, let input = t.textInput(i) {
+            let a11y = t.accessibility(i)
+            let label = (a11y?.label?.isEmpty == false ? a11y?.label : nil) ?? input.placeholder
+            let hint = a11y?.hint?.isEmpty == true ? nil : a11y?.hint
+            out.append(NveTextInputDescriptor(
+                id: id,
+                frame: rect,
+                visibleClip: clip,
+                props: input,
+                style: t.textStyle(i),
+                opacity: opacity,
+                accessibilityLabel: label,
+                accessibilityHint: hint
+            ))
+        }
+
+        let clipsChildren = t.clipsChildren(i)
+        var next = translate
+        if t.isScroll(i) {
+            let o = scrollOffset(for: id)
+            next.x -= o.x
+            next.y -= o.y
+        }
+        for c in t.paintOrderedChildren(i) {
+            collectTextInputs(
+                t, c, inheritedVisible: visible, opacity: opacity, translate: next,
+                clip: clipsChildren ? clipped : clip, into: &out)
         }
     }
 

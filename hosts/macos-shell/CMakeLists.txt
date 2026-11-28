@@ -7,9 +7,9 @@ set(CMAKE_OBJCXX_STANDARD 20)
 set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# `nve::runtime` (libnve_runtime staticlib + generated ABI / table headers under
-# packages/core/host-cxx/include): the only engine dependency of the Apple hosts.
-include("${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/cmake/NveRuntime.cmake")
+# `nve::host_cxx` + `nve::runtime` + `nve::canvas_cxx` (libnve_runtime staticlib + generated ABI /
+# table headers + flat `nve.canvas` draw-list codec).
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/cmake/NveHostStack.cmake")
 
 set(NVE_APPLE_COMMON_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../apple-common")
 
@@ -17,6 +17,7 @@ add_library(nve_macos_shell_lib STATIC
   "${NVE_APPLE_COMMON_DIR}/NveAppleImageCache.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleValueBridge.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleSupport.mm"
+  "${NVE_APPLE_COMMON_DIR}/NveAppleCanvasView.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleSceneNodes.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleSceneReconciler.mm"
   "${NVE_APPLE_COMMON_DIR}/NveAppleComponentHost.mm"
@@ -27,7 +28,13 @@ add_library(nve_macos_shell_lib STATIC
 )
 target_include_directories(nve_macos_shell_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${NVE_APPLE_COMMON_DIR})
 target_compile_options(nve_macos_shell_lib PRIVATE -fobjc-arc -Wall -Wextra -Werror)
-target_link_libraries(nve_macos_shell_lib PUBLIC nve::runtime "-framework Cocoa" "-framework QuartzCore")
+target_link_libraries(nve_macos_shell_lib PUBLIC
+  nve::runtime
+  nve::canvas_cxx
+  "-framework Cocoa"
+  "-framework QuartzCore"
+  "-framework CoreText"
+)
 # Keep Objective-C categories (e.g. `NveAppleComponentHost (Session)`) of this static library.
 target_link_options(nve_macos_shell_lib INTERFACE -ObjC)
 

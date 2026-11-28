@@ -3,12 +3,15 @@
 // Tier-2 reload with state, core-table scenes (text input, image, scroll, accessibility, rewritten
 // image resources), min-content measurement, and pairing errors.
 #import <AppKit/AppKit.h>
+#import "NveAppleCanvasView.h"
 #import "NveAppleComponentHost.h"
 #import "RCTNveMacComponentView.h"
 
 #include "NveAppleDemoApp.hpp"
 #include "NveAppleValueBridge.h"
 
+#include <nve/canvas/canvas.hpp>
+#include <nve/canvas/draw_list_encoder.hpp>
 #include <nve/host/bin_codec.hpp>
 #include <nve/host/core_resources.hpp>
 #include <nve/host/host_session.hpp>
@@ -320,7 +323,7 @@ int main() {
 
     // 7. Core tables: secure text input, image with a11y, scroll document sizing.
     RCTNveMacComponentView *scene = make_view();
-    CHECK([scene.nveHost replayFrame0:core_table_scene()]);
+    CHECK([scene.nveHost submitNve2Frame:core_table_scene()]);
     NSView *input = [scene nativeViewForNodeId:2u];
     CHECK([input isKindOfClass:[NSSecureTextField class]]);
     CHECK([((NSTextField *)input).stringValue isEqualToString:@"hunter2"]);
@@ -338,7 +341,7 @@ int main() {
     // A clean image node whose resource bytes were rewritten re-decodes; nothing else updates.
     NSImage *before4 = ((NveAppleImageView *)image).image;
     CHECK(near(before4.size.width, 4.0));
-    CHECK([scene.nveHost replayFrame0:rewritten_image_scene()]);
+    CHECK([scene.nveHost submitNve2Frame:rewritten_image_scene()]);
     CHECK([scene nativeViewForNodeId:3u] == image && near(((NveAppleImageView *)image).image.size.width, 8.0));
     CHECK(scene.nveLastReconciledDirtyCount == 1u && scene.nveLastReconciledRemovedCount == 0u);
 
@@ -349,7 +352,7 @@ int main() {
       RCTNveMacComponentView *det = make_view();
       __weak NSImage *weakImg8 = nil;
       @autoreleasepool {
-        CHECK([det.nveHost replayFrame0:detach_scene(1u)]);
+        CHECK([det.nveHost submitNve2Frame:detach_scene(1u)]);
         NveAppleImageView *a = (NveAppleImageView *)[det nativeViewForNodeId:2u];
         NveAppleImageView *b = (NveAppleImageView *)[det nativeViewForNodeId:3u];
         CHECK([a isKindOfClass:[NveAppleImageView class]] && [b isKindOfClass:[NveAppleImageView class]]);
@@ -358,7 +361,7 @@ int main() {
         CHECK([sv isKindOfClass:[NSScrollView class]] && near(sv.documentView.frame.size.height, 600.0));
         NSView *parent = b.superview;
         CHECK(parent != nil && [parent.subviews containsObject:b]);
-        CHECK([det.nveHost replayFrame0:detach_scene(2u)]);
+        CHECK([det.nveHost submitNve2Frame:detach_scene(2u)]);
         CHECK([det nativeViewForNodeId:3u] == b);  // still live, so still realized ...
         CHECK(b.superview == nil && ![parent.subviews containsObject:b]);  // ... but detached
         CHECK(a.superview == parent && sv.superview == parent);
@@ -368,7 +371,7 @@ int main() {
         // Rewriting tag-1 inline image under the same resource id 9 evicts cache and re-decodes.
         NSImage *img4 = a.image;
         CHECK(near(img4.size.width, 4.0));
-        CHECK([det.nveHost replayFrame0:detach_scene(3u)]);
+        CHECK([det.nveHost submitNve2Frame:detach_scene(3u)]);
         CHECK([det nativeViewForNodeId:2u] == a);
         CHECK(a.image != nil && a.image != img4 && near(a.image.size.width, 8.0));
         weakImg8 = a.image;
@@ -382,15 +385,15 @@ int main() {
     //      `set_children` change on the parent.
     {
       RCTNveMacComponentView *zview = make_view();
-      CHECK([zview.nveHost replayFrame0:z_order_scene(1u)]);
+      CHECK([zview.nveHost submitNve2Frame:z_order_scene(1u)]);
       NSView *box = [zview nativeViewForNodeId:2u];
       NSView *n3 = [zview nativeViewForNodeId:3u];
       NSView *n4 = [zview nativeViewForNodeId:4u];
       NSView *n5 = [zview nativeViewForNodeId:5u];
       CHECK(box != nil && [box.subviews isEqualToArray:(@[ n3, n4, n5 ])]);
-      CHECK([zview.nveHost replayFrame0:z_order_scene(2u)]);
+      CHECK([zview.nveHost submitNve2Frame:z_order_scene(2u)]);
       CHECK([box.subviews isEqualToArray:(@[ n5, n4, n3 ])]);
-      CHECK([zview.nveHost replayFrame0:z_order_scene(3u)]);
+      CHECK([zview.nveHost submitNve2Frame:z_order_scene(3u)]);
       CHECK([box.subviews isEqualToArray:(@[ n5, n3, n4 ])]);
     }
 
@@ -459,12 +462,12 @@ int main() {
     // 7b. Inherited typography cascades through dirty non-typography children to a recycled
     //     (generation 1) child, and clearing an ancestor's Typography restyles the subtree.
     RCTNveMacComponentView *typo = make_view();
-    CHECK([typo.nveHost replayFrame0:typography_scene(1u)]);
+    CHECK([typo.nveHost submitNve2Frame:typography_scene(1u)]);
     CHECK(near(font_size(typo, 4u), 30.0) && near(font_size(typo, kRecycledLeaf), 30.0));
-    CHECK([typo.nveHost replayFrame0:typography_scene(2u)]);
+    CHECK([typo.nveHost submitNve2Frame:typography_scene(2u)]);
     CHECK(near(font_size(typo, 4u), 20.0));             // through the dirty `mid`
     CHECK(near(font_size(typo, kRecycledLeaf), 20.0));  // raw NodeId resolved to its slot
-    CHECK([typo.nveHost replayFrame0:typography_scene(3u)]);
+    CHECK([typo.nveHost submitNve2Frame:typography_scene(3u)]);
     CHECK(font_size(typo, 4u) > 0.0 && !near(font_size(typo, 4u), 20.0));
     CHECK(font_size(typo, kRecycledLeaf) > 0.0 && !near(font_size(typo, kRecycledLeaf), 20.0));
 
@@ -559,10 +562,10 @@ int main() {
       };
       // Rust `WireDecoder` rejects binding a `kDrawListKind` resource directly to `nve.image.src`.
       RCTNveMacComponentView *v_wire = make_view();
-      CHECK(![v_wire.nveHost replayFrame0:make_img_scene(kDrawListKind, colliding, false)]);
+      CHECK(![v_wire.nveHost submitNve2Frame:make_img_scene(kDrawListKind, colliding, false)]);
       // Host-side lookup enforces `expectedKind` on live runtime resources (colliding `[1, 1, 0]` and PNG bytes).
       RCTNveMacComponentView *v1 = make_view();
-      CHECK([v1.nveHost replayFrame0:make_img_scene(nve::host::kImageSrcKind, valid_png_src, true)]);
+      CHECK([v1.nveHost submitNve2Frame:make_img_scene(nve::host::kImageSrcKind, valid_png_src, true)]);
       CHECK(((NveAppleImageView *)[v1 nativeViewForNodeId:2u]).image != nil);
       CHECK([v1.nveHost resourceBytesForId:9u expectedKind:nve::host::kImageSrcKind.value] != nil);
       CHECK([v1.nveHost resourceBytesForId:9u expectedKind:kDrawListKind.value] == nil);
@@ -596,7 +599,7 @@ int main() {
       }
       // Empty `EncodedBytes` (`[1, 0]`) under `kImageSrcKind` yields nil and never hits URL cache.
       RCTNveMacComponentView *v4 = make_view();
-      CHECK([v4.nveHost replayFrame0:make_img_scene(nve::host::kImageSrcKind, nve::host::encode_image_bytes({}), false)]);
+      CHECK([v4.nveHost submitNve2Frame:make_img_scene(nve::host::kImageSrcKind, nve::host::encode_image_bytes({}), false)]);
       CHECK(((NveAppleImageView *)[v4 nativeViewForNodeId:2u]).image == nil);
     }
 
@@ -604,7 +607,316 @@ int main() {
     CHECK(![scene connectPairedEndpoint:@"" token:@"" surfaceId:1u error:&err] && err.localizedDescription.length > 0);
     CHECK(!scene.isPaired);
 
-    // 9. Real Rust apps (`check-all.sh`: kitchen-sink + studio `cdylib`s) mount, render text, and
+    // 9. `nve.canvas`: CoreGraphics 8-opcode pixel verification, clip overflow balancing (`kMaxClipDepth = 64`),
+    //    malformed rejection, live `NveAppleCanvasView` mounting, and dirty-resource in-place redraw.
+    {
+      using namespace nve::canvas;
+      constexpr int kW = 64;
+      constexpr int kH = 64;
+      auto make_bitmap = [&](std::vector<uint8_t> &buf) -> CGContextRef {
+        buf.assign(static_cast<size_t>(kW * kH * 4), 0u);
+        CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        CGContextRef ctx = CGBitmapContextCreate(
+            buf.data(), kW, kH, 8, kW * 4, cs,
+            static_cast<uint32_t>(kCGImageAlphaPremultipliedLast) | static_cast<uint32_t>(kCGBitmapByteOrder32Big));
+        CGColorSpaceRelease(cs);
+        // Flip top-down so pixel (x, y) matches NSView.isFlipped / UIView coordinates.
+        CGContextTranslateCTM(ctx, 0.0, kH);
+        CGContextScaleCTM(ctx, 1.0, -1.0);
+        return ctx;
+      };
+      auto pixel = [](const std::vector<uint8_t> &buf, int x, int y) -> std::array<uint8_t, 4> {
+        const size_t off = static_cast<size_t>((y * kW + x) * 4);
+        return {buf[off], buf[off + 1], buf[off + 2], buf[off + 3]};
+      };
+
+      // 9a. All 8 opcodes rendered cleanly on offscreen CGBitmapContext.
+      std::vector<uint8_t> pixels;
+      CGContextRef ctx = make_bitmap(pixels);
+      const DrawPoint poly[] = {{4.0f, 54.0f}, {20.0f, 54.0f}, {20.0f, 60.0f}};
+      DrawListEncoder enc;
+      enc.clear(DrawColorRgba::rgb(10, 20, 30))
+          .fill_rect(2.0f, 2.0f, 12.0f, 12.0f, DrawColorRgba::rgb(255, 0, 0))
+          .fill_rounded_rect(20.0f, 2.0f, 16.0f, 16.0f, 4.0f, DrawColorRgba::rgb(0, 255, 0))
+          .fill_circle(48.0f, 10.0f, 8.0f, DrawColorRgba::rgb(0, 0, 255))
+          .stroke_line(4.0f, 30.0f, 28.0f, 30.0f, 4.0f, DrawColorRgba::rgb(255, 255, 0))
+          .stroke_polyline(poly, 4.0f, DrawColorRgba::rgb(0, 255, 255))
+          .clip_rect(36.0f, 36.0f, 12.0f, 12.0f)
+          .fill_rect(32.0f, 32.0f, 24.0f, 24.0f, DrawColorRgba::rgb(255, 0, 255))
+          .restore_clip();
+      const std::vector<uint8_t> dl = enc.finish();
+      const DrawListDecodeResult r_ok =
+          nve::apple::render_draw_list_to_cgcontext(ctx, CGRectMake(0, 0, kW, kH), dl);
+      CGContextRelease(ctx);
+      CHECK(r_ok.ok() && r_ok.ops_decoded == 9u);
+      CHECK(pixel(pixels, 0, 0)[0] == 10 && pixel(pixels, 0, 0)[1] == 20 && pixel(pixels, 0, 0)[2] == 30);
+      CHECK(pixel(pixels, 8, 8)[0] > 240 && pixel(pixels, 8, 8)[1] < 10);       // FillRect red
+      CHECK(pixel(pixels, 28, 10)[1] > 240 && pixel(pixels, 28, 10)[0] < 10);   // FillRoundedRect green
+      CHECK(pixel(pixels, 48, 10)[2] > 240 && pixel(pixels, 48, 10)[0] < 10);   // FillCircle blue
+      CHECK(pixel(pixels, 16, 30)[0] > 240 && pixel(pixels, 16, 30)[1] > 240);  // StrokeLine yellow
+      CHECK(pixel(pixels, 12, 54)[1] > 240 && pixel(pixels, 12, 54)[2] > 240);  // StrokePolyline cyan
+      CHECK(pixel(pixels, 42, 42)[0] > 240 && pixel(pixels, 42, 42)[2] > 240);  // Inside clip: magenta
+      CHECK(pixel(pixels, 33, 33)[0] == 10 && pixel(pixels, 33, 33)[2] == 30);  // Outside clip: untouched clear
+
+      // 9b. `kMaxClipDepth = 64` overflow balancing & RAII unwind: 66 clips + 2 restores stay clipped,
+      //     and caller's CGContext is cleanly restored afterwards.
+      {
+        std::vector<uint8_t> clipBuf;
+        CGContextRef cctx = make_bitmap(clipBuf);
+        DrawListEncoder deep;
+        deep.clear(DrawColorRgba::rgb(0, 0, 0));
+        for (uint32_t i = 0u; i < kMaxClipDepth + 2u; ++i) {
+          deep.clip_rect(10.0f, 10.0f, 10.0f, 10.0f);
+        }
+        deep.restore_clip().restore_clip();  // pops only the 2 overflowed clips; depth stays at 64
+        deep.fill_rect(0.0f, 0.0f, 64.0f, 64.0f, DrawColorRgba::rgb(255, 255, 255));
+        const std::vector<uint8_t> deepBytes = deep.finish();
+        const DrawListDecodeResult r_deep =
+            nve::apple::render_draw_list_to_cgcontext(cctx, CGRectMake(0, 0, kW, kH), deepBytes);
+        CHECK(r_deep.ok());
+        // Verify caller CGContext is NOT stuck clipped after RAII unwind: draw a red dot at (2, 2).
+        CGContextSetRGBFillColor(cctx, 1.0, 0.0, 0.0, 1.0);
+        CGContextFillRect(cctx, CGRectMake(0.0, 0.0, 4.0, 4.0));
+        CGContextRelease(cctx);
+        CHECK(pixel(clipBuf, 15, 15)[0] == 255);  // inside clip
+        CHECK(pixel(clipBuf, 40, 40)[0] == 0);    // clipped out during draw list
+        CHECK(pixel(clipBuf, 2, 2)[0] > 240 && pixel(clipBuf, 2, 2)[1] < 10);  // caller clip restored
+      }
+
+      // 9c. Malformed draw list triggers zero CG calls and returns exact error.
+      {
+        std::vector<uint8_t> badBuf;
+        CGContextRef bctx = make_bitmap(badBuf);
+        const std::vector<uint8_t> truncated = {1, 0, 0, 0, 1, 0, 0, 0};  // Clear missing color word
+        const DrawListDecodeResult r_bad =
+            nve::apple::render_draw_list_to_cgcontext(bctx, CGRectMake(0, 0, kW, kH), truncated);
+        CGContextRelease(bctx);
+        CHECK(!r_bad.ok() && r_bad.error == DrawListError::Truncated);
+        CHECK(pixel(badBuf, 0, 0)[3] == 0u);  // untouched
+      }
+
+      // 9d. Live `nve.canvas` table mounting, byte-equality dedup, and dirty-resource in-place redraw.
+      {
+        constexpr uint8_t kCanvasSlot = 28u;
+        const std::array<uint32_t, NVE_TABLE_CANVAS_WORDS> cdef(
+            {NVE_TABLE_CANVAS_DEFAULTS[0], NVE_TABLE_CANVAS_DEFAULTS[1]});
+        const std::array<uint8_t, NVE_TABLE_CANVAS_WORDS> cfx(
+            {NVE_TABLE_CANVAS_WORD_EFFECTS[0], NVE_TABLE_CANVAS_WORD_EFFECTS[1]});
+
+        DrawListEncoder dl1, dl2;
+        dl1.clear(DrawColorRgba::rgb(255, 0, 0));
+        dl2.clear(DrawColorRgba::rgb(0, 255, 0));
+        const std::vector<uint8_t> bytes1 = dl1.finish();
+        const std::vector<uint8_t> bytes2 = dl2.finish();
+
+        Nve2FrameBuilder f1(1u);
+        f1.declare_core_tables();
+        f1.declare({Key64{NVE_TABLE_CANVAS_KEY}, Key64{NVE_TABLE_CANVAS_SCHEMA_HASH}, kCanvasSlot, true,
+                    static_cast<uint8_t>(NVE_TABLE_CANVAS_FLAGS), cdef, cfx,
+                    NVE_TABLE_CANVAS_STR_WORDS, NVE_TABLE_CANVAS_RESOURCE_WORDS, NVE_TABLE_CANVAS_NAME});
+        f1.create_nodes({1u, 2u});
+        f1.define_resource(42u, kDrawListKind, bytes1);
+        std::array<uint32_t, NVE_TABLE_CANVAS_WORDS> crow = cdef;
+        f1.patch(kCanvasSlot, 2u,
+                 set_field(crow, NVE_TABLE_CANVAS_DRAW_LIST, 42u) | set_field(crow, NVE_TABLE_CANVAS_GENERATION, 1u),
+                 crow);
+        f1.set_children(1u, {2u});
+        const std::vector<uint8_t> raw1 = f1.finish();
+
+        RCTNveMacComponentView *cvHost = make_view();
+        CHECK([cvHost.nveHost submitNve2Frame:[NSData dataWithBytes:raw1.data() length:raw1.size()]]);
+        NSView *mounted = [cvHost nativeViewForNodeId:2u];
+        CHECK([mounted isKindOfClass:[NveAppleCanvasView class]]);
+        if ([mounted isKindOfClass:[NveAppleCanvasView class]]) {
+          NveAppleCanvasView *canvasView = (NveAppleCanvasView *)mounted;
+          CHECK(canvasView.redrawCount == 1u && canvasView.drawListData.length == bytes1.size());
+
+          // Frame 2: touch unrelated visual opacity on node 2 -> bytes unchanged, zero spurious redraws.
+          Nve2FrameBuilder f2(2u);
+          std::array<uint32_t, NVE_TABLE_VISUAL_WORDS> vis{};
+          std::copy(std::begin(NVE_TABLE_VISUAL_DEFAULTS), std::end(NVE_TABLE_VISUAL_DEFAULTS), vis.begin());
+          uint32_t op_bits = 0u;
+          const float half = 0.75f;
+          std::memcpy(&op_bits, &half, sizeof op_bits);
+          f2.patch(Nve2FrameBuilder::core_slot(Key64{NVE_TABLE_VISUAL_KEY}), 2u,
+                   set_field(vis, NVE_TABLE_VISUAL_OPACITY, op_bits), vis);
+          const std::vector<uint8_t> raw2 = f2.finish();
+          CHECK([cvHost.nveHost submitNve2Frame:[NSData dataWithBytes:raw2.data() length:raw2.size()]]);
+          CHECK(canvasView.redrawCount == 1u);
+
+          // Frame 3: rewrite resource 42 in-place while leaving node 2 clean -> RetainedTree dirty-resource redraw.
+          Nve2FrameBuilder f3(3u);
+          f3.define_resource(42u, kDrawListKind, bytes2);
+          const std::vector<uint8_t> raw3 = f3.finish();
+          CHECK([cvHost.nveHost submitNve2Frame:[NSData dataWithBytes:raw3.data() length:raw3.size()]]);
+          CHECK([cvHost nativeViewForNodeId:2u] == canvasView);
+          CHECK(canvasView.redrawCount == 2u && canvasView.drawListData.length == bytes2.size());
+          CHECK(std::memcmp(canvasView.drawListData.bytes, bytes2.data(), bytes2.size()) == 0);
+        }
+      }
+    }
+
+    // 10. Shared typography parity across `native_text_measure` and mounted AppKit labels:
+    //     `font_family`, `letter_spacing`, `line_height`, `max_lines`, `text_decoration`.
+    {
+      const auto measure = [](std::string_view sv, const NveRuntimeTextStyle &st, float max_w) {
+        float w = 0.0f, h = 0.0f;
+        nve::apple::native_text_measure(nullptr, NveStrSlice{reinterpret_cast<const uint8_t *>(sv.data()), sv.size()},
+                                        &st, max_w, &w, &h);
+        return std::pair{w, h};
+      };
+      // CSS font-family fallback list skips nonexistent family and resolves Menlo.
+      NSFont *menlo = nve::apple::platform_font(15.0f, 400u, false, "NonexistentNveFont, Menlo, monospace");
+      CHECK([menlo.familyName isEqualToString:@"Menlo"]);
+
+      // Letter spacing increases width monotonically.
+      NveRuntimeTextStyle tight{};
+      tight.font_size = 16.0f;
+      tight.font_weight = 400u;
+      NveRuntimeTextStyle wide = tight;
+      wide.letter_spacing = 6.0f;
+      const auto [tw, th] = measure("Typography", tight, INFINITY);
+      const auto [ww, wh] = measure("Typography", wide, INFINITY);
+      CHECK(ww > tw + 30.0f && th > 0.0f && wh > 0.0f);
+
+      // Line height (points & percent) increases multi-line height; max_lines caps it.
+      NveRuntimeTextStyle baseLH{};
+      baseLH.font_size = 14.0f;
+      baseLH.font_weight = 400u;
+      NveRuntimeTextStyle ptsLH = baseLH;
+      ptsLH.line_height_unit = NVE_LINE_HEIGHT_POINTS;
+      ptsLH.line_height = 40.0f;
+      NveRuntimeTextStyle pctLH = baseLH;
+      pctLH.line_height_unit = NVE_LINE_HEIGHT_PERCENT;
+      pctLH.line_height = 250.0f;
+      NveRuntimeTextStyle capLH = baseLH;
+      capLH.max_lines = 1u;
+      constexpr std::string_view kMulti = "Line one\nLine two\nLine three";
+      const auto [_, bh] = measure(kMulti, baseLH, INFINITY);
+      const auto [_1, ph] = measure(kMulti, ptsLH, INFINITY);
+      const auto [_2, pch] = measure(kMulti, pctLH, INFINITY);
+      const auto [_3, ch] = measure(kMulti, capLH, INFINITY);
+      (void)_;
+      (void)_1;
+      (void)_2;
+      (void)_3;
+      CHECK(ph > bh + 40.0f && pch > bh + 20.0f && ch > 0.0f && ch < bh);
+
+      // Live mounted NSTextField carries matching family, kern, line height, max lines, and decorations.
+      auto slot = [](uint64_t key) { return Nve2FrameBuilder::core_slot(Key64{key}); };
+      Nve2FrameBuilder tb(1u);
+      tb.declare_core_tables().create_nodes({1u, 2u});
+      tb.set_string(slot(NVE_TABLE_TEXT_KEY), 2u, NVE_TABLE_TEXT_TEXT.word, "Styled label");
+      std::array<uint32_t, NVE_TABLE_TYPOGRAPHY_WORDS> trow{};
+      std::copy(std::begin(NVE_TABLE_TYPOGRAPHY_DEFAULTS), std::end(NVE_TABLE_TYPOGRAPHY_DEFAULTS), trow.begin());
+      uint32_t sz_bits = 0u, ls_bits = 0u, lh_bits = 0u;
+      const float sz = 16.0f, ls = 4.0f, lh = 36.0f;
+      std::memcpy(&sz_bits, &sz, sizeof sz_bits);
+      std::memcpy(&ls_bits, &ls, sizeof ls_bits);
+      std::memcpy(&lh_bits, &lh, sizeof lh_bits);
+      const uint32_t mask =
+          set_field(trow, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, sz_bits) |
+          set_field(trow, NVE_TABLE_TYPOGRAPHY_LETTER_SPACING, ls_bits) |
+          set_field(trow, NVE_TABLE_TYPOGRAPHY_LINE_HEIGHT, (lh_bits & ~3u) | static_cast<uint32_t>(NVE_LENGTH_POINTS)) |
+          set_field(trow, NVE_TABLE_TYPOGRAPHY_MAX_LINES, 2u) |
+          set_field(trow, NVE_TABLE_TYPOGRAPHY_TEXT_DECORATION,
+                    NVE_TEXT_DECORATION_UNDERLINE | NVE_TEXT_DECORATION_LINE_THROUGH);
+      trow[0] |= uint32_t{1} << NVE_TABLE_TYPOGRAPHY_FONT_FAMILY.explicit_bit;
+      tb.patch(slot(NVE_TABLE_TYPOGRAPHY_KEY), 2u, mask | 1u, trow);
+      tb.set_string(slot(NVE_TABLE_TYPOGRAPHY_KEY), 2u, NVE_TABLE_TYPOGRAPHY_FONT_FAMILY.word,
+                    "NonexistentNveFont, Menlo, monospace");
+      tb.set_children(1u, {2u});
+      const std::vector<uint8_t> tframe = tb.finish();
+      RCTNveMacComponentView *tview = make_view();
+      CHECK([tview.nveHost submitNve2Frame:[NSData dataWithBytes:tframe.data() length:tframe.size()]]);
+      NSTextField *lbl = (NSTextField *)[tview nativeViewForNodeId:2u];
+      CHECK([lbl isKindOfClass:[NSTextField class]]);
+      CHECK([lbl.font.familyName isEqualToString:@"Menlo"]);
+      CHECK(lbl.maximumNumberOfLines == 2);
+      NSAttributedString *as = lbl.attributedStringValue;
+      CHECK(as.length > 0u);
+      NSDictionary<NSAttributedStringKey, id> *attrs = [as attributesAtIndex:0 effectiveRange:nullptr];
+      CHECK(near([attrs[NSKernAttributeName] doubleValue], 4.0));
+      NSParagraphStyle *ps = attrs[NSParagraphStyleAttributeName];
+      CHECK(ps != nil && near(ps.minimumLineHeight, 36.0));
+      CHECK([attrs[NSUnderlineStyleAttributeName] integerValue] != 0);
+      CHECK([attrs[NSStrikethroughStyleAttributeName] integerValue] != 0);
+    }
+
+    // 11. ABI v6 Frame-0 (`saveFrame0ToPath:`, `bootFrame0FromPath:`, `bootFrame0FromBytes:`):
+    //     persistence round-trip, mismatch/corrupt rejection + auto-remove, and attached-app guard.
+    {
+      constexpr uint64_t kBuild = 0x123456789ABCDEF0ULL;
+      constexpr uint64_t kEnv = 0xCAFEBABE00000042ULL;
+      const std::filesystem::path tmpPath =
+          std::filesystem::temp_directory_path() / "nve_macos_shell_test_frame0.nve2";
+      std::error_code ec;
+      std::filesystem::remove(tmpPath, ec);
+      NSString *nsPath = [NSString stringWithUTF8String:tmpPath.c_str()];
+
+      RCTNveMacComponentView *producer = make_view();
+      CHECK([producer attachNveInterface:&DemoApp::get_interface surfaceId:9u]);
+      CHECK([producer applyPropsDictionary:@{@"title" : @"Frame0 Saved"}]);
+      NSError *f0Err = nil;
+      CHECK([producer saveFrame0ToPath:nsPath appBuildId:kBuild envHash:kEnv error:&f0Err]);
+      CHECK(std::filesystem::exists(tmpPath));
+      NSData *envelope = [NSData dataWithContentsOfFile:nsPath];
+      CHECK(envelope != nil && envelope.length > 0u);
+
+      // Cold boot from bytes rejects wrong build/env and corrupt data, succeeds with matching keys.
+      RCTNveMacComponentView *coldBytes = make_view();
+      CHECK(![coldBytes bootFrame0FromBytes:envelope appBuildId:(kBuild ^ 1ULL) envHash:kEnv error:&f0Err]);
+      CHECK(!coldBytes.hasReplayedFrame0);
+      CHECK(![coldBytes bootFrame0FromBytes:envelope appBuildId:kBuild envHash:(kEnv ^ 1ULL) error:&f0Err]);
+      CHECK(!coldBytes.hasReplayedFrame0);
+      NSMutableData *corrupt = [envelope mutableCopy];
+      static_cast<uint8_t *>(corrupt.mutableBytes)[corrupt.length - 1u] ^= 0xFFu;
+      CHECK(![coldBytes bootFrame0FromBytes:corrupt appBuildId:kBuild envHash:kEnv error:&f0Err]);
+      CHECK([coldBytes bootFrame0FromBytes:envelope appBuildId:kBuild envHash:kEnv error:&f0Err]);
+      CHECK(coldBytes.hasReplayedFrame0);
+      CHECK([label_text(coldBytes, DemoApp::kTitle) isEqualToString:@"Frame0 Saved"]);
+
+      // Cold boot from file succeeds with matching build/env, then rejects and removes on mismatch.
+      RCTNveMacComponentView *coldFile = make_view();
+      CHECK([coldFile bootFrame0FromPath:nsPath appBuildId:kBuild envHash:kEnv error:&f0Err]);
+      CHECK(coldFile.hasReplayedFrame0);
+      CHECK([label_text(coldFile, DemoApp::kTitle) isEqualToString:@"Frame0 Saved"]);
+      RCTNveMacComponentView *coldMismatch = make_view();
+      CHECK(![coldMismatch bootFrame0FromPath:nsPath appBuildId:(kBuild + 1ULL) envHash:kEnv error:&f0Err]);
+      CHECK(!coldMismatch.hasReplayedFrame0 && !std::filesystem::exists(tmpPath));
+
+      // Attached app refuses Frame-0 boot.
+      CHECK(![producer bootFrame0FromBytes:envelope appBuildId:kBuild envHash:kEnv error:&f0Err]);
+      std::filesystem::remove(tmpPath, ec);
+    }
+
+    // 12. `--pair-transport` canonicalization and URI rewriting.
+    {
+      CHECK(nve::apple::canonical_pair_transport("auto") == std::optional<std::string_view>{"auto"});
+      CHECK(nve::apple::canonical_pair_transport("happy-eyeballs") == std::optional<std::string_view>{"auto"});
+      CHECK(nve::apple::canonical_pair_transport("UDP") == std::optional<std::string_view>{"quic"});
+      CHECK(nve::apple::canonical_pair_transport("webtransport") == std::optional<std::string_view>{"webtransport"});
+      CHECK(nve::apple::canonical_pair_transport("H3") == std::optional<std::string_view>{"webtransport"});
+      CHECK(nve::apple::canonical_pair_transport("tls") == std::optional<std::string_view>{"wss"});
+      CHECK(nve::apple::canonical_pair_transport("tcp") == std::optional<std::string_view>{"ws"});
+      CHECK(!nve::apple::canonical_pair_transport("bogus").has_value());
+
+      CHECK(nve::apple::apply_pair_transport("nve://pair?host=127.0.0.1&port=9400", "quic") ==
+            std::optional<std::string>{"nve://pair?host=127.0.0.1&port=9400&transport=quic"});
+      CHECK(nve::apple::apply_pair_transport("nve://pair?host=127.0.0.1&transport=ws&port=9400", "wt") ==
+            std::optional<std::string>{"nve://pair?host=127.0.0.1&port=9400&transport=webtransport"});
+      CHECK(nve::apple::apply_pair_transport("127.0.0.1:9400", "quic") ==
+            std::optional<std::string>{"quic://127.0.0.1:9400"});
+      CHECK(nve::apple::apply_pair_transport("ws://127.0.0.1:9400/pair", "wss") ==
+            std::optional<std::string>{"wss://127.0.0.1:9400/pair"});
+      CHECK(nve::apple::apply_pair_transport("wss://127.0.0.1:9400", "webtransport") ==
+            std::optional<std::string>{"wt://127.0.0.1:9400"});
+      CHECK(nve::apple::apply_pair_transport("ws://127.0.0.1:9400", "auto") ==
+            std::optional<std::string>{"ws://127.0.0.1:9400"});
+      CHECK(!nve::apple::apply_pair_transport("ws://127.0.0.1:9400", "invalid").has_value());
+    }
+
+    // 13. Real Rust apps (`check-all.sh`: kitchen-sink + studio `cdylib`s) mount, render text, and
     //    reload with state.
     for (const char *env : {"NVE_TEST_KITCHEN_SINK_DYLIB", "NVE_TEST_STUDIO_DYLIB"}) {
       const char *dylib = std::getenv(env);

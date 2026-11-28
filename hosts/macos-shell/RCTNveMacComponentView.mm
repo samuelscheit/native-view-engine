@@ -1,4 +1,5 @@
 #import "RCTNveMacComponentView.h"
+#import "NveAppleCanvasView.h"
 #import "NveAppleComponentHost.h"
 
 #include <nve/generated/nve_tables.generated.h>
@@ -111,6 +112,11 @@ using nve::apple::NodeView;
                                                  object:scroll.contentView];
       return scroll;
     }
+    case NodeKind::Canvas: {
+      NveAppleCanvasView *canvas = [[NveAppleCanvasView alloc] initWithFrame:NSZeroRect];
+      canvas.wantsLayer = YES;
+      return canvas;
+    }
     case NodeKind::Container: {
       NveFlippedContainerView *container = [[NveFlippedContainerView alloc] initWithFrame:NSZeroRect];
       container.nveNodeId = node.node_id;
@@ -131,19 +137,32 @@ using nve::apple::NodeView;
         (node.image_tint_rgba >> 24u) != 0u ? nve::apple::color_from_rgba(node.image_tint_rgba) : nil;
   } else if ([view isKindOfClass:[NSTextField class]]) {
     NSTextField *field = (NSTextField *)view;
+    NSColor *color = nve::apple::color_from_rgba(node.style.text_rgba);
+    NSFont *font = nve::apple::platform_font(
+        node.style.font_size, node.style.font_weight, node.style.italic, node.style.font_family);
     if (node.kind == NodeKind::TextInput) {
       nve::apple::apply_text_input_props(field, node.text, node.semantics);
+      field.textColor = color;
+      field.font = font;
     } else {
-      NSString *next = nve::apple::nsstring_from_sv(node.text);
-      if (![field.stringValue isEqualToString:next]) field.stringValue = next;
-      field.maximumNumberOfLines = static_cast<NSInteger>(node.style.max_lines);
+      const nve::apple::TextSpec spec = nve::apple::text_spec_from_style(node.style);
+      const bool noWrap = node.style.white_space == NVE_WHITE_SPACE_NO_WRAP ||
+                          node.style.white_space == NVE_WHITE_SPACE_PRE;
+      field.usesSingleLineMode = noWrap ? YES : NO;
+      field.cell.wraps = noWrap ? NO : YES;
+      field.lineBreakMode = nve::apple::line_break_mode_for(spec, false);
+      field.maximumNumberOfLines = noWrap ? 1 : static_cast<NSInteger>(node.style.max_lines);
       field.alignment = node.style.text_align == NVE_TEXT_ALIGN_CENTER ? NSTextAlignmentCenter
                         : (node.style.text_align == NVE_TEXT_ALIGN_RIGHT || node.style.text_align == NVE_TEXT_ALIGN_END)
                             ? NSTextAlignmentRight
                             : NSTextAlignmentLeft;
+      field.textColor = color;
+      field.font = font;
+      NSAttributedString *attributed = nve::apple::attributed_text(node.text, spec);
+      if (![field.attributedStringValue isEqualToAttributedString:attributed]) {
+        field.attributedStringValue = attributed;
+      }
     }
-    field.textColor = nve::apple::color_from_rgba(node.style.text_rgba);
-    field.font = nve::apple::platform_font(node.style.font_size, node.style.font_weight, node.style.italic);
   }
 
   NSArray<NSGestureRecognizer *> *clicks = [view.gestureRecognizers

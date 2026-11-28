@@ -1,4 +1,5 @@
 #import "RCTNveComponentView.h"
+#import "NveAppleCanvasView.h"
 #import "NveAppleComponentHost.h"
 
 #include <nve/generated/nve_tables.generated.h>
@@ -53,6 +54,9 @@ using nve::apple::NodeView;
       view = field;
       break;
     }
+    case NodeKind::Canvas:
+      view = [[NveAppleCanvasView alloc] initWithFrame:CGRectZero];
+      break;
     case NodeKind::Container:
       view = [[UIView alloc] initWithFrame:CGRectZero];
       break;
@@ -69,22 +73,29 @@ using nve::apple::NodeView;
 - (void)nveUpdateNativeView:(UIView *)view forNode:(const NodeView &)node image:(id)image {
   [super nveUpdateNativeView:view forNode:node image:image];
   view.tag = static_cast<NSInteger>(node.node_id);
-  UIFont *font = nve::apple::platform_font(node.style.font_size, node.style.font_weight, node.style.italic);
+  UIFont *font = nve::apple::platform_font(
+      node.style.font_size, node.style.font_weight, node.style.italic, node.style.font_family);
   if ([view isKindOfClass:[NveAppleImageView class]]) {
     nve::apple::update_image_view((NveAppleImageView *)view, image, node.image_fit, node.style.border_radius);
     // A cleared tint must clear the view's tint too, not keep the last one.
     view.tintColor = (node.image_tint_rgba >> 24u) != 0u ? nve::apple::color_from_rgba(node.image_tint_rgba) : nil;
   } else if ([view isKindOfClass:[UILabel class]]) {
     UILabel *label = (UILabel *)view;
-    NSString *next = nve::apple::nsstring_from_sv(node.text);
-    if (![label.text isEqualToString:next]) label.text = next;
+    const nve::apple::TextSpec spec = nve::apple::text_spec_from_style(node.style);
+    const bool noWrap = node.style.white_space == NVE_WHITE_SPACE_NO_WRAP ||
+                        node.style.white_space == NVE_WHITE_SPACE_PRE;
     label.textColor = nve::apple::color_from_rgba(node.style.text_rgba);
     label.font = font;
-    label.numberOfLines = static_cast<NSInteger>(node.style.max_lines);
+    label.lineBreakMode = nve::apple::line_break_mode_for(spec, false);
+    label.numberOfLines = noWrap ? 1 : static_cast<NSInteger>(node.style.max_lines);
     label.textAlignment = node.style.text_align == NVE_TEXT_ALIGN_CENTER ? NSTextAlignmentCenter
                           : (node.style.text_align == NVE_TEXT_ALIGN_RIGHT || node.style.text_align == NVE_TEXT_ALIGN_END)
                               ? NSTextAlignmentRight
                               : NSTextAlignmentNatural;
+    NSAttributedString *attributed = nve::apple::attributed_text(node.text, spec);
+    if (![label.attributedText isEqualToAttributedString:attributed]) {
+      label.attributedText = attributed;
+    }
   } else if ([view isKindOfClass:[UITextField class]]) {
     UITextField *field = (UITextField *)view;
     nve::apple::apply_text_input_props(field, node.text, node.semantics);

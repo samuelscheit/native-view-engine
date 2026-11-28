@@ -80,8 +80,26 @@ NS_ASSUME_NONNULL_BEGIN
                         error:(NSError *_Nullable *_Nullable)error;
 - (void)disconnectPaired;
 
-/// Replays a raw `NVE2` keyframe (`submit_nve2`) while no app is attached.
-- (BOOL)replayFrame0:(NSData *)frame0;
+/// Atomically persists the active scene as a checksummed ABI v6 `frame0.nve2` file on disk.
+- (BOOL)saveFrame0ToPath:(NSString *)path
+              appBuildId:(uint64_t)appBuildId
+                 envHash:(uint64_t)envHash
+                   error:(NSError *_Nullable *_Nullable)error;
+
+/// Validates and boots a persisted ABI v6 `frame0.nve2` file while no app is attached.
+- (BOOL)bootFrame0FromPath:(NSString *)path
+                appBuildId:(uint64_t)appBuildId
+                   envHash:(uint64_t)envHash
+                     error:(NSError *_Nullable *_Nullable)error;
+
+/// Validates and boots an in-memory ABI v6 `frame0.nve2` envelope while no app is attached.
+- (BOOL)bootFrame0FromBytes:(NSData *)envelope
+                 appBuildId:(uint64_t)appBuildId
+                    envHash:(uint64_t)envHash
+                      error:(NSError *_Nullable *_Nullable)error;
+
+/// Submits a raw `NVE2` keyframe or delta frame directly (`submit_nve2`) while no app is attached.
+- (BOOL)submitNve2Frame:(NSData *)frame;
 
 @end
 

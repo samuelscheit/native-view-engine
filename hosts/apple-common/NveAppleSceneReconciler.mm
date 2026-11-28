@@ -1,5 +1,7 @@
 #import "NveAppleSceneReconciler.h"
+#import "NveAppleCanvasView.h"
 
+#include <nve/canvas/canvas.hpp>
 #include <nve/host/core_resources.hpp>
 #include <nve/host/retained_tree.hpp>
 
@@ -30,6 +32,9 @@ struct AppleView {
   /// Decoded `nve.image` source and the resource id it came from.
   id image = nil;
   uint32_t image_resource = 0u;
+  /// Last `nve.canvas` draw-list resource id and generation applied to `NveAppleCanvasView`.
+  uint32_t canvas_draw_list = 0u;
+  uint32_t canvas_generation = 0u;
   /// Queued for one content-size pass in `finish_sync` (scroll views only).
   bool scroll_queued = false;
 };
@@ -49,6 +54,8 @@ struct NveAppleAdapter {
   nve::host::RetainedTree<NveAppleAdapter> *tree = nullptr;
   /// The scene being synced (set for the duration of `RetainedTree::sync`).
   const nve::host::SceneReader *scene = nullptr;
+  /// `nve.canvas` module table bound for the duration of the active sync.
+  nve::canvas::CanvasTable canvas;
   /// Node id of every realized view.
   std::unordered_map<const void *, uint32_t> ids;
   /// Decoded inline image of every resource id read since the last eviction (`begin_sync`).
@@ -62,6 +69,7 @@ struct NveAppleAdapter {
 
   void begin_sync(const nve::host::SceneReader &s, bool incremental) {
     scene = &s;
+    canvas.bind(s);
     if (!incremental) {
       inline_images.clear();  // a new epoch or frame gap: ids may name other bytes now
       return;
@@ -82,13 +90,18 @@ struct NveAppleAdapter {
     scene = nullptr;
   }
 
+  uint32_t module_resource(const NodeData &n) const noexcept {
+    return canvas.has(n.index) ? canvas.at(n.index).draw_list : 0u;
+  }
+
   uint32_t tag(const NodeData &n) noexcept {
     // AppKit realizes secure inputs as another class (`NSSecureTextField`): toggling recreates.
-    return static_cast<uint32_t>(nve::apple::node_kind(n)) | (n.input.secure ? 0x100u : 0u);
+    return static_cast<uint32_t>(nve::apple::node_kind(n, canvas.has(n.index))) | (n.input.secure ? 0x100u : 0u);
   }
 
   Handle create(const NodeData &n) {
-    const NodeView v = nve::apple::node_view(n);
+    nve::canvas::CanvasData cd{};
+    const NodeView v = nve::apple::node_view(n, canvas_data(n, cd));
     AppleView h;
     h.view = [views nveCreateNativeViewForNode:v] ?: [[NvePlatformView alloc] initWithFrame:CGRectZero];
     h.kind = v.kind;
@@ -98,7 +111,8 @@ struct NveAppleAdapter {
   }
 
   void update(Handle &h, const NodeData &n) {
-    const NodeView v = nve::apple::node_view(n);
+    nve::canvas::CanvasData cd{};
+    const NodeView v = nve::apple::node_view(n, canvas_data(n, cd));
     if (v.image_resource == 0u) {
       h.image = nil;
     } else if (h.image == nil || !tree->resource_unchanged(*scene, v.image_resource, h.image_resource)) {
@@ -106,6 +120,19 @@ struct NveAppleAdapter {
     }
     h.image_resource = v.image_resource;
     [views nveUpdateNativeView:h.view forNode:v image:h.image];
+    if ([h.view isKindOfClass:[NveAppleCanvasView class]]) {
+      NveAppleCanvasView *canvasView = (NveAppleCanvasView *)h.view;
+      if (v.canvas_draw_list == 0u) {
+        [canvasView setDrawListBytes:nil];
+        h.canvas_draw_list = 0u;
+      } else if (!tree->resource_unchanged(*scene, v.canvas_draw_list, h.canvas_draw_list) ||
+                 h.canvas_generation != v.canvas_generation || canvasView.drawListData == nil) {
+        NSData *bytes = resources ? resources(v.canvas_draw_list, nve::canvas::kDrawListKind.value) : nil;
+        [canvasView setDrawListBytes:bytes];
+        h.canvas_draw_list = v.canvas_draw_list;
+      }
+      h.canvas_generation = v.canvas_generation;
+    }
     const bool restacked = h.z_index != v.style.z_index;
     h.z_index = v.style.z_index;
     place(h, n);
@@ -156,6 +183,12 @@ struct NveAppleAdapter {
   }
 
  private:
+  const nve::canvas::CanvasData *canvas_data(const NodeData &n, nve::canvas::CanvasData &storage) const noexcept {
+    if (!canvas.has(n.index)) return nullptr;
+    storage = canvas.at(n.index);
+    return &storage;
+  }
+
   /// The platform image of `nve.res.image_src` (flat-word `Url` or `EncodedBytes`): URLs go
   /// through the shared URL cache; inline bytes are decoded once per resource id.
   id image_for(uint32_t resource) {

@@ -10,18 +10,31 @@ public enum NveSceneRenderer {
     }
 
     /// Paints the published scene of `store` (backgrounds, borders, radii, opacity, visibility,
-    /// `z_index` order, overflow / scroll clipping + offsets, inherited typography, images with
-    /// `object-fit` + tint, and text inputs) directly from the borrowed runtime tables.
-    public static func draw(store: NveSceneStore, into context: inout GraphicsContext) {
+    /// `z_index` order, overflow / scroll clipping + offsets, `nve.canvas` draw lists, inherited
+    /// typography via `NveTypographyEngine`, images with `object-fit` + tint, and passive text
+    /// inputs not in `skipTextInputIds`) directly from the borrowed runtime tables.
+    public static func draw(
+        store: NveSceneStore,
+        into context: inout GraphicsContext,
+        skipTextInputIds: Set<NodeId> = []
+    ) {
         _ = store.withTables { tables in
             if let root = tables.scene.index(of: .root) {
-                drawNode(tables, root, store: store, inheritedVisible: true, into: &context)
+                drawNode(
+                    tables, root, store: store, inheritedVisible: true,
+                    skipTextInputIds: skipTextInputIds, into: &context
+                )
             }
         }
     }
 
     private static func drawNode(
-        _ t: NveRuntimeTables, _ i: Int, store: NveSceneStore, inheritedVisible: Bool, into context: inout GraphicsContext
+        _ t: NveRuntimeTables,
+        _ i: Int,
+        store: NveSceneStore,
+        inheritedVisible: Bool,
+        skipTextInputIds: Set<NodeId>,
+        into context: inout GraphicsContext
     ) {
         let opacity = t.opacity(i)
         guard opacity > 0, let id = t.scene.nodeId(at: i) else { return }
@@ -41,10 +54,14 @@ public enum NveSceneRenderer {
 
         if visible && hasArea {
             if let bg = color(t.background(i)) { ctx.fill(shape, with: .color(bg)) }
-            if let image = t.imageSource(i) {
+            if let canvas = t.canvasDrawList(i) {
+                drawCanvas(store: store, scene: t.scene, resource: canvas.resource, in: rect, cornerRadius: radius, into: &ctx)
+            } else if let image = t.imageSource(i) {
                 drawImage(store: store, scene: t.scene, image, in: rect, clip: shape, into: &ctx)
             } else if let input = t.textInput(i) {
-                drawTextInput(input, style: t.textStyle(i), in: rect, into: &ctx)
+                if !skipTextInputIds.contains(id) {
+                    drawTextInput(input, style: t.textStyle(i), in: rect, into: &ctx)
+                }
             } else if let text = t.text(i), !text.isEmpty {
                 drawText(text, style: t.textStyle(i), in: rect, into: &ctx)
             }
@@ -66,59 +83,33 @@ public enum NveSceneRenderer {
             if offset != .zero { childCtx.translateBy(x: -offset.x, y: -offset.y) }
         }
         for c in children {
-            drawNode(t, c, store: store, inheritedVisible: visible, into: &childCtx)
+            drawNode(t, c, store: store, inheritedVisible: visible, skipTextInputIds: skipTextInputIds, into: &childCtx)
         }
     }
 
-    static func resolvedText(_ text: String, style: NveTextStyle, color: Color) -> Text {
-        var out = Text(text)
-            .font(.system(size: style.fontSize, weight: weight(style.fontWeight)))
-            .foregroundColor(color)
-        if style.italic { out = out.italic() }
-        if style.decoration & NveTextDecoration.underline != 0 { out = out.underline() }
-        if style.decoration & NveTextDecoration.lineThrough != 0 { out = out.strikethrough() }
-        return out
-    }
-
-    private static func weight(_ w: UInt16) -> Font.Weight {
-        switch w {
-        case ..<150: return .ultraLight
-        case ..<250: return .thin
-        case ..<350: return .light
-        case ..<450: return .regular
-        case ..<550: return .medium
-        case ..<650: return .semibold
-        case ..<750: return .bold
-        case ..<850: return .heavy
-        default: return .black
+    private static func drawCanvas(
+        store: NveSceneStore,
+        scene: NveScene,
+        resource: UInt32,
+        in rect: CGRect,
+        cornerRadius: CGFloat,
+        into ctx: inout GraphicsContext
+    ) {
+        guard let bytes = store.drawList(resource: resource, in: scene), !bytes.isEmpty else { return }
+        _ = bytes.withUnsafeBytes { raw in
+            try? NveDrawListRenderer.draw(raw, into: &ctx, in: rect, cornerRadius: cornerRadius)
         }
     }
 
-    /// Horizontal position of a text block in its box: `0` leading, `0.5` center, `1` trailing.
-    private static func alignFraction(_ align: NveTextAlign) -> CGFloat {
-        switch align {
-        case .center: return 0.5
-        case .end, .right: return 1
-        default: return 0
-        }
-    }
-
-    /// Wraps within the laid-out box (the runtime measured it with the same metrics), caps at
-    /// `maxLines`, and aligns the wrapped block horizontally.
+    /// Paints text through the exact `NveTypographyEngine` CoreText pipeline used by
+    /// `NveCoreTextMeasurer` (honoring `fontFamily`, `letterSpacing`, `lineHeight`, `maxLines`,
+    /// `textDecoration`, and CSS wrapping modes identically).
     private static func drawText(_ text: String, style: NveTextStyle, in rect: CGRect, into ctx: inout GraphicsContext) {
-        guard let color = color(style.color), rect.width > 0 else { return }
-        let resolved = ctx.resolve(resolvedText(text, style: style, color: color))
-        var box = rect
-        if style.maxLines > 0 {
-            // One line of this style: the text itself may hold line breaks.
-            let probe = ctx.resolve(resolvedText("Ag", style: style, color: color))
-            let line = probe.measure(in: CGSize(width: CGFloat.infinity, height: .infinity)).height
-            box.size.height = min(box.height, line * CGFloat(style.maxLines))
+        guard let textColor = style.color, rect.width > 0, rect.height > 0 else { return }
+        let spec = NveTypographySpec(textStyle: style)
+        ctx.withCGContext { cg in
+            NveTypographyEngine.shared.draw(text: text, spec: spec, color: textColor, in: rect, into: cg)
         }
-        let used = resolved.measure(in: box.size)
-        box.origin.x += max(0, box.width - used.width) * alignFraction(style.align)
-        box.size.width = min(box.width, max(used.width, 1))
-        ctx.draw(resolved, in: box)
     }
 
     /// Draws an image resource read from `scene`, the scene being drawn (never a second borrow).
@@ -142,28 +133,46 @@ public enum NveSceneRenderer {
     }
 
     private static func drawTextInput(
-        _ input: (value: String, placeholder: String, secure: Bool), style: NveTextStyle, in rect: CGRect,
+        _ input: NveTextInputProps, style: NveTextStyle, in rect: CGRect,
         into ctx: inout GraphicsContext
     ) {
+        let baseColor = style.color ?? NveColor(Rgba(packed: 0xFF00_0000))!
         let text: String
-        let fill: Color
+        let fill: NveColor
         if !input.value.isEmpty {
             text = input.secure ? String(repeating: "\u{2022}", count: input.value.count) : input.value
-            fill = color(style.color) ?? .primary
+            fill = baseColor
         } else if !input.placeholder.isEmpty {
             text = input.placeholder
-            fill = (color(style.color) ?? .primary).opacity(0.45)
+            fill = NveColor(Rgba(packed: packRgba(
+                r: UInt8(min(255, max(0, Int((baseColor.red * 255).rounded())))),
+                g: UInt8(min(255, max(0, Int((baseColor.green * 255).rounded())))),
+                b: UInt8(min(255, max(0, Int((baseColor.blue * 255).rounded())))),
+                a: UInt8(min(255, max(1, Int((baseColor.alpha * 0.45 * 255).rounded()))))
+            ))) ?? baseColor
         } else {
             return
         }
         let padX = min(8, rect.width * 0.15)
         let inner = rect.insetBy(dx: padX, dy: 0)
-        var textCtx = ctx
-        textCtx.clip(to: Path(rect))
-        let resolved = textCtx.resolve(resolvedText(text, style: style, color: fill))
-        let measured = resolved.measure(in: inner.size)
-        let dy = inner.height > measured.height ? (inner.height - measured.height) / 2 : 0
-        textCtx.draw(resolved, at: CGPoint(x: inner.minX, y: inner.minY + dy), anchor: .topLeading)
+        guard inner.width > 0, inner.height > 0 else { return }
+        var spec = NveTypographySpec(textStyle: style)
+        if !input.multiline {
+            spec.whiteSpace = .noWrap
+            spec.maxLines = 1
+        }
+        let measured = NveTypographyEngine.shared.measure(
+            text: text, spec: spec, maxWidth: input.multiline ? inner.width : .infinity
+        )
+        let dy = !input.multiline && inner.height > measured.height ? (inner.height - measured.height) / 2 : 0
+        let drawBox = CGRect(x: inner.minX, y: inner.minY + dy, width: inner.width, height: max(1, inner.height - dy))
+        ctx.withCGContext { cg in
+            NveTypographyEngine.shared.draw(text: text, spec: spec, color: fill, in: drawBox, into: cg)
+        }
+    }
+
+    private static func packRgba(r: UInt8, g: UInt8, b: UInt8, a: UInt8) -> UInt32 {
+        UInt32(r) | (UInt32(g) << 8) | (UInt32(b) << 16) | (UInt32(a) << 24)
     }
 }
 
@@ -177,13 +186,15 @@ private extension GraphicsContext.ResolvedImage {
 
 // MARK: - SwiftUI `NveSceneCanvasView`
 
-/// SwiftUI `Canvas` over a runtime surface: paints the zero-copy scene, exposes VoiceOver
-/// elements, and routes press / scroll / remote input through the runtime (`hit_test`,
-/// `scroll_by`) to the attached app (`dispatch_events`).
+/// SwiftUI `Canvas` over a runtime surface: paints the zero-copy scene, mounts platform editable
+/// text inputs (unless owned by an enclosing `NveSurfaceRepresentable`), exposes VoiceOver
+/// elements, and routes press / scroll / remote input through the runtime (`hit_test`, `scroll_by`).
 public struct NveSceneCanvasView: View {
     @ObservedObject public var controller: NveSurfaceController
     @ObservedObject private var store: NveSceneStore
     public let backgroundColor: Color?
+    /// When non-nil, an enclosing view (`NveSurfaceRepresentable`) owns mounting those input overlays.
+    private let externallyMountedTextInputIds: Set<NodeId>?
 
     @State private var activeScroll: NodeId?
     @State private var lastDrag: CGPoint?
@@ -192,12 +203,29 @@ public struct NveSceneCanvasView: View {
         self.controller = controller
         self.store = controller.store
         self.backgroundColor = backgroundColor
+        self.externallyMountedTextInputIds = nil
+    }
+
+    internal init(
+        controller: NveSurfaceController,
+        backgroundColor: Color? = nil,
+        mountedTextInputIds: Set<NodeId>
+    ) {
+        self.controller = controller
+        self.store = controller.store
+        self.backgroundColor = backgroundColor
+        self.externallyMountedTextInputIds = mountedTextInputIds
     }
 
     public var body: some View {
+        let localInputs: [NveTextInputDescriptor] =
+            externallyMountedTextInputIds == nil && NvePlatformTextInputSupport.usesNativeOverlays
+            ? store.textInputs() : []
+        let skipIds = externallyMountedTextInputIds ?? Set(localInputs.map(\.id))
+
         ZStack(alignment: .topLeading) {
-            interactiveCanvas
-            ForEach(store.accessibilityElements()) { elem in
+            interactiveCanvas(skipTextInputIds: skipIds)
+            ForEach(store.accessibilityElements().filter { !skipIds.contains($0.id) }) { elem in
                 Color.clear
                     .frame(width: elem.frame.width, height: elem.frame.height)
                     .position(x: elem.frame.midX, y: elem.frame.midY)
@@ -212,6 +240,9 @@ public struct NveSceneCanvasView: View {
                         if elem.isInteractive { press(elem.id, at: CGPoint(x: elem.frame.midX, y: elem.frame.midY)) }
                     }
             }
+            if !localInputs.isEmpty {
+                NveTextInputOverlayLayer(controller: controller, inputs: localInputs)
+            }
         }
         .background(GeometryReader { geo in
             Color.clear.onAppear { controller.resize(geo.size) }.onChange(of: geo.size) { controller.resize($0) }
@@ -224,12 +255,12 @@ public struct NveSceneCanvasView: View {
     }
 
     @ViewBuilder
-    private var interactiveCanvas: some View {
+    private func interactiveCanvas(skipTextInputIds: Set<NodeId>) -> some View {
         let canvas = Canvas { context, size in
             if let backgroundColor {
                 context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(backgroundColor))
             }
-            NveSceneRenderer.draw(store: store, into: &context)
+            NveSceneRenderer.draw(store: store, into: &context, skipTextInputIds: skipTextInputIds)
         }
         .accessibilityHidden(true)
         .contentShape(Rectangle())

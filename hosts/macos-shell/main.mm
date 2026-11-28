@@ -111,11 +111,13 @@ int main(int argc, const char *argv[]) {
     NSString *dylibPath = nil;
     NSString *pairConnect = nil;
     NSString *pairToken = nil;
+    NSString *pairTransport = NSProcessInfo.processInfo.environment[@"NVE_PAIR_TRANSPORT"];
     for (int i = 1; i < argc; ++i) {
       if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
         std::printf(
             "Usage: %s [--dylib <path/to/libapp.dylib>]"
-            " [--pair-connect <nve://pair?...|ws(s)://...>] [--pair-token <token>]\n",
+            " [--pair-connect <nve://pair?...|ws(s)://...>] [--pair-token <token>]"
+            " [--pair-transport <auto|quic|wt|wss|ws>]\n",
             argv[0]);
         return 0;
       } else if (std::strcmp(argv[i], "--dylib") == 0 && i + 1 < argc) {
@@ -124,6 +126,33 @@ int main(int argc, const char *argv[]) {
         pairConnect = [NSString stringWithUTF8String:argv[++i]];
       } else if (std::strcmp(argv[i], "--pair-token") == 0 && i + 1 < argc) {
         pairToken = [NSString stringWithUTF8String:argv[++i]];
+      } else if (std::strcmp(argv[i], "--pair-transport") == 0) {
+        if (i + 1 >= argc) {
+          std::fprintf(stderr, "error: --pair-transport requires a value (auto|quic|wt|wss|ws)\n");
+          return 2;
+        }
+        pairTransport = [NSString stringWithUTF8String:argv[++i]];
+      } else if (std::strncmp(argv[i], "--pair-transport=", 17) == 0) {
+        pairTransport = [NSString stringWithUTF8String:argv[i] + 17];
+      }
+    }
+
+    if (pairTransport.length > 0) {
+      const char *rawTransport = pairTransport.UTF8String ?: "";
+      if (!nve::apple::canonical_pair_transport(rawTransport).has_value()) {
+        std::fprintf(stderr,
+                     "error: invalid --pair-transport '%s' (expected auto|quic|wt|wss|ws)\n",
+                     rawTransport);
+        return 2;
+      }
+      if (pairConnect.length > 0) {
+        const auto rewritten = nve::apple::apply_pair_transport(pairConnect.UTF8String ?: "", rawTransport);
+        if (!rewritten.has_value()) {
+          std::fprintf(stderr, "error: failed to apply --pair-transport '%s' to '%s'\n",
+                       rawTransport, pairConnect.UTF8String ?: "");
+          return 2;
+        }
+        pairConnect = [NSString stringWithUTF8String:rewritten->c_str()];
       }
     }
 

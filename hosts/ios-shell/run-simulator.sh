@@ -133,12 +133,13 @@ COMMON_FLAGS=(
   -Wall
   -Wextra
   -I"$REPO_ROOT/packages/core/host-cxx/include"
+  -I"$REPO_ROOT/packages/modules/canvas/cxx/include"
   -I"$REPO_ROOT/hosts/apple-common"
   -I"$REPO_ROOT/hosts/ios-shell"
 )
 
 CONFIG_STAMP="$BUILD_DIR/.build-config"
-CURRENT_CONFIG="${OPT_FLAG}|${IOS_MIN_VERSION}|runtime"
+CURRENT_CONFIG="${OPT_FLAG}|${IOS_MIN_VERSION}|runtime-canvas-typo"
 if [[ ! -f "$CONFIG_STAMP" ]] || [[ "$(cat "$CONFIG_STAMP")" != "$CURRENT_CONFIG" ]]; then
   rm -rf "$OBJ_DIR"
   mkdir -p "$OBJ_DIR"
@@ -149,6 +150,8 @@ HEADER_DEPS=(
   "$REPO_ROOT"/packages/core/host-cxx/include/nve/generated/*.h
   "$REPO_ROOT"/packages/core/host-cxx/include/nve/host/*.h
   "$REPO_ROOT"/packages/core/host-cxx/include/nve/host/*.hpp
+  "$REPO_ROOT"/packages/modules/canvas/cxx/include/nve/canvas/*.h
+  "$REPO_ROOT"/packages/modules/canvas/cxx/include/nve/canvas/*.hpp
   "$REPO_ROOT"/hosts/apple-common/*.h
   "$REPO_ROOT"/hosts/apple-common/*.hpp
   "$REPO_ROOT/hosts/ios-shell/RCTNveComponentView.h"
@@ -191,6 +194,7 @@ done
   -framework Foundation \
   -framework QuartzCore \
   -framework CoreGraphics \
+  -framework CoreText \
   -framework Security \
   -framework CoreFoundation \
   -liconv \

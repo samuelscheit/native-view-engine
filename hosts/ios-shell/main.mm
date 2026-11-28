@@ -32,6 +32,7 @@ NSString * _Nullable NveResolveAppDylibPath(void) {
 struct NveIosPairConfig {
   NSString * _Nullable endpoint;
   NSString * _Nullable token;
+  NSString * _Nullable transport;
 };
 
 NveIosPairConfig NveParsePairURL(NSURL * _Nullable url) {
@@ -56,6 +57,8 @@ NveIosPairConfig NveParsePairURL(NSURL * _Nullable url) {
       cfg.endpoint = item.value;
     } else if ([key isEqualToString:@"token"]) {
       cfg.token = item.value;
+    } else if ([key isEqualToString:@"transport"]) {
+      cfg.transport = item.value;
     } else if ([key isEqualToString:@"host"]) {
       hostParam = item.value;
     } else if ([key isEqualToString:@"port"]) {
@@ -77,13 +80,20 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
   if (env[@"NVE_PAIR_TOKEN"].length > 0) {
     cfg.token = env[@"NVE_PAIR_TOKEN"];
   }
+  if (env[@"NVE_PAIR_TRANSPORT"].length > 0) {
+    cfg.transport = env[@"NVE_PAIR_TRANSPORT"];
+  }
   NSArray<NSString *> *args = NSProcessInfo.processInfo.arguments;
-  for (NSUInteger i = 1; i + 1 < args.count; ++i) {
+  for (NSUInteger i = 1; i < args.count; ++i) {
     NSString *flag = args[i];
-    if ([flag isEqualToString:@"--pair-connect"]) {
+    if ([flag isEqualToString:@"--pair-connect"] && i + 1 < args.count) {
       cfg.endpoint = args[++i];
-    } else if ([flag isEqualToString:@"--pair-token"]) {
+    } else if ([flag isEqualToString:@"--pair-token"] && i + 1 < args.count) {
       cfg.token = args[++i];
+    } else if ([flag isEqualToString:@"--pair-transport"] && i + 1 < args.count) {
+      cfg.transport = args[++i];
+    } else if ([flag hasPrefix:@"--pair-transport="]) {
+      cfg.transport = [flag substringFromIndex:17];
     }
   }
   return cfg;
@@ -97,6 +107,7 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
 @property (nonatomic, strong, nullable) UILabel *errorLabel;
 @property (nonatomic, copy, nullable) NSString *pairEndpoint;
 @property (nonatomic, copy, nullable) NSString *pairToken;
+@property (nonatomic, copy, nullable) NSString *pairTransport;
 @property (nonatomic, assign) BOOL didAttemptLoad;
 - (instancetype)initWithSurfaceId:(uint32_t)surfaceId;
 - (void)applyPairURL:(NSURL *)url;
@@ -127,6 +138,9 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
     const NveIosPairConfig launchPair = NveResolveLaunchPairConfig();
     self.pairEndpoint = launchPair.endpoint;
     self.pairToken = launchPair.token;
+    if (self.pairTransport.length == 0) {
+      self.pairTransport = launchPair.transport;
+    }
   }
 
   RCTNveComponentView *componentView = [[RCTNveComponentView alloc] initWithFrame:CGRectZero];
@@ -165,6 +179,9 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
   }
   self.pairEndpoint = parsed.endpoint;
   self.pairToken = parsed.token;
+  if (parsed.transport.length > 0) {
+    self.pairTransport = parsed.transport;
+  }
   if (self.didAttemptLoad && self.componentView != nil) {
     [self _connectPairedHost];
   }
@@ -175,15 +192,29 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
 }
 
 - (void)_connectPairedHost {
+  NSString *resolvedEndpoint = self.pairEndpoint;
+  if (self.pairTransport.length > 0) {
+    const auto rewritten = nve::apple::apply_pair_transport(
+        resolvedEndpoint.UTF8String ?: "", self.pairTransport.UTF8String ?: "");
+    if (!rewritten.has_value()) {
+      NSString *msg = [NSString
+          stringWithFormat:@"NveIosShell: Invalid --pair-transport '%@' (expected auto|quic|wt|wss|ws)",
+                           self.pairTransport];
+      NSLog(@"%@", msg);
+      [self _showErrorMessage:msg];
+      return;
+    }
+    resolvedEndpoint = [NSString stringWithUTF8String:rewritten->c_str()];
+  }
   NSError *err = nil;
-  if (![self.componentView connectPairedEndpoint:self.pairEndpoint
+  if (![self.componentView connectPairedEndpoint:resolvedEndpoint
                                            token:(self.pairToken ?: @"")
                                        surfaceId:self.surfaceId
                                            error:&err]) {
     NSString *detail = err.localizedDescription ?: @"unknown error";
     NSString *msg =
         [NSString stringWithFormat:@"NveIosShell: Failed to connect paired host %@: %@",
-                                   self.pairEndpoint,
+                                   resolvedEndpoint,
                                    detail];
     NSLog(@"%@", msg);
     [self _showErrorMessage:msg];
@@ -191,7 +222,7 @@ NveIosPairConfig NveResolveLaunchPairConfig(void) {
   }
   self.errorLabel.hidden = YES;
   NSLog(@"NveIosShell: Connected paired host %@ (nodes=%u)",
-        self.pairEndpoint,
+        resolvedEndpoint,
         self.componentView.nveNodeCount);
 }
 

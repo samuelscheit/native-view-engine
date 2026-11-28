@@ -24,12 +24,67 @@ public struct NveTextStyle: Equatable, Sendable {
     public var align: NveTextAlign
     public var maxLines: Int
     public var decoration: UInt32
+    public var fontFamily: String
+    public var letterSpacing: CGFloat
+    public var lineHeight: LengthValue
+    public var whiteSpace: NveWhiteSpace
+    public var wordBreak: NveWordBreak
+    public var overflowWrap: NveOverflowWrap
+
+    public init(
+        color: NveColor?,
+        fontSize: CGFloat,
+        fontWeight: UInt16,
+        italic: Bool,
+        align: NveTextAlign,
+        maxLines: Int,
+        decoration: UInt32,
+        fontFamily: String = "",
+        letterSpacing: CGFloat = 0,
+        lineHeight: LengthValue = LengthValue(unit: .auto, value: 0),
+        whiteSpace: NveWhiteSpace = .normal,
+        wordBreak: NveWordBreak = .normal,
+        overflowWrap: NveOverflowWrap = .normal
+    ) {
+        self.color = color
+        self.fontSize = fontSize
+        self.fontWeight = fontWeight
+        self.italic = italic
+        self.align = align
+        self.maxLines = maxLines
+        self.decoration = decoration
+        self.fontFamily = fontFamily
+        self.letterSpacing = letterSpacing
+        self.lineHeight = lineHeight
+        self.whiteSpace = whiteSpace
+        self.wordBreak = wordBreak
+        self.overflowWrap = overflowWrap
+    }
 }
 
-/// The published core tables of one borrowed scene, read through the generated `NveTables` specs.
+/// Decoded `nve.text_input` row with interaction disabled state.
+public struct NveTextInputProps: Equatable, Sendable {
+    public let value: String
+    public let placeholder: String
+    public let secure: Bool
+    public let multiline: Bool
+    public let readOnly: Bool
+    public let disabled: Bool
+    public let inputKind: NveInputKind
+    public let maxLength: Int
+}
+
+/// Module table descriptor for `nve.canvas` (`packages/modules/canvas`).
+public enum NveCanvasTable {
+    public static let key = Key64.of("nve.canvas")
+    public static let drawList = try! FieldSpec(word: 0, kind: .resource)
+    public static let generation = try! FieldSpec(word: 1, kind: .u32)
+}
+
+/// The published core and built-in module tables of one borrowed scene, read through `NveTables`.
 public struct NveRuntimeTables {
     public let scene: NveScene
-    public let visual, typography, text, image, scroll, accessibility, textInput, link, interaction: TableReader?
+    public let visual, typography, text, image, scroll, accessibility, textInput, link, interaction, canvas: TableReader?
 
     public init(scene: NveScene) {
         self.scene = scene
@@ -42,6 +97,7 @@ public struct NveRuntimeTables {
         textInput = scene.table(key: NveTables.TextInput.key)
         link = scene.table(key: NveTables.Link.key)
         interaction = scene.table(key: NveTables.Interaction.key)
+        canvas = scene.table(key: NveCanvasTable.key)
     }
 
     /// Row of node slot `index` in `table`, O(1): only when the node's `table_set` holds the table
@@ -93,7 +149,13 @@ public struct NveRuntimeTables {
     public func isTextInput(_ i: Int) -> Bool { row(textInput, i) != nil }
     public func isImage(_ i: Int) -> Bool { row(image, i) != nil }
     public func isLink(_ i: Int) -> Bool { row(link, i) != nil }
+    public func isCanvas(_ i: Int) -> Bool { row(canvas, i) != nil }
     public func isInteractive(_ i: Int) -> Bool { row(interaction, i) != nil || isLink(i) }
+
+    public func isDisabled(_ i: Int) -> Bool {
+        guard let interaction, let r = row(interaction, i) else { return false }
+        return interaction.bool(r, NveTables.Interaction.disabled) == true
+    }
 
     public func interactionEvents(_ i: Int) -> UInt32 {
         interaction.map { scene.eventSet($0, forNode: i, eventsWord: NveTables.Interaction.eventsWord) } ?? 0
@@ -110,12 +172,26 @@ public struct NveRuntimeTables {
         return (src, fit, tint)
     }
 
-    public func textInput(_ i: Int) -> (value: String, placeholder: String, secure: Bool)? {
+    /// `nve.canvas` draw-list resource id (`!= 0`) and redraw generation for node slot `i`.
+    public func canvasDrawList(_ i: Int) -> (resource: UInt32, generation: UInt32)? {
+        guard let canvas, let r = row(canvas, i),
+              let res = canvas.resource(r, NveCanvasTable.drawList), res != 0
+        else { return nil }
+        let gen = canvas.u32(r, NveCanvasTable.generation) ?? 0
+        return (res, gen)
+    }
+
+    public func textInput(_ i: Int) -> NveTextInputProps? {
         guard let textInput, let r = row(textInput, i) else { return nil }
-        return (
-            string(textInput, i, NveTables.TextInput.value) ?? "",
-            string(textInput, i, NveTables.TextInput.placeholder) ?? "",
-            textInput.bool(r, NveTables.TextInput.secure) == true
+        return NveTextInputProps(
+            value: string(textInput, i, NveTables.TextInput.value) ?? "",
+            placeholder: string(textInput, i, NveTables.TextInput.placeholder) ?? "",
+            secure: textInput.bool(r, NveTables.TextInput.secure) == true,
+            multiline: textInput.bool(r, NveTables.TextInput.multiline) == true,
+            readOnly: textInput.bool(r, NveTables.TextInput.readOnly) == true,
+            disabled: isDisabled(i),
+            inputKind: NveInputKind(rawValue: textInput.enumValue(r, NveTables.TextInput.inputKind) ?? 0) ?? .text,
+            maxLength: Int(textInput.u32(r, NveTables.TextInput.maxLength) ?? 0)
         )
     }
 
@@ -137,11 +213,39 @@ public struct NveRuntimeTables {
             take(NveTables.Typography.fontSize) {
                 if let s = typography.f32(r, NveTables.Typography.fontSize), s.isFinite, s > 0 { style.fontSize = CGFloat(s) }
             }
+            take(NveTables.Typography.lineHeight) {
+                if let lh = typography.length(r, NveTables.Typography.lineHeight) {
+                    if lh.unit == .auto {
+                        style.lineHeight = LengthValue(unit: .auto, value: 0)
+                    } else if lh.value.isFinite, lh.value >= 0 {
+                        style.lineHeight = lh
+                    }
+                }
+            }
+            take(NveTables.Typography.letterSpacing) {
+                if let ls = typography.f32(r, NveTables.Typography.letterSpacing), ls.isFinite {
+                    style.letterSpacing = CGFloat(ls)
+                }
+            }
+            take(NveTables.Typography.fontFamily) {
+                if let span = typography.str(r, NveTables.Typography.fontFamily) {
+                    style.fontFamily = scene.text(span) ?? ""
+                }
+            }
             take(NveTables.Typography.fontWeight) {
                 style.fontWeight = UInt16(truncatingIfNeeded: typography.u32(r, NveTables.Typography.fontWeight) ?? 400)
             }
             take(NveTables.Typography.fontStyle) {
                 style.italic = (typography.enumValue(r, NveTables.Typography.fontStyle) ?? 0) != NveFontStyle.normal.rawValue
+            }
+            take(NveTables.Typography.whiteSpace) {
+                style.whiteSpace = NveWhiteSpace(rawValue: typography.enumValue(r, NveTables.Typography.whiteSpace) ?? 0) ?? .normal
+            }
+            take(NveTables.Typography.wordBreak) {
+                style.wordBreak = NveWordBreak(rawValue: typography.enumValue(r, NveTables.Typography.wordBreak) ?? 0) ?? .normal
+            }
+            take(NveTables.Typography.overflowWrap) {
+                style.overflowWrap = NveOverflowWrap(rawValue: typography.enumValue(r, NveTables.Typography.overflowWrap) ?? 0) ?? .normal
             }
             take(NveTables.Typography.textAlign) {
                 style.align = NveTextAlign(rawValue: typography.enumValue(r, NveTables.Typography.textAlign) ?? 0) ?? .start
