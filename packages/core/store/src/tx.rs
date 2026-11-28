@@ -456,7 +456,7 @@ impl TxCore<'_> {
                 continue;
             };
             let desc = crate::table::desc(slot);
-            let words_len = desc.words();
+            let words_len = desc.words().min(nve_abi::table::MAX_TABLE_WORDS);
             let str_mask = desc.str_words | (desc.str_words << 1);
             let res_mask = desc.resource_words;
             let inherited = desc.inherited;
@@ -484,7 +484,7 @@ impl TxCore<'_> {
             let mut w = writer_at(self.store, id.node_index(), slot);
             let mut explicit_op: Option<WordOp> = None;
             let mut skipped_words_mask = 0u32;
-            let mut applied_words_mask = 0u32;
+            let mut applied_masks = [0u32; nve_abi::table::MAX_TABLE_WORDS];
             for op in table.ops() {
                 let wi = op.word() as usize;
                 let bit = 1u32 << (wi & 31);
@@ -504,44 +504,24 @@ impl TxCore<'_> {
                             .is_some_and(|k| w.resources.is_live_with_kind(rid, k))
                     {
                         w.put_resource_id_wire(wi, rid);
-                        applied_words_mask |= bit;
+                        applied_masks[wi] |= op.clear_mask().raw();
                     } else {
                         skipped_words_mask |= bit;
                     }
                 } else {
                     w.put(wi, 0, op.clear_mask().raw(), op.set_bits());
-                    applied_words_mask |= bit;
+                    applied_masks[wi] |= op.clear_mask().raw();
                 }
             }
             if let Some(op) = explicit_op {
-                let mut masked_explicit_bits = 0u32;
-                let set_bits = op.set_bits();
-                let field_count = desc.fields.len().min(32);
-                let valid_field_bits = if field_count == 32 {
-                    u32::MAX
-                } else {
-                    (1u32 << field_count) - 1
-                };
-                for (b, f) in desc.fields.iter().take(32).enumerate() {
-                    let mut field_words = 1u32 << f.word;
-                    if f.val_word != nve_abi::table::NO_VAL_WORD {
-                        field_words |= 1u32 << f.val_word;
-                    }
-                    if f.bits == 64 && usize::from(f.word) + 1 < 32 {
-                        field_words |= 1u32 << (f.word + 1);
-                    }
-                    let explicit_bit = 1u32 << b;
-                    let any_skipped = (skipped_words_mask & field_words) != 0;
-                    let orphan_set = (set_bits & explicit_bit) != 0
-                        && (applied_words_mask & field_words) != field_words;
-                    if any_skipped || orphan_set {
-                        masked_explicit_bits |= explicit_bit;
-                    }
-                }
-                let effective_clear =
-                    op.clear_mask().raw() & valid_field_bits & !masked_explicit_bits;
+                let effective_clear = crate::row_patch::effective_inherited_explicit_clear(
+                    desc,
+                    op,
+                    skipped_words_mask,
+                    &applied_masks,
+                );
                 if effective_clear != 0 {
-                    let effective_set = set_bits & effective_clear;
+                    let effective_set = op.set_bits() & effective_clear;
                     let merged = WordMask(effective_clear).apply(w.words()[0], effective_set);
                     w.put_explicit_word(merged);
                 }

@@ -28,6 +28,7 @@ use crate::table::{NveTable, Prop, ResProp, ScalarField};
 
 #[path = "row_patch_view.rs"]
 mod view;
+pub(crate) use view::effective_inherited_explicit_clear;
 pub use view::{prop_written, RowPatchView, TableOpsIter, TableOpsView, WordOpsIter};
 use view::apply_ops_checked;
 
