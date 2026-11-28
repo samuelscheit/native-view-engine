@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -229,6 +230,73 @@ void main() {
       // Corrupt / mismatched RGBA length fails cleanly.
       final badRgba = 'data:image/rgba;width=4;height=4;base64,${base64.encode(Uint8List(4))}';
       expect(await cache.load(badRgba), isNull);
+    });
+
+    test('evict and clear dispose stale in-flight decodes and never invoke onDecoded', () async {
+      final cache = NveSceneImageCache(maxEntries: 8);
+      addTearDown(cache.dispose);
+
+      Future<ui.Image> makeImage(int r, int g, int b) async =>
+          (await NveSceneImageCache.decodeEncodedBytes(makeSolidPngBytes(r, g, b, width: 2, height: 2)))!;
+
+      // 1. evict() while in flight: stale image is disposed, not cached, and onDecoded never fires.
+      final staleCompleter = Completer<ui.Image?>();
+      final unrelatedCompleter = Completer<ui.Image?>();
+      var staleDecoded = 0;
+      var unrelatedDecoded = 0;
+      expect(
+        cache.resolveOrRequest('res:a', onDecoded: () => staleDecoded++, decode: () => staleCompleter.future),
+        isNull,
+      );
+      expect(
+        cache.resolveOrRequest('res:b', onDecoded: () => unrelatedDecoded++, decode: () => unrelatedCompleter.future),
+        isNull,
+      );
+      expect(cache.isInFlight('res:a'), isTrue);
+      cache.evict('res:a');
+      expect(cache.isInFlight('res:a'), isFalse);
+
+      // Re-request the evicted key before the stale decode finishes: fresh decode must win.
+      final freshCompleter = Completer<ui.Image?>();
+      var freshDecoded = 0;
+      expect(
+        cache.resolveOrRequest('res:a', onDecoded: () => freshDecoded++, decode: () => freshCompleter.future),
+        isNull,
+      );
+
+      final staleImg = await makeImage(255, 0, 0);
+      final freshImg = await makeImage(0, 255, 0);
+      final unrelatedImg = await makeImage(0, 0, 255);
+      staleCompleter.complete(staleImg);
+      await Future<void>.delayed(Duration.zero);
+      expect(staleImg.debugDisposed, isTrue, reason: 'stale evicted image must be disposed');
+      expect(staleDecoded, 0, reason: 'evicted decode must not invoke onDecoded');
+      expect(cache.containsKey('res:a'), isFalse, reason: 'stale image must not populate cache');
+      expect(cache.isInFlight('res:a'), isTrue, reason: 'stale completion must not clear newer in-flight');
+
+      freshCompleter.complete(freshImg);
+      unrelatedCompleter.complete(unrelatedImg);
+      await Future<void>.delayed(Duration.zero);
+      expect(freshImg.debugDisposed, isFalse);
+      expect(identical(cache.getCached('res:a'), freshImg), isTrue);
+      expect(freshDecoded, 1);
+      expect(identical(cache.getCached('res:b'), unrelatedImg), isTrue);
+      expect(unrelatedDecoded, 1);
+
+      // 2. clear() while in flight: disposes and discards stale completion without invoking onDecoded.
+      final clearedCompleter = Completer<ui.Image?>();
+      var clearedDecoded = 0;
+      expect(
+        cache.resolveOrRequest('res:c', onDecoded: () => clearedDecoded++, decode: () => clearedCompleter.future),
+        isNull,
+      );
+      cache.clear();
+      final clearedImg = await makeImage(128, 128, 0);
+      clearedCompleter.complete(clearedImg);
+      await Future<void>.delayed(Duration.zero);
+      expect(clearedImg.debugDisposed, isTrue);
+      expect(clearedDecoded, 0);
+      expect(cache.containsKey('res:c'), isFalse);
     });
 
     test('computes exact cover/contain/stretch/center placement geometry', () {

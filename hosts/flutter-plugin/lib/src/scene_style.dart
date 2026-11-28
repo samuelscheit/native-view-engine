@@ -71,21 +71,36 @@ final class NveTextStyle {
           : italic,
       textAlign: has(NveTypographySet.textAlign) ? t.enumValue(row, TypographyTable.textAlign) : textAlign,
       fontFamily: family == null || family.isEmpty ? null : family,
-      letterSpacing: has(NveTypographySet.letterSpacing) ? _finite(t.f32(row, TypographyTable.letterSpacing)) : letterSpacing,
+      letterSpacing: has(NveTypographySet.letterSpacing)
+          ? _letterSpacing(t.f32(row, TypographyTable.letterSpacing), letterSpacing)
+          : letterSpacing,
       // The `LengthValue` is decoded only when the row sets a line height.
-      lineHeight: has(NveTypographySet.lineHeight) ? _lineHeight(t.length(row, TypographyTable.lineHeight), size) : lineHeight,
+      lineHeight: has(NveTypographySet.lineHeight)
+          ? _lineHeight(t.length(row, TypographyTable.lineHeight), size, lineHeight)
+          : lineHeight,
       maxLines: has(NveTypographySet.maxLines) ? t.u32(row, TypographyTable.maxLines) : maxLines,
       decoration: has(NveTypographySet.textDecoration) ? t.u32(row, TypographyTable.textDecoration) : decoration,
     );
   }
 
-  /// `null` (inherit Flutter's default) for a NaN / infinite wire value.
-  static double? _finite(double v) => v.isFinite ? v : null;
+  /// Keeps [fallback] (the parent's value) on NaN / infinite wire values, matching Rust
+  /// `resolve_inherited_text` and C++ `inherit_text_style`.
+  static double? _letterSpacing(double v, double? fallback) => v.isFinite ? v : fallback;
 
-  static double? _lineHeight(LengthValue lh, double fontSize) => switch (lh.unit) {
-        LengthUnit.points => lh.value.isFinite && lh.value > 0 ? lh.value : null,
-        LengthUnit.percent => lh.value.isFinite && lh.value > 0 ? fontSize * lh.value / 100 : null,
+  /// Resolves an explicit line height: `auto` (or valid `0`) resets to normal (`null`), whereas
+  /// invalid (NaN / infinite / negative) values inherit [fallback].
+  static double? _lineHeight(LengthValue lh, double fontSize, double? fallback) => switch (lh.unit) {
         LengthUnit.auto => null,
+        LengthUnit.points => !lh.value.isFinite || lh.value < 0
+            ? fallback
+            : lh.value > 0
+                ? lh.value
+                : null,
+        LengthUnit.percent => !lh.value.isFinite || lh.value < 0
+            ? fallback
+            : lh.value > 0
+                ? fontSize * lh.value / 100
+                : null,
       };
 
   /// Flutter text style (optionally with another [colorOverride]).

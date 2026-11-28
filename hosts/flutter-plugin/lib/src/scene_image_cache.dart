@@ -131,9 +131,11 @@ class NveSceneImageCache {
 
   final int maxEntries;
   final LinkedHashMap<String, ui.Image> _entries = LinkedHashMap<String, ui.Image>();
-  final Map<String, Future<ui.Image?>> _inFlight = <String, Future<ui.Image?>>{};
+  final Map<String, ({int gen, Future<ui.Image?> future})> _inFlight =
+      <String, ({int gen, Future<ui.Image?> future})>{};
   final LinkedHashSet<String> _failedUris = LinkedHashSet<String>();
   bool _disposed = false;
+  int _generation = 0;
 
   int get length => _entries.length;
   bool containsKey(String uri) => _entries.containsKey(uri);
@@ -161,7 +163,7 @@ class NveSceneImageCache {
     final future = load(key, decode: decode);
     if (onDecoded != null) {
       future.then((ui.Image? img) {
-        if (img != null && !_disposed) {
+        if (img != null && !_disposed && identical(_entries[key], img)) {
           onDecoded();
         }
       });
@@ -175,32 +177,50 @@ class NveSceneImageCache {
     final cached = getCached(key);
     if (cached != null) return Future<ui.Image?>.value(cached);
     final inflight = _inFlight[key];
-    if (inflight != null) return inflight;
+    if (inflight != null) return inflight.future;
 
-    final future = _decodeAndStore(key, decode ?? () => decodeImageUri(key));
-    _inFlight[key] = future;
-    return future;
+    final gen = ++_generation;
+    Future<ui.Image?> pending;
+    try {
+      pending = (decode ?? () => decodeImageUri(key))();
+    } catch (_) {
+      _markFailed(key);
+      return Future<ui.Image?>.value(null);
+    }
+    final completer = Completer<ui.Image?>();
+    _inFlight[key] = (gen: gen, future: completer.future);
+    _decodeAndStore(key, gen, pending, completer);
+    return completer.future;
   }
 
-  Future<ui.Image?> _decodeAndStore(String uri, Future<ui.Image?> Function() decode) async {
+  Future<void> _decodeAndStore(
+    String uri,
+    int gen,
+    Future<ui.Image?> pending,
+    Completer<ui.Image?> completer,
+  ) async {
+    ui.Image? result;
     try {
-      final image = await decode();
-      if (_disposed) {
+      final image = await pending;
+      final current = !_disposed && _inFlight[uri]?.gen == gen;
+      if (!current) {
         image?.dispose();
-        return null;
-      }
-      if (image == null) {
+      } else if (image == null) {
         _markFailed(uri);
-        return null;
+      } else {
+        _failedUris.remove(uri);
+        _insert(uri, image);
+        result = image;
       }
-      _failedUris.remove(uri);
-      _insert(uri, image);
-      return image;
     } catch (_) {
-      _markFailed(uri);
-      return null;
+      if (!_disposed && _inFlight[uri]?.gen == gen) {
+        _markFailed(uri);
+      }
     } finally {
-      _inFlight.remove(uri);
+      if (_inFlight[uri]?.gen == gen) {
+        _inFlight.remove(uri);
+      }
+      completer.complete(result);
     }
   }
 
@@ -224,25 +244,30 @@ class NveSceneImageCache {
     _failedUris.add(uri);
   }
 
-  /// Drops [key] (its image is disposed, a recorded failure forgotten); no-op when absent.
+  /// Drops [key] (its image is disposed, a recorded failure forgotten, any in-flight decode
+  /// invalidated so its completion will be disposed and discarded); no-op when absent.
   void evict(String key) {
+    _generation++;
     _entries.remove(key)?.dispose();
     _failedUris.remove(key);
+    _inFlight.remove(key);
   }
 
-  /// Clears all cached [ui.Image] entries and disposes their GPU/memory handles.
+  /// Clears all cached [ui.Image] entries, disposes their GPU/memory handles, and invalidates
+  /// every in-flight decode so stale completions are disposed and discarded.
   void clear() {
+    _generation++;
     for (final img in _entries.values) {
       img.dispose();
     }
     _entries.clear();
     _failedUris.clear();
+    _inFlight.clear();
   }
 
   void dispose() {
     _disposed = true;
     clear();
-    _inFlight.clear();
   }
 
   /// Decodes `data:image/png;base64,...`, `data:image/rgba;width=W;height=H;base64,...`,

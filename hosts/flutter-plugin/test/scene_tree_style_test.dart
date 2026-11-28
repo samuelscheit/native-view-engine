@@ -171,12 +171,14 @@ void main() {
       expect(c == p, isFalse);
     });
 
-    test('fields without their set bit never apply, and degenerate sizes fall back', () {
+    test('fields without their set bit never apply, and degenerate sizes fall back to parent', () {
       final b = SceneBuilder();
       final parent = b.node(const Rect.fromLTWH(0, 0, 10, 10));
       final unset = b.node(Rect.zero, parent: parent);
       final zero = b.node(Rect.zero, parent: parent);
       final nan = b.node(Rect.zero, parent: parent);
+      final autoReset = b.node(Rect.zero, parent: parent);
+      final negSpacing = b.node(Rect.zero, parent: parent);
       b
         // Non-default bits under an empty `set`: an ancestor's style must flow through untouched.
         ..bits(typographyShape, unset, TypographyTable.color, packRgba(0, 255, 0))
@@ -188,19 +190,29 @@ void main() {
         ..bits(typographyShape, zero, TypographyTable.set, NveTypographySet.fontSize | NveTypographySet.lineHeight)
         ..f32(typographyShape, zero, TypographyTable.fontSize, 0)
         ..length(typographyShape, zero, TypographyTable.lineHeight, -4)
-        ..bits(typographyShape, nan, TypographyTable.set, NveTypographySet.fontSize | NveTypographySet.letterSpacing)
+        ..bits(typographyShape, nan, TypographyTable.set,
+            NveTypographySet.fontSize | NveTypographySet.letterSpacing | NveTypographySet.lineHeight)
         ..f32(typographyShape, nan, TypographyTable.fontSize, double.nan)
-        ..f32(typographyShape, nan, TypographyTable.letterSpacing, double.infinity);
+        ..f32(typographyShape, nan, TypographyTable.letterSpacing, double.infinity)
+        ..length(typographyShape, nan, TypographyTable.lineHeight, double.nan)
+        ..bits(typographyShape, autoReset, TypographyTable.set, NveTypographySet.lineHeight)
+        ..bits(typographyShape, autoReset, TypographyTable.lineHeight, 2) // LengthUnit.auto
+        ..bits(typographyShape, negSpacing, TypographyTable.set, NveTypographySet.letterSpacing)
+        ..f32(typographyShape, negSpacing, TypographyTable.letterSpacing, -0.5);
       final s = b.build();
       final typo = s.findTable(TypographyTable.key);
-      const inherited = NveTextStyle(color: 7, fontSize: 13, fontWeight: 300);
+      const inherited = NveTextStyle(color: 7, fontSize: 13, fontWeight: 300, letterSpacing: 1.5, lineHeight: 24);
       final u = inherited.resolve(s, typo, unset);
-      expect((u.color, u.fontSize, u.fontWeight, u.textAlign), (7, 13, 300, NveTextAlign.start));
+      expect((u.color, u.fontSize, u.fontWeight, u.textAlign, u.letterSpacing, u.lineHeight),
+          (7, 13, 300, NveTextAlign.start, 1.5, 24));
       expect(u.maxLines, 3, reason: 'only the set field applies');
       final z = inherited.resolve(s, typo, zero);
-      expect((z.fontSize, z.lineHeight), (13, null), reason: 'zero size / negative line height fall back');
-      expect(inherited.resolve(s, typo, nan).fontSize, 13, reason: 'NaN size falls back');
-      expect(inherited.resolve(s, typo, nan).letterSpacing, isNull, reason: 'infinite letter spacing is dropped');
+      expect((z.fontSize, z.lineHeight), (13, 24), reason: 'zero size / negative line height inherit parent');
+      final n = inherited.resolve(s, typo, nan);
+      expect((n.fontSize, n.letterSpacing, n.lineHeight), (13, 1.5, 24),
+          reason: 'NaN/infinite fontSize, letterSpacing, lineHeight inherit parent');
+      expect(inherited.resolve(s, typo, autoReset).lineHeight, isNull, reason: 'explicit auto lineHeight resets to normal');
+      expect(inherited.resolve(s, typo, negSpacing).letterSpacing, -0.5, reason: 'finite negative letterSpacing applies');
     });
 
     test('weight maps onto the nearest Flutter weight and colors unpack RGBA', () {
