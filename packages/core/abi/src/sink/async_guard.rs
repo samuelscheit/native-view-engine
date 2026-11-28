@@ -4,7 +4,7 @@ use core::any::Any;
 use core::cell::UnsafeCell;
 use core::ffi::c_void;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, Ordering};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use super::{sink_bytes, BytesSinkError};
@@ -25,26 +25,31 @@ pub type NveAsyncBytesDone = unsafe extern "C" fn(
     len: usize,
 );
 
-const ASYNC_STATE_PENDING: u8 = 0;
-const ASYNC_STATE_RUNNING: u8 = 1;
-const ASYNC_STATE_DONE: u8 = 2;
-const ASYNC_STATE_CANCELLED: u8 = 3;
+/// Low 3 bits encode the lifecycle phase; bit 3 encodes whether [`AsyncBytesDoneGuard`] has
+/// already been dropped (handing off deallocation responsibility to an in-flight trampoline).
+const PHASE_MASK: u8 = 0b0111;
+const PHASE_PENDING: u8 = 0;
+const PHASE_RUNNING: u8 = 1;
+const PHASE_DONE_OK: u8 = 2;
+const PHASE_DONE_PANICKED: u8 = 3;
+const PHASE_CANCELLED: u8 = 4;
+const FLAG_GUARD_DROPPED: u8 = 0b1000;
 
 struct AsyncBytesDoneState<F> {
     state: AtomicU8,
-    panicked: AtomicBool,
     callback: UnsafeCell<Option<F>>,
     panic: UnsafeCell<Option<Box<dyn Any + Send>>>,
 }
 
 // SAFETY: `callback` is moved out by at most one thread winning the atomic `PENDING -> RUNNING`
-// or `PENDING -> CANCELLED` CAS, and `panic` is written only under `STATE_RUNNING` before the
-// `Release` store of `STATE_DONE` and read only after `Acquire` load of `STATE_DONE` (or in Drop).
+// or `PENDING -> CANCELLED` CAS; `panic` is written only under `PHASE_RUNNING` before the
+// `AcqRel` transition to `PHASE_DONE_PANICKED` and read only after `Acquire` load of
+// `PHASE_DONE_PANICKED` (or exclusively during final deallocation).
 unsafe impl<F: Send> Send for AsyncBytesDoneState<F> {}
 
-// SAFETY: Concurrent shared references only access atomic state (`state`, `panicked`) or claim
-// exclusive access to `callback`/`panic` via the single-winner `PENDING -> RUNNING`/`CANCELLED`
-// CAS, so `F: Send` suffices for `Sync`.
+// SAFETY: Concurrent shared references only access atomic `state` or claim exclusive access to
+// `callback`/`panic` via the single-winner `PENDING -> RUNNING`/`CANCELLED` CAS, so `F: Send`
+// suffices for `Sync`.
 unsafe impl<F: Send> Sync for AsyncBytesDoneState<F> {}
 
 unsafe extern "C" fn async_bytes_done_trampoline<F>(
@@ -59,51 +64,91 @@ unsafe extern "C" fn async_bytes_done_trampoline<F>(
     if user_ctx.is_null() {
         return;
     }
-    // SAFETY: Caller keeps `AsyncBytesDoneGuard` alive while the foreign callee may invoke this
-    // callback; `raw` is heap-pinned via `Box::into_raw` and shared immutably via atomics.
-    let inner = unsafe { &*(user_ctx as *const AsyncBytesDoneState<F>) };
-    if inner
-        .state
-        .compare_exchange(
-            ASYNC_STATE_PENDING,
-            ASYNC_STATE_RUNNING,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_err()
-    {
-        return;
-    }
+    let raw_ptr = user_ctx as *mut AsyncBytesDoneState<F>;
 
-    // SAFETY: This thread exclusively owns `STATE_RUNNING`, so no other thread can access
-    // `callback` or `panic`.
-    let callback = unsafe { (*inner.callback.get()).take() };
-    // SAFETY: Foreign callee guarantees `(ptr, len)` satisfies `sink_bytes` preconditions for the
-    // duration of this callback when structurally valid.
-    let payload = unsafe { sink_bytes(ptr, len) }.ok_or(BytesSinkError::CorruptSlice { len });
-
-    if let Some(on_done) = callback
-        && let Err(payload) = catch_unwind(AssertUnwindSafe(|| on_done(request_id, status, payload)))
-    {
-        // SAFETY: Exclusive access under `STATE_RUNNING`, published by `STATE_DONE` `Release`.
-        unsafe {
-            *inner.panic.get() = Some(payload);
+    let must_free = {
+        // SAFETY: Caller keeps `AsyncBytesDoneGuard` alive until `done` starts; once we win
+        // `PHASE_PENDING -> PHASE_RUNNING`, `AsyncBytesDoneGuard::drop` will not free `raw_ptr`
+        // (it sets `FLAG_GUARD_DROPPED` and defers deallocation to us).
+        let inner = unsafe { &*raw_ptr };
+        if inner
+            .state
+            .compare_exchange(
+                PHASE_PENDING,
+                PHASE_RUNNING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return;
         }
-        inner.panicked.store(true, Ordering::Release);
+
+        // SAFETY: Winning `PHASE_PENDING -> PHASE_RUNNING` grants exclusive access to `callback`.
+        let callback = unsafe { (*inner.callback.get()).take() };
+        // SAFETY: Foreign callee guarantees `(ptr, len)` satisfies `sink_bytes` preconditions for
+        // the duration of this callback when structurally valid.
+        let payload = unsafe { sink_bytes(ptr, len) }.ok_or(BytesSinkError::CorruptSlice { len });
+
+        let terminal_phase = if let Some(on_done) = callback {
+            match catch_unwind(AssertUnwindSafe(|| on_done(request_id, status, payload))) {
+                Ok(()) => PHASE_DONE_OK,
+                Err(panic_payload) => {
+                    // SAFETY: Exclusive writer under `PHASE_RUNNING`; published via the `AcqRel`
+                    // transition to `PHASE_DONE_PANICKED` below.
+                    unsafe {
+                        *inner.panic.get() = Some(panic_payload);
+                    }
+                    PHASE_DONE_PANICKED
+                }
+            }
+        } else {
+            PHASE_DONE_OK
+        };
+
+        // Publish terminal phase while atomically observing whether `AsyncBytesDoneGuard::drop`
+        // ran during `PHASE_RUNNING` (synchronizing with `Drop`'s `Release` store).
+        let mut cur = inner.state.load(Ordering::Acquire);
+        loop {
+            debug_assert_eq!(cur & PHASE_MASK, PHASE_RUNNING);
+            let next = terminal_phase | (cur & FLAG_GUARD_DROPPED);
+            match inner.state.compare_exchange_weak(
+                cur,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break (cur & FLAG_GUARD_DROPPED) != 0,
+                Err(actual) => cur = actual,
+            }
+        }
+    };
+
+    if must_free {
+        // Guard already dropped during `PHASE_RUNNING` and handed off deallocation to us.
+        // Wrap in `catch_unwind` so even a custom panic payload with a panicking `Drop` cannot
+        // unwind across `extern "C"`.
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            // SAFETY: `raw_ptr` came from `Box::into_raw`; `FLAG_GUARD_DROPPED` observed with
+            // `Acquire` guarantees no `AsyncBytesDoneGuard` or `&AsyncBytesDoneState` remains.
+            drop(unsafe { Box::from_raw(raw_ptr) });
+        }));
     }
-    inner.state.store(ASYNC_STATE_DONE, Ordering::Release);
 }
 
 /// Reusable, once-only, panic-catching Rust receiver guard for [`NveAsyncBytesDone`].
 ///
 /// - **Exactly-once delivery**: concurrent or duplicate foreign invocations are ignored cleanly
 ///   with zero use-after-free while the guard stays alive.
+/// - **Drop-during-callback safe**: dropping the guard synchronously inside `on_done` or from a
+///   thread woken by `on_done` atomically defers deallocation until the trampoline exits, avoiding
+///   use-after-free.
 /// - **Explicit corrupt-slice surfacing**: delivers `Err(BytesSinkError::CorruptSlice { len })`
 ///   whenever `sink_bytes(ptr, len)` rejects a corrupt `(ptr, len)` pair (including `status == 0`
 ///   with `(NULL, len > 0)` or `len > isize::MAX`).
 /// - **Panic-safe across `extern "C"`**: catches any panic inside the callback inside the C
 ///   trampoline instead of unwinding across FFI; inspectable via [`Self::panicked`] /
-///   [`Self::take_panic`].
+///   [`Self::take_panic`] over a single atomic terminal state.
 /// - **Move-safe raw pointer**: heap-pinned via `NonNull`, so moving `AsyncBytesDoneGuard` does
 ///   not invalidate the raw `user_ctx` pointer.
 pub struct AsyncBytesDoneGuard<F>
@@ -113,7 +158,7 @@ where
     raw: NonNull<AsyncBytesDoneState<F>>,
 }
 
-// SAFETY: `AsyncBytesDoneGuard` uniquely owns the heap-allocated `AsyncBytesDoneState<F>`, which
+// SAFETY: `AsyncBytesDoneGuard` uniquely owns the guard side of `AsyncBytesDoneState<F>`, which
 // is `Send` whenever `F: Send`.
 unsafe impl<F> Send for AsyncBytesDoneGuard<F> where
     F: FnOnce(u64, i32, Result<&[u8], BytesSinkError>) + Send
@@ -135,8 +180,7 @@ where
     #[must_use]
     pub fn new(on_done: F) -> Self {
         let boxed = Box::new(AsyncBytesDoneState {
-            state: AtomicU8::new(ASYNC_STATE_PENDING),
-            panicked: AtomicBool::new(false),
+            state: AtomicU8::new(PHASE_PENDING),
             callback: UnsafeCell::new(Some(on_done)),
             panic: UnsafeCell::new(None),
         });
@@ -147,13 +191,16 @@ where
 
     #[inline]
     fn inner(&self) -> &AsyncBytesDoneState<F> {
-        // SAFETY: `self.raw` remains live until `Drop`.
+        // SAFETY: `self.raw` remains live until `Drop` (and while `FLAG_GUARD_DROPPED == 0`,
+        // the trampoline never frees it).
         unsafe { self.raw.as_ref() }
     }
 
     /// Returns the C-ABI `(NveAsyncBytesDone, *mut c_void)` pair for a foreign async call.
     ///
-    /// The caller must keep this guard alive until no foreign code can invoke the returned pair.
+    /// The caller must ensure no foreign code starts invoking the returned pair *after* this
+    /// guard has been dropped (dropping the guard while an invocation is already running is safe
+    /// and hands deallocation off to the in-flight trampoline).
     #[must_use]
     #[inline]
     pub fn as_raw(&self) -> (NveAsyncBytesDone, *mut c_void) {
@@ -174,18 +221,22 @@ where
         self.raw.as_ptr().cast::<c_void>()
     }
 
-    /// Returns `true` once the foreign callback has finished executing.
+    /// Returns `true` once the foreign callback has finished executing (normally or with panic).
     #[must_use]
     #[inline]
     pub fn is_completed(&self) -> bool {
-        self.inner().state.load(Ordering::Acquire) == ASYNC_STATE_DONE
+        matches!(
+            self.inner().state.load(Ordering::Acquire) & PHASE_MASK,
+            PHASE_DONE_OK | PHASE_DONE_PANICKED
+        )
     }
 
-    /// Returns `true` if the Rust completion closure panicked inside the C trampoline.
+    /// Returns `true` iff the trampoline reached the terminal panicked state (guaranteeing
+    /// [`Self::take_panic`] observes the stored panic payload until taken).
     #[must_use]
     #[inline]
     pub fn panicked(&self) -> bool {
-        self.inner().panicked.load(Ordering::Acquire)
+        (self.inner().state.load(Ordering::Acquire) & PHASE_MASK) == PHASE_DONE_PANICKED
     }
 
     /// Claims the slot and drops the pending callback if it has not yet started. Returns `true`
@@ -195,8 +246,8 @@ where
         if inner
             .state
             .compare_exchange(
-                ASYNC_STATE_PENDING,
-                ASYNC_STATE_CANCELLED,
+                PHASE_PENDING,
+                PHASE_CANCELLED,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
@@ -210,14 +261,16 @@ where
         }
     }
 
-    /// Takes any panic payload caught inside the C trampoline after completion.
+    /// Takes any panic payload caught inside the C trampoline after reaching the terminal
+    /// panicked state.
     pub fn take_panic(&mut self) -> Option<Box<dyn Any + Send>> {
         let inner = self.inner();
-        if inner.state.load(Ordering::Acquire) != ASYNC_STATE_DONE {
+        if (inner.state.load(Ordering::Acquire) & PHASE_MASK) != PHASE_DONE_PANICKED {
             return None;
         }
-        // SAFETY: `&mut self` + `Acquire` load of `STATE_DONE` guarantees the trampoline has
-        // finished writing `panic` and will never touch it again.
+        // SAFETY: `&mut self` guarantees exclusive guard access, and `Acquire` load of
+        // `PHASE_DONE_PANICKED` synchronizes-with the trampoline's `AcqRel` store after writing
+        // `panic` (and the trampoline never touches `panic` again).
         unsafe { (*inner.panic.get()).take() }
     }
 }
@@ -227,10 +280,47 @@ where
     F: FnOnce(u64, i32, Result<&[u8], BytesSinkError>) + Send,
 {
     fn drop(&mut self) {
-        let _ = self.cancel();
-        // SAFETY: `self.raw` was allocated via `Box::into_raw` in `Self::new`, and by contract no
-        // foreign invocation accesses `user_ctx` once `self` is dropped.
-        drop(unsafe { Box::from_raw(self.raw.as_ptr()) });
+        let raw_ptr = self.raw.as_ptr();
+        let should_free = {
+            // SAFETY: `raw_ptr` remains live until we either free it below or hand it off to an
+            // in-flight trampoline by setting `FLAG_GUARD_DROPPED`.
+            let inner = unsafe { &*raw_ptr };
+            let mut cur = inner.state.load(Ordering::Acquire);
+            loop {
+                match cur & PHASE_MASK {
+                    PHASE_PENDING => match inner.state.compare_exchange_weak(
+                        cur,
+                        PHASE_CANCELLED | FLAG_GUARD_DROPPED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => {
+                            // SAFETY: Winning `PENDING -> CANCELLED` guarantees exclusive access
+                            // to `callback` and prevents any trampoline from entering `RUNNING`.
+                            drop(unsafe { (*inner.callback.get()).take() });
+                            break true;
+                        }
+                        Err(actual) => cur = actual,
+                    },
+                    PHASE_RUNNING => match inner.state.compare_exchange_weak(
+                        cur,
+                        PHASE_RUNNING | FLAG_GUARD_DROPPED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => break false,
+                        Err(actual) => cur = actual,
+                    },
+                    PHASE_DONE_OK | PHASE_DONE_PANICKED | PHASE_CANCELLED => break true,
+                    _ => break true,
+                }
+            }
+        };
+        if should_free {
+            // SAFETY: Either we won `PENDING -> CANCELLED` or observed a terminal phase with
+            // `Acquire` while `FLAG_GUARD_DROPPED == 0`, so we are the sole remaining owner.
+            drop(unsafe { Box::from_raw(raw_ptr) });
+        }
     }
 }
 

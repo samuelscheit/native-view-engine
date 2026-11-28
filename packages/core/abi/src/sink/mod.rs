@@ -250,7 +250,7 @@ unsafe extern "C" fn bytes_sink_trampoline<F: FnMut(&[u8])>(
     }
     let _entered_guard = ReentrancyGuard(&state.entered);
 
-    if state.panicked.get() {
+    if state.panicked.get() || state.violation.get().is_some() {
         return;
     }
     // SAFETY: Foreign callee guarantees `(ptr, len)` satisfies `sink_bytes` preconditions for the

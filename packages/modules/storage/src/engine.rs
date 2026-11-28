@@ -334,15 +334,21 @@ impl KvStore {
             } => {
                 let Some(f) = file.as_mut() else {
                     return Err(StorageError::Io(format!(
-                        "storage file {} is closed after failed compaction",
+                        "storage file {} is closed after a prior fatal I/O error",
                         path.display()
                     )));
                 };
                 if let Err(err) = f.write_all(frame).and_then(|()| f.sync_data()) {
                     // Roll back any partial/unsynced tail so later writes never append past torn
-                    // bytes and lose committed records on reopen.
-                    let _ = f.set_len(*byte_len);
-                    let _ = f.seek(SeekFrom::Start(*byte_len));
+                    // bytes and lose committed records on reopen. If rollback itself fails, poison
+                    // the handle (`*file = None`) so subsequent writes fail cleanly instead of
+                    // creating mid-log corruption.
+                    if f.set_len(*byte_len)
+                        .and_then(|()| f.seek(SeekFrom::Start(*byte_len)))
+                        .is_err()
+                    {
+                        *file = None;
+                    }
                     return Err(err.into());
                 }
                 *byte_len = byte_len.saturating_add(frame.len() as u64);
@@ -442,4 +448,75 @@ fn temp_compact_path(path: &Path) -> PathBuf {
     let mut os = path.as_os_str().to_os_string();
     os.push(".compact.tmp");
     PathBuf::from(os)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn append_frame_poisons_handle_when_rollback_fails_and_recovers_when_rollback_succeeds() {
+        let dir = std::env::temp_dir().join(format!(
+            "nve_storage_engine_rollback_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rollback.nvk2");
+
+        // 1. Poison path: swap live writable File with a read-only File so both write_all and
+        // rollback set_len fail -> handle MUST become None and reject subsequent writes.
+        let mut store = KvStore::open(&path).unwrap();
+        store.put(b"k1", b"alpha").unwrap();
+        let clean_len = store.log_bytes();
+        let ro_file = OpenOptions::new().read(true).open(&path).unwrap();
+        if let LogBackend::Disk { file, .. } = &mut store.backend {
+            *file = Some(ro_file);
+        }
+        assert!(matches!(store.put(b"k2", b"beta"), Err(StorageError::Io(_))));
+        assert!(
+            matches!(store.backend, LogBackend::Disk { file: None, .. }),
+            "failed rollback must poison file handle to None"
+        );
+        assert!(matches!(
+            store.put(b"k3", b"gamma"),
+            Err(StorageError::Io(ref msg)) if msg.contains("closed")
+        ));
+        drop(store);
+
+        // Reopening finds k1 intact and uncorrupted at clean_len.
+        let mut reopened = KvStore::open(&path).unwrap();
+        assert_eq!(reopened.log_bytes(), clean_len);
+        assert_eq!(reopened.get_ref(b"k1").unwrap(), Some(b"alpha".as_slice()));
+        assert_eq!(reopened.get_ref(b"k2").unwrap(), None);
+
+        // 2. Rollback-success path: simulate partial tail bytes written past `byte_len`, then
+        // verify rollback truncates/seeks cleanly back to `byte_len` so a subsequent write lands
+        // contiguously and survives reopen.
+        if let LogBackend::Disk {
+            file: Some(f),
+            byte_len,
+            ..
+        } = &mut reopened.backend
+        {
+            f.write_all(b"partial-torn-bytes").unwrap();
+            assert_eq!(fs::metadata(&path).unwrap().len(), *byte_len + 18);
+            f.set_len(*byte_len)
+                .and_then(|()| f.seek(SeekFrom::Start(*byte_len)))
+                .unwrap();
+            assert_eq!(fs::metadata(&path).unwrap().len(), *byte_len);
+        }
+        reopened.put(b"k2", b"survived").unwrap();
+        drop(reopened);
+
+        let final_store = KvStore::open(&path).unwrap();
+        assert!(!final_store.open_info().recovered_torn_tail);
+        assert_eq!(final_store.get_ref(b"k1").unwrap(), Some(b"alpha".as_slice()));
+        assert_eq!(
+            final_store.get_ref(b"k2").unwrap(),
+            Some(b"survived".as_slice())
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

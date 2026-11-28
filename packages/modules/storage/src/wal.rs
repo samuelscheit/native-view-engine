@@ -19,6 +19,7 @@ pub const NVK2_COMMIT_MARKER: [u8; 4] = *b"NKCM";
 pub(crate) const HEADER_LEN: usize = 16;
 pub(crate) const RECORD_HEADER_LEN: usize = 16;
 pub(crate) const RECORD_TRAILER_LEN: usize = 12;
+const MIN_RECORD_LEN: usize = RECORD_HEADER_LEN + RECORD_TRAILER_LEN;
 
 pub(crate) const KIND_PUT: u8 = 1;
 pub(crate) const KIND_DELETE: u8 = 2;
@@ -41,9 +42,7 @@ pub(crate) fn encode_record_frame_into(
 ) -> Result<(), StorageError> {
     out.clear();
     let needed = RECORD_HEADER_LEN + payload.len() + RECORD_TRAILER_LEN;
-    if out.capacity() < needed {
-        out.reserve(needed - out.capacity());
-    }
+    out.reserve(needed);
     ByteWriter::with_buf(out, |w| {
         w.write_u8(kind);
         w.write_raw(&[0u8; 3]);
@@ -68,7 +67,7 @@ pub(crate) fn stream_compacted_entries<W: Write>(
     let mut bytes_written = header.len() as u64;
     let mut seq = 1u64;
     let mut payload = ByteWriter::with_capacity(256);
-    let mut frame = Vec::with_capacity(256 + RECORD_HEADER_LEN + RECORD_TRAILER_LEN);
+    let mut frame = Vec::with_capacity(256 + MIN_RECORD_LEN);
     for (k, v) in entries {
         payload.clear();
         payload.write_bytes(k)?;
@@ -88,9 +87,71 @@ pub(crate) struct ReplayResult {
     pub(crate) recovered_torn_tail: bool,
 }
 
+/// Scans `bytes[search_start..]` for any genuinely framed and XXH64-authenticated `NVK2` record
+/// (valid `kind`, zero reserved bytes, non-zero `seq_no`, in-bounds `payload_len`, `NKCM` trailer,
+/// and matching XXH64 checksum).
+///
+/// Unlike a raw `b"NKCM"` substring search, arbitrary user binary payloads containing `b"NKCM"`
+/// inside a torn final record will NOT trigger a false positive. Bounded by a cumulative hash byte
+/// budget so crafted inputs cannot cause quadratic work.
+fn has_valid_committed_frame_after(bytes: &[u8], search_start: usize) -> bool {
+    if bytes.len().saturating_sub(search_start) < MIN_RECORD_LEN {
+        return false;
+    }
+    let last_candidate = bytes.len() - MIN_RECORD_LEN;
+    let mut hash_budget = bytes.len().saturating_mul(2).max(65_536);
+
+    for pos in search_start..=last_candidate {
+        let kind = bytes[pos];
+        if !matches!(kind, KIND_PUT | KIND_DELETE | KIND_BATCH) {
+            continue;
+        }
+        if bytes[pos + 1..pos + 4] != [0u8; 3] {
+            continue;
+        }
+        let mut r = ByteReader::new(&bytes[pos + 4..]);
+        let Ok(seq_no) = r.read_u64() else {
+            continue;
+        };
+        if seq_no == 0 {
+            continue;
+        }
+        let Ok(payload_len) = r.read_u32().map(|v| v as usize) else {
+            continue;
+        };
+        if payload_len
+            .checked_add(RECORD_TRAILER_LEN)
+            .is_none_or(|n| n > r.remaining())
+        {
+            continue;
+        }
+        let payload_end = pos + RECORD_HEADER_LEN + payload_len;
+        let frame_end = payload_end + RECORD_TRAILER_LEN;
+        if bytes[frame_end - 4..frame_end] != NVK2_COMMIT_MARKER {
+            continue;
+        }
+        let hashed_len = payload_end - pos;
+        if hashed_len > hash_budget {
+            break;
+        }
+        hash_budget -= hashed_len;
+        let mut trailer = ByteReader::new(&bytes[payload_end..frame_end]);
+        let Ok(stored_crc) = trailer.read_u64() else {
+            continue;
+        };
+        if xxh64(&bytes[pos..payload_end], 0) == stored_crc {
+            return true;
+        }
+    }
+    false
+}
+
 #[inline]
-fn contains_commit_marker(haystack: &[u8]) -> bool {
-    haystack.windows(NVK2_COMMIT_MARKER.len()).any(|w| w == NVK2_COMMIT_MARKER)
+fn map_replay_corrupt(err: StorageError) -> StorageError {
+    match err {
+        StorageError::Corrupt(_) => err,
+        other => StorageError::Corrupt(other.to_string()),
+    }
 }
 
 pub(crate) fn replay_nvk2_buffer(bytes: &[u8]) -> Result<ReplayResult, StorageError> {
@@ -126,12 +187,9 @@ pub(crate) fn replay_nvk2_buffer(bytes: &[u8]) -> Result<ReplayResult, StorageEr
 
     while r.remaining() > 0 {
         let frame_start = r.pos();
-        if r.remaining() < RECORD_HEADER_LEN + RECORD_TRAILER_LEN {
-            if contains_commit_marker(&bytes[frame_start..]) {
-                return Err(StorageError::Corrupt(
-                    "corrupt NVK2 truncated frame contains commit marker".into(),
-                ));
-            }
+        // Fewer than MIN_RECORD_LEN (28) bytes remaining at EOF can never hold a committed record,
+        // so this is unconditionally a torn tail even if the fragment contains `b"NKCM"`.
+        if r.remaining() < MIN_RECORD_LEN {
             recovered_torn_tail = true;
             break;
         }
@@ -144,7 +202,7 @@ pub(crate) fn replay_nvk2_buffer(bytes: &[u8]) -> Result<ReplayResult, StorageEr
             .checked_add(RECORD_TRAILER_LEN)
             .is_none_or(|n| n > r.remaining())
         {
-            if contains_commit_marker(&bytes[frame_start + RECORD_HEADER_LEN..]) {
+            if has_valid_committed_frame_after(bytes, frame_start + 1) {
                 return Err(StorageError::Corrupt(
                     "mid-log NVK2 record length corruption before committed tail".into(),
                 ));
@@ -157,11 +215,14 @@ pub(crate) fn replay_nvk2_buffer(bytes: &[u8]) -> Result<ReplayResult, StorageEr
         let payload_end = r.pos();
         let stored_crc = r.read_u64()?;
         let marker = r.read_array::<4>()?;
-        let is_mid_log = r.remaining() > 0;
+        let has_trailing = r.remaining() > 0;
         let computed_crc = xxh64(&bytes[frame_start..payload_end], 0);
 
         if marker != NVK2_COMMIT_MARKER || stored_crc != computed_crc {
-            if is_mid_log {
+            if has_trailing
+                && (marker == NVK2_COMMIT_MARKER
+                    || has_valid_committed_frame_after(bytes, frame_start + 1))
+            {
                 return Err(StorageError::Corrupt(format!(
                     "mid-log NVK2 record corruption at byte offset {frame_start}"
                 )));
@@ -207,14 +268,14 @@ fn apply_record_payload(
             let key = r.read_bytes(MAX_KEY_LEN)?;
             let value = r.read_bytes(MAX_VALUE_LEN)?;
             r.finish()?;
-            validate_key(key)?;
-            validate_value(value)?;
+            validate_key(key).map_err(map_replay_corrupt)?;
+            validate_value(value).map_err(map_replay_corrupt)?;
             entries.insert(key.to_vec(), value.to_vec());
         }
         KIND_DELETE => {
             let key = r.read_bytes(MAX_KEY_LEN)?;
             r.finish()?;
-            validate_key(key)?;
+            validate_key(key).map_err(map_replay_corrupt)?;
             entries.remove(key);
         }
         KIND_BATCH => {
@@ -225,13 +286,13 @@ fn apply_record_payload(
                     KIND_PUT => {
                         let key = r.read_bytes(MAX_KEY_LEN)?;
                         let value = r.read_bytes(MAX_VALUE_LEN)?;
-                        validate_key(key)?;
-                        validate_value(value)?;
+                        validate_key(key).map_err(map_replay_corrupt)?;
+                        validate_value(value).map_err(map_replay_corrupt)?;
                         decoded.push(BatchOpRef::Put { key, value });
                     }
                     KIND_DELETE => {
                         let key = r.read_bytes(MAX_KEY_LEN)?;
-                        validate_key(key)?;
+                        validate_key(key).map_err(map_replay_corrupt)?;
                         decoded.push(BatchOpRef::Delete { key });
                     }
                     other => {

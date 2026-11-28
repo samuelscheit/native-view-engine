@@ -214,18 +214,22 @@ fn with_bytes_sink_surfaces_corrupt_slices_reentrancy_duplicates_and_panics() {
     assert_eq!(delivered, Ok((true, true, false)));
     assert_eq!(captured, vec![b"hello-direct-ffi".to_vec(), Vec::new()]);
 
-    // 2. Corrupt slice (NULL, 128) MUST return Err(BytesSinkError::CorruptSlice), never silent Ok.
+    // 2. Corrupt slice (NULL, 128) MUST return Err(BytesSinkError::CorruptSlice), never silent Ok,
+    // and MUST short-circuit subsequent valid calls so no side effects run after a violation.
     let mut seen = false;
     let res_null = with_bytes_sink(
         |_| seen = true,
         |sink, ctx| {
-            // SAFETY: Rejected before reading pointer.
-            unsafe { sink(ctx, std::ptr::null(), 128) };
+            // SAFETY: Rejected before reading pointer; second call is short-circuited after violation.
+            unsafe {
+                sink(ctx, std::ptr::null(), 128);
+                invoke_bytes_sink(Some(sink), ctx, b"after-violation-must-not-run");
+            }
             "would-be-ok"
         },
     );
     assert_eq!(res_null, Err(BytesSinkError::CorruptSlice { len: 128 }));
-    assert!(!seen);
+    assert!(!seen, "callback must not run after a prior sink violation");
 
     // 3. Corrupt slice (non-null, isize::MAX + 1) MUST return Err(BytesSinkError::CorruptSlice).
     let huge_len = isize::MAX as usize + 1;
@@ -396,5 +400,135 @@ fn async_bytes_done_guard_enforces_once_only_panic_safety_and_corrupt_slice_surf
         assert_eq!(sink_bytes(std::ptr::null(), 1), None);
         assert_eq!(sink_bytes(b"a".as_ptr(), isize::MAX as usize + 1), None);
         assert_eq!(sink_bytes(b"abc".as_ptr(), 3), Some(&b"abc"[..]));
+    }
+}
+
+#[test]
+fn async_bytes_done_guard_drop_during_running_and_concurrent_cancel_are_sound() {
+    use core::any::Any;
+    use std::sync::Barrier;
+
+    // 1. Synchronous self-drop INSIDE `on_done` (normal return and panic path).
+    for should_panic in [false, true] {
+        let holder: Arc<Mutex<Option<Box<dyn Any + Send>>>> = Arc::new(Mutex::new(None));
+        let holder_c = Arc::clone(&holder);
+        let dropped_inside = Arc::new(AtomicBool::new(false));
+        let dropped_c = Arc::clone(&dropped_inside);
+        let guard = AsyncBytesDoneGuard::new(move |req_id, status, payload| {
+            assert_eq!(req_id, 501);
+            assert_eq!(status, 0);
+            assert_eq!(payload, Ok(&b"sync-self-drop"[..]));
+            let taken = holder_c.lock().unwrap().take();
+            assert!(taken.is_some());
+            drop(taken);
+            dropped_c.store(true, Ordering::SeqCst);
+            if should_panic {
+                panic!("panic after synchronous self-drop");
+            }
+        });
+        let (done_fn, ctx) = guard.as_raw();
+        *holder.lock().unwrap() = Some(Box::new(guard));
+        // SAFETY: `guard` is live when `done_fn` enters `PHASE_RUNNING`, and self-drop hands off
+        // deallocation cleanly to the trampoline.
+        unsafe {
+            invoke_async_bytes_done(Some(done_fn), ctx, 501, 0, b"sync-self-drop");
+        }
+        assert!(dropped_inside.load(Ordering::SeqCst));
+        assert!(holder.lock().unwrap().is_none());
+    }
+
+    // 2. Cross-thread drop WHILE `on_done` is actively running (deterministic via Barriers),
+    // covering both normal return and panic paths.
+    for should_panic in [false, true] {
+        let entered = Arc::new(Barrier::new(2));
+        let dropped = Arc::new(Barrier::new(2));
+        let finished = Arc::new(AtomicBool::new(false));
+
+        let entered_c = Arc::clone(&entered);
+        let dropped_c = Arc::clone(&dropped);
+        let finished_c = Arc::clone(&finished);
+
+        let guard = AsyncBytesDoneGuard::new(move |req_id, status, payload| {
+            assert_eq!(req_id, 777);
+            assert_eq!(status, 0);
+            assert_eq!(payload, Ok(&b"cross-thread-drop"[..]));
+            // Signal owner thread to drop `guard` right now while we are in `PHASE_RUNNING`.
+            entered_c.wait();
+            // Wait until owner thread has definitely finished `drop(guard)`.
+            dropped_c.wait();
+            finished_c.store(true, Ordering::SeqCst);
+            if should_panic {
+                panic!("panic after cross-thread guard drop");
+            }
+        });
+        let (done_fn, ctx) = guard.as_raw();
+        let raw_ctx = ctx as usize;
+
+        let worker = std::thread::spawn(move || {
+            // SAFETY: `guard` stays live until after `entered.wait()` inside `PHASE_RUNNING`.
+            unsafe {
+                invoke_async_bytes_done(
+                    Some(done_fn),
+                    raw_ctx as *mut c_void,
+                    777,
+                    0,
+                    b"cross-thread-drop",
+                );
+            }
+        });
+
+        entered.wait();
+        drop(guard);
+        dropped.wait();
+        worker.join().unwrap();
+        assert!(finished.load(Ordering::SeqCst));
+    }
+
+    // 3. Stress concurrent `cancel()` vs `done_fn` (plus duplicate `done_fn`): exactly one of
+    // {cancel succeeds with 0 invocations, or done_fn runs once with cancel returning false}.
+    for round in 0..256u64 {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_c = Arc::clone(&calls);
+        let guard = Arc::new(AsyncBytesDoneGuard::new(move |req_id, status, payload| {
+            assert_eq!(req_id, round);
+            assert_eq!(status, 0);
+            assert_eq!(payload, Ok(&b"race"[..]));
+            calls_c.fetch_add(1, Ordering::SeqCst);
+        }));
+        let (done_fn, ctx) = guard.as_raw();
+        let raw_ctx = ctx as usize;
+        let start = Arc::new(Barrier::new(3));
+
+        let b1 = Arc::clone(&start);
+        let t_done1 = std::thread::spawn(move || {
+            b1.wait();
+            // SAFETY: `guard` outlives all spawned threads via `join()`.
+            unsafe {
+                invoke_async_bytes_done(Some(done_fn), raw_ctx as *mut c_void, round, 0, b"race");
+            }
+        });
+
+        let b2 = Arc::clone(&start);
+        let t_done2 = std::thread::spawn(move || {
+            b2.wait();
+            // SAFETY: `guard` outlives all spawned threads via `join()`.
+            unsafe {
+                invoke_async_bytes_done(Some(done_fn), raw_ctx as *mut c_void, round, 0, b"race");
+            }
+        });
+
+        start.wait();
+        let cancelled = guard.cancel();
+        t_done1.join().unwrap();
+        t_done2.join().unwrap();
+
+        let count = calls.load(Ordering::SeqCst);
+        if cancelled {
+            assert_eq!(count, 0, "cancelled guard must never invoke callback");
+            assert!(!guard.is_completed());
+        } else {
+            assert_eq!(count, 1, "uncancelled guard must invoke callback exactly once");
+            assert!(guard.is_completed());
+        }
     }
 }

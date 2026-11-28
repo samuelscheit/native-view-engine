@@ -312,6 +312,98 @@ fn nvk2_crash_recovery_torn_tail_mid_log_corruption_and_valid_wal_fuzz() {
     assert_eq!(recovered.get(b"m1"), Ok(Some(b"one".to_vec())));
     assert_eq!(recovered.get_ref(b"m1"), Ok(Some(b"one".as_slice())));
 
+    // Torn-tail recovery when torn final record's key/value contains `b"NKCM"` MUST recover cleanly
+    // (both short <28B fragments and mid-payload truncations past the record header).
+    {
+        let mut nkcm_store = KvStore::in_memory();
+        nkcm_store.put(b"committed", b"NKCM-inside-committed-val").unwrap();
+        let committed_len = nkcm_store.log_bytes() as usize;
+        nkcm_store
+            .put(b"NKCM-key", b"prefix-NKCM-middle-NKCM-suffix")
+            .unwrap();
+        let full_log = nkcm_store.memory_log_bytes().unwrap().to_vec();
+
+        // Cut every possible torn-tail point inside the second record (from +1 to full_len - 1),
+        // including cuts that include `b"NKCM"` in both `< 28 B` and `>= 28 B` torn tails.
+        for cut in (committed_len + 1)..full_log.len() {
+            let torn = full_log[..cut].to_vec();
+            let rec = KvStore::open_from_memory_log(torn).unwrap_or_else(|e| {
+                panic!("torn final record containing NKCM cut at {cut} must recover, got {e:?}")
+            });
+            assert!(rec.open_info().recovered_torn_tail);
+            assert_eq!(rec.log_bytes() as usize, committed_len);
+            assert_eq!(
+                rec.get_ref(b"committed").unwrap(),
+                Some(b"NKCM-inside-committed-val".as_slice())
+            );
+            assert_eq!(rec.get_ref(b"NKCM-key").unwrap(), None);
+        }
+
+        // Also test a mid-log record whose NKCM marker is corrupted while followed by a genuinely
+        // committed record -> MUST still return Err(StorageError::Corrupt).
+        let mut mid_bad_marker = full_log;
+        mid_bad_marker[committed_len - 1] ^= 0xFF;
+        assert!(matches!(
+            KvStore::open_from_memory_log(mid_bad_marker),
+            Err(StorageError::Corrupt(_))
+        ));
+    }
+
+    // Checksummed WAL record with an empty key (PUT, DELETE, and BATCH) MUST return
+    // StorageError::Corrupt (never StorageError::InvalidArg).
+    {
+        let base_hdr = KvStore::in_memory().memory_log_bytes().unwrap().to_vec();
+        let make_frame = |kind: u8, payload: &[u8]| -> Vec<u8> {
+            let mut buf = base_hdr.clone();
+            let start = buf.len();
+            buf.push(kind);
+            buf.extend_from_slice(&[0u8; 3]);
+            buf.extend_from_slice(&1u64.to_le_bytes());
+            buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            buf.extend_from_slice(payload);
+            let crc = nve_hash::xxh64(&buf[start..], 0);
+            buf.extend_from_slice(&crc.to_le_bytes());
+            buf.extend_from_slice(&nve_storage::NVK2_COMMIT_MARKER);
+            buf
+        };
+        // KIND_PUT with empty key (`len=0`, value=`b"v"`).
+        let empty_put = make_frame(1, &[0, 0, 0, 0, 1, 0, 0, 0, b'v']);
+        assert!(matches!(
+            KvStore::open_from_memory_log(empty_put),
+            Err(StorageError::Corrupt(_))
+        ));
+        // KIND_DELETE with empty key (`len=0`).
+        let empty_del = make_frame(2, &[0, 0, 0, 0]);
+        assert!(matches!(
+            KvStore::open_from_memory_log(empty_del),
+            Err(StorageError::Corrupt(_))
+        ));
+        // KIND_BATCH with 1 DELETE op having empty key (`count=1, op=2, key_len=0`).
+        let empty_batch = make_frame(3, &[1, 0, 0, 0, 2, 0, 0, 0, 0]);
+        assert!(matches!(
+            KvStore::open_from_memory_log(empty_batch),
+            Err(StorageError::Corrupt(_))
+        ));
+    }
+
+    // Compaction failure (blocked temp path) leaves the live disk handle usable and uncorrupted.
+    {
+        let compact_dir = unique_temp_dir("kv_compact_fail");
+        let db_path = compact_dir.join("db.nvk2");
+        let tmp_blocker = compact_dir.join("db.nvk2.compact.tmp");
+        let mut store = KvStore::open(&db_path).unwrap();
+        store.put(b"a", b"1").unwrap();
+        fs::create_dir_all(&tmp_blocker).unwrap();
+        assert!(matches!(store.compact(), Err(StorageError::Io(_))));
+        // Live store remains healthy and writable.
+        store.put(b"b", b"2").unwrap();
+        drop(store);
+        let reopened = KvStore::open(&db_path).unwrap();
+        assert_eq!(reopened.get_ref(b"a").unwrap(), Some(b"1".as_slice()));
+        assert_eq!(reopened.get_ref(b"b").unwrap(), Some(b"2".as_slice()));
+        let _ = fs::remove_dir_all(&compact_dir);
+    }
+
     let mem = MemoryStorage::new();
     mem.open("session").unwrap();
     let large_val = vec![0xABu8; 8192 + 123];
