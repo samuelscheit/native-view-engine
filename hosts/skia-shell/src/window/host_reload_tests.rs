@@ -613,3 +613,196 @@ fn hot_app_slot_async_delivery_transactional_reload_no_double_bind_and_sibling_i
         b"binds=1;resps=1;cancels=0;last=gen2-clean"
     );
 }
+
+#[test]
+fn hot_app_reload_unbinds_before_destroy_snapshots_once_and_multi_window_broadcasts_reach_all() {
+    use nve_abi::{
+        NveHostEventBatchBuilder, NveHostEventBatchRef, NveHostEventKind, SERVICE_CLIPBOARD,
+        SERVICE_SYSTEM_ENV,
+    };
+    use nve_host_services::{
+        CompletionSink, HandlerReply, HostServiceHandler, HostServiceProvider, HostServiceRegistry,
+        ServiceError,
+    };
+
+    // Test cdylib verifying:
+    //  1. `destroy` ALWAYS observes `cb.is_none()` (unbind precedes destroy on reload AND Drop).
+    //  2. `HotAppSlot::reload` invokes `snapshot_state` EXACTLY ONCE (no double snapshot).
+    let dir = TempDirGuard::new("skia-unbind-snapshot");
+    let marker_file = dir.path().join("lifecycle.log");
+    let cdylib_src = format!(
+        r#"
+        use std::ffi::c_void;
+        use std::io::Write;
+
+        const LOG_PATH: &str = {log_path:?};
+
+        fn append_log(line: &str) {{
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(LOG_PATH) {{
+                let _ = writeln!(f, "{{line}}");
+            }}
+        }}
+
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        pub struct NveBufferSlice {{ pub ptr: *const u8, pub len: usize }}
+
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        pub struct NveHostCallbacks {{
+            pub host_ctx: *mut c_void,
+            pub invoke: Option<unsafe extern "C" fn(*mut c_void, u32, u32, u64, NveBufferSlice, *mut u8, usize, *mut usize) -> i32>,
+            pub channel_publish: Option<unsafe extern "C" fn(*mut c_void, u32, u32, NveBufferSlice) -> i32>,
+        }}
+
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        pub struct NveEventBatch {{
+            pub events: *const c_void,
+            pub bytes: *const u8,
+            pub event_count: u32,
+            pub bytes_len: u32,
+        }}
+
+        #[repr(C)]
+        pub struct NveSurfaceApi {{
+            pub create: unsafe extern "C" fn(u32) -> *mut c_void,
+            pub destroy: unsafe extern "C" fn(*mut c_void),
+            pub render: unsafe extern "C" fn(*mut c_void, u64) -> NveBufferSlice,
+            pub dispatch_events: unsafe extern "C" fn(*mut c_void, NveEventBatch) -> u32,
+        }}
+
+        #[repr(C)]
+        pub struct NveDevApi {{
+            pub apply_hot_patch: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
+            pub snapshot_state: unsafe extern "C" fn(*mut c_void) -> NveBufferSlice,
+            pub restore_state: unsafe extern "C" fn(*mut c_void, NveBufferSlice),
+        }}
+
+        #[repr(C)]
+        pub struct NveHostApi {{
+            pub bind_host: unsafe extern "C" fn(*mut c_void, *const NveHostCallbacks),
+            pub dispatch_host_events: unsafe extern "C" fn(*mut c_void, NveBufferSlice) -> u32,
+        }}
+
+        struct ProbeCdylib {{
+            cb: Option<NveHostCallbacks>,
+            state_buf: Vec<u8>,
+        }}
+
+        unsafe extern "C" fn create(_: u32) -> *mut c_void {{
+            Box::into_raw(Box::new(ProbeCdylib {{ cb: None, state_buf: vec![1, 2, 3, 4] }})) as *mut c_void
+        }}
+
+        unsafe extern "C" fn destroy(h: *mut c_void) {{
+            if !h.is_null() {{
+                let app = unsafe {{ Box::from_raw(h as *mut ProbeCdylib) }};
+                append_log(if app.cb.is_none() {{ "destroy:unbound" }} else {{ "destroy:BOUND_BUG" }});
+            }}
+        }}
+
+        unsafe extern "C" fn render(_: *mut c_void, _: u64) -> NveBufferSlice {{
+            NveBufferSlice {{ ptr: std::ptr::null(), len: 0 }}
+        }}
+        unsafe extern "C" fn dispatch_events(_: *mut c_void, _: NveEventBatch) -> u32 {{ 0 }}
+        unsafe extern "C" fn apply_hot_patch(_: *mut c_void, _: NveBufferSlice) -> u32 {{ 0 }}
+        unsafe extern "C" fn snapshot_state(h: *mut c_void) -> NveBufferSlice {{
+            let app = unsafe {{ &mut *(h as *mut ProbeCdylib) }};
+            append_log("snapshot_state");
+            NveBufferSlice {{ ptr: app.state_buf.as_ptr(), len: app.state_buf.len() }}
+        }}
+        unsafe extern "C" fn restore_state(_: *mut c_void, _: NveBufferSlice) {{}}
+        unsafe extern "C" fn bind_host(h: *mut c_void, cb: *const NveHostCallbacks) {{
+            let app = unsafe {{ &mut *(h as *mut ProbeCdylib) }};
+            app.cb = if cb.is_null() {{ None }} else {{ Some(unsafe {{ *cb }}) }};
+        }}
+        unsafe extern "C" fn dispatch_host_events(_: *mut c_void, _: NveBufferSlice) -> u32 {{ 0 }}
+
+        static SURFACE_API: NveSurfaceApi = NveSurfaceApi {{ create, destroy, render, dispatch_events }};
+        static DEV_API: NveDevApi = NveDevApi {{ apply_hot_patch, snapshot_state, restore_state }};
+        static HOST_API: NveHostApi = NveHostApi {{ bind_host, dispatch_host_events }};
+
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn nve_get_interface(id: u32) -> *const c_void {{
+            match id {{
+                1 => &SURFACE_API as *const NveSurfaceApi as *const c_void,
+                4 => &DEV_API as *const NveDevApi as *const c_void,
+                5 => &HOST_API as *const NveHostApi as *const c_void,
+                _ => std::ptr::null(),
+            }}
+        }}
+        "#,
+        log_path = marker_file.to_string_lossy()
+    );
+    let dylib = compile_test_cdylib(dir.path(), "skia_unbind_snapshot_probe", &cdylib_src);
+    let (_mem, services) = make_memory_services();
+    let mut slot = HotAppSlot::load(&dylib, SurfaceId::ROOT).expect("load probe");
+    assert!(slot.bind_host_services(Some(Arc::clone(&services))));
+    let gen2 = slot.reload(&dylib, SurfaceId::ROOT).expect("reload probe");
+    assert_eq!(gen2, 2);
+    drop(slot);
+
+    let log = std::fs::read_to_string(&marker_file).expect("read lifecycle log");
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(
+        lines.iter().filter(|&&l| l == "snapshot_state").count(),
+        1,
+        "HotAppSlot::reload must call snapshot_state exactly once, got log: {lines:?}"
+    );
+    assert!(
+        !lines.contains(&"destroy:BOUND_BUG"),
+        "HotAppInstance must call bind_host(None) BEFORE destroy on reload & drop, got: {lines:?}"
+    );
+    assert_eq!(
+        lines.iter().filter(|&&l| l == "destroy:unbound").count(),
+        2,
+        "both Gen 1 reload drop and Gen 2 final drop must observe unbound host"
+    );
+
+    // Multi-window SkiaHostServices broadcast vs owner-scoped drain isolation (owner_tag == 0
+    // never steals nonzero owners' Responses; broadcasts drain separately for all windows).
+    struct SimplePending;
+    impl HostServiceHandler for SimplePending {
+        fn service_id(&self) -> u32 {
+            SERVICE_CLIPBOARD
+        }
+        fn handle(
+            &self,
+            _: u32,
+            _: u64,
+            _: &[u8],
+            _: &CompletionSink,
+        ) -> Result<HandlerReply, ServiceError> {
+            Ok(HandlerReply::Pending)
+        }
+    }
+    let reg = Arc::new(HostServiceRegistry::new().with_handler(SimplePending));
+    let svc = crate::host_services::SkiaHostServices::with_provider(
+        Arc::clone(&reg) as Arc<dyn HostServiceProvider>,
+    );
+    let sink = reg.completion_sink();
+    let h0 = sink.register_in_flight_for_owner(0, 1, SERVICE_CLIPBOARD, 1).unwrap();
+    let h1 = sink.register_in_flight_for_owner(10, 1, SERVICE_CLIPBOARD, 1).unwrap();
+    let h2 = sink.register_in_flight_for_owner(20, 1, SERVICE_CLIPBOARD, 1).unwrap();
+    sink.push_event(SERVICE_SYSTEM_ENV, 1, b"dark".to_vec());
+    sink.push_channel(3, false, b"msg".to_vec());
+    assert!(sink.complete_ok(h0, b"w0".to_vec()));
+    assert!(sink.complete_ok(h1, b"w1".to_vec()));
+    assert!(sink.complete_ok(h2, b"w2".to_vec()));
+
+    let mut bcast = NveHostEventBatchBuilder::new();
+    assert_eq!(svc.drain_broadcasts_into(&mut bcast), 2);
+    let bc_recs: Vec<_> = NveHostEventBatchRef::parse(bcast.as_bytes()).unwrap().iter().collect();
+    assert_eq!(bc_recs[0].kind, NveHostEventKind::Push);
+    assert_eq!(bc_recs[1].kind, NveHostEventKind::Channel);
+
+    let mut w0_b = NveHostEventBatchBuilder::new();
+    let mut w1_b = NveHostEventBatchBuilder::new();
+    let mut w2_b = NveHostEventBatchBuilder::new();
+    assert_eq!(svc.drain_batch_for_owner_into(0, &mut w0_b), 1);
+    assert_eq!(svc.drain_batch_for_owner_into(10, &mut w1_b), 1);
+    assert_eq!(svc.drain_batch_for_owner_into(20, &mut w2_b), 1);
+    assert_eq!(NveHostEventBatchRef::parse(w0_b.as_bytes()).unwrap().iter().next().unwrap().payload, b"w0");
+    assert_eq!(NveHostEventBatchRef::parse(w1_b.as_bytes()).unwrap().iter().next().unwrap().payload, b"w1");
+    assert_eq!(NveHostEventBatchRef::parse(w2_b.as_bytes()).unwrap().iter().next().unwrap().payload, b"w2");
+}

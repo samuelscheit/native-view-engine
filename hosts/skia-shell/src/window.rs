@@ -394,15 +394,27 @@ impl DesktopApp for HotAppSlot {
                 self.last_saved_state.clear();
                 self.last_saved_state.extend_from_slice(state);
             }
+            let prior = (!self.last_saved_state.is_empty())
+                .then_some(self.last_saved_state.as_slice());
             let next_binding = self
                 .host_services
                 .as_ref()
                 .map(SkiaHostServices::new_slot_binding);
             let next_cbs = next_binding.as_ref().map(SkiaSlotHostBinding::callbacks);
-            // Transactional reload: keep Gen 1's owner_tag & pending requests untouched until
-            // Gen 2 loads and binds ONCE inside `reload_with_host` (zero double-bind, zero
-            // cross-generation cancellation on failed reload).
-            let outcome = match inst.reload_with_host(new_dylib_path, next_cbs) {
+            let prev_owner_tag = self.slot_binding.as_ref().map(|b| b.owner_tag());
+            let svc_for_discard = self.host_services.clone();
+            // Transactional reload: capture state ONCE, keep Gen 1 untouched if Gen 2 fails to
+            // load, bind Gen 2 ONCE, unbind Gen 1 + discard Gen 1 pending BEFORE Gen 1 destroys.
+            let outcome = match inst.reload_with_host_and_state(
+                new_dylib_path,
+                next_cbs,
+                prior,
+                || {
+                    if let (Some(svc), Some(tag)) = (svc_for_discard.as_ref(), prev_owner_tag) {
+                        let _ = svc.discard_pending_for_owner(tag);
+                    }
+                },
+            ) {
                 Ok(outcome) => outcome,
                 Err(err) => {
                     if let (Some(svc), Some(nb)) =
@@ -414,18 +426,15 @@ impl DesktopApp for HotAppSlot {
                 }
             };
             self.generation = outcome.generation;
-            let prev_binding = std::mem::replace(&mut self.slot_binding, next_binding);
-            if let Some(svc) = self.host_services.as_ref() {
-                if let Some(old) = prev_binding.as_ref() {
-                    let _ = svc.discard_pending_for_owner(old.owner_tag());
-                }
-                if inst.has_host_interface() {
-                    let mut batch = [0u8; THEME_PUSH_BATCH_LEN];
-                    let _ = inst.dispatch_host_events(encode_theme_push_batch(
-                        svc.current_theme(),
-                        &mut batch,
-                    ));
-                }
+            self.slot_binding = next_binding;
+            if let Some(svc) = self.host_services.as_ref()
+                && inst.has_host_interface()
+            {
+                let mut batch = [0u8; THEME_PUSH_BATCH_LEN];
+                let _ = inst.dispatch_host_events(encode_theme_push_batch(
+                    svc.current_theme(),
+                    &mut batch,
+                ));
             }
             Ok(self.generation)
         } else {

@@ -636,3 +636,260 @@ fn completion_sink_caps_depth_and_byte_budget_and_request_table_rejects_dup_and_
         "racing bind(None) during sync invoke_raw must not strand Completed(Cancelled) zombie slot"
     );
 }
+
+#[test]
+fn counting_alloc_positive_probe_detects_heap_allocations() {
+    let allocs = count_thread_allocs(|| {
+        let v = std::hint::black_box(vec![0xABu8; 64]);
+        assert_eq!(v.len(), 64);
+    });
+    assert!(
+        allocs >= 1,
+        "positive CountingAlloc probe must observe at least 1 heap allocation"
+    );
+}
+
+#[test]
+fn finish_sync_matches_host_request_id_strictly_and_owner_zero_never_collides_with_scoped() {
+    // 1. Misbehaving handler calls `done.complete(host_id, ...)` before returning Ready/Err/panicking
+    //    while another owner has a queued Response whose `caller_request_id == host_id`.
+    struct MisbehavingHandler;
+    impl HostServiceHandler for MisbehavingHandler {
+        fn service_id(&self) -> u32 {
+            SERVICE_CLIPBOARD
+        }
+        fn handle(
+            &self,
+            method_id: u32,
+            request_id: u64,
+            _request: &[u8],
+            done: &CompletionSink,
+        ) -> Result<HandlerReply, ServiceError> {
+            match method_id {
+                1 => {
+                    let _ = done.complete_ok(request_id, b"bogus-ready".to_vec());
+                    Ok(HandlerReply::ready(b"sync-ready".to_vec()))
+                }
+                2 => {
+                    let _ = done.complete_ok(request_id, b"bogus-err".to_vec());
+                    Err(ServiceError::Unsupported)
+                }
+                3 => {
+                    let _ = done.complete_ok(request_id, b"bogus-panic".to_vec());
+                    panic!("misbehaving handler panic after complete");
+                }
+                _ => Ok(HandlerReply::Pending),
+            }
+        }
+    }
+
+    // Direct CompletionSink proof: Owner 1's queued response has `caller_request_id == host_id_2`,
+    // and Owner 2 completes `host_id_2` before `finish_sync(host_id_2)` -> Owner 1 MUST survive!
+    let sink = CompletionSink::new();
+    let host_2 = sink
+        .register_in_flight_for_owner(2, 7, SERVICE_CLIPBOARD, 1)
+        .expect("register owner 2");
+    let host_1 = sink
+        .register_in_flight_for_owner(1, host_2, SERVICE_CLIPBOARD, 1)
+        .expect("register owner 1 with caller_id == host_2");
+    assert_ne!(host_1, host_2);
+    assert!(sink.complete_ok(host_1, b"owner1-survivor".to_vec()));
+    assert!(sink.complete_ok(host_2, b"owner2-bogus".to_vec()));
+    sink.finish_sync(host_2);
+
+    let mut b1 = NveHostEventBatchBuilder::new();
+    assert_eq!(sink.drain_batch_for_owner_into(1, &mut b1).unwrap(), 1);
+    let rec1 = NveHostEventBatchRef::parse(b1.as_bytes()).unwrap().iter().next().unwrap();
+    assert_eq!(rec1.request_id.raw(), host_2);
+    assert_eq!(rec1.payload, b"owner1-survivor");
+    let mut b2 = NveHostEventBatchBuilder::new();
+    assert_eq!(sink.drain_batch_for_owner_into(2, &mut b2).unwrap(), 0);
+
+    // Registry end-to-end: Ready, Err, and panicking misbehaving handler leave 0 bogus responses.
+    let reg = HostServiceRegistry::new().with_handler(MisbehavingHandler);
+    assert_eq!(
+        reg.dispatch_with_id_for_owner(2, SERVICE_CLIPBOARD, 1, 99, &[])
+            .unwrap(),
+        HandlerReply::ready(b"sync-ready".to_vec())
+    );
+    assert_eq!(
+        reg.dispatch_with_id_for_owner(2, SERVICE_CLIPBOARD, 2, 100, &[]),
+        Err(ServiceError::Unsupported)
+    );
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = reg.dispatch_with_id_for_owner(2, SERVICE_CLIPBOARD, 3, 101, &[]);
+    }));
+    assert!(panicked.is_err());
+    assert_eq!(reg.completion_sink().in_flight_count(), 0);
+    assert_eq!(reg.completion_sink().queued_count(), 0);
+
+    // 2. owner_tag == 0 caller IDs and owner_tag != 0 scoped host IDs never collide in either order.
+    let sink2 = CompletionSink::new();
+    let mut scoped_ids = Vec::new();
+    for i in 1..=8u64 {
+        let sid = sink2
+            .register_in_flight_for_owner(10 + i, i, SERVICE_CLIPBOARD, 1)
+            .expect("scoped before owner 0");
+        assert_ne!(sid & (1u64 << 63), 0, "scoped host ID must use high-bit partition");
+        scoped_ids.push(sid);
+        let z = sink2
+            .register_in_flight_for_owner(0, i, SERVICE_CLIPBOARD, 1)
+            .expect("owner 0 with same low caller_id");
+        assert_eq!(z, i);
+    }
+    // Reverse order: register owner 0 with a high-bit ID equal to an upcoming scoped ID candidate.
+    let next_est = scoped_ids.last().copied().unwrap() + 1;
+    assert_eq!(
+        sink2.register_in_flight_for_owner(0, next_est, SERVICE_CLIPBOARD, 1),
+        Some(next_est)
+    );
+    let next_scoped = sink2
+        .register_in_flight_for_owner(99, 1, SERVICE_CLIPBOARD, 1)
+        .expect("scoped skips colliding owner 0 high-bit ID");
+    assert_ne!(next_scoped, next_est);
+}
+
+#[test]
+fn multi_window_broadcasts_owner_zero_isolation_and_zero_alloc_owner_drain() {
+    let sink = CompletionSink::new();
+    let h0 = sink
+        .register_in_flight_for_owner(0, 11, SERVICE_CLIPBOARD, 1)
+        .expect("owner 0");
+    let h1 = sink
+        .register_in_flight_for_owner(1, 11, SERVICE_CLIPBOARD, 1)
+        .expect("owner 1");
+    let h2 = sink
+        .register_in_flight_for_owner(2, 11, SERVICE_CLIPBOARD, 1)
+        .expect("owner 2");
+
+    sink.push_event(SERVICE_SYSTEM_ENV, 1, b"theme-dark".to_vec());
+    sink.push_channel(7, true, b"chan-msg".to_vec());
+    assert!(sink.complete_ok(h0, b"resp-0".to_vec()));
+    assert!(sink.complete_ok(h1, b"resp-1".to_vec()));
+    assert!(sink.complete_ok(h2, b"resp-2".to_vec()));
+
+    // owner_tag == 0 drain MUST NOT steal nonzero owners' Responses or Push/Channel broadcasts!
+    let mut b0 = NveHostEventBatchBuilder::with_capacity(1024);
+    assert_eq!(sink.drain_batch_for_owner_into(0, &mut b0).unwrap(), 1);
+    let r0: Vec<_> = NveHostEventBatchRef::parse(b0.as_bytes()).unwrap().iter().collect();
+    assert_eq!(r0.len(), 1);
+    assert_eq!(r0[0].payload, b"resp-0");
+
+    // Broadcast drain takes ONLY Push + Channel and leaves owner 1 & 2 Responses intact!
+    let mut bcast = NveHostEventBatchBuilder::with_capacity(1024);
+    assert_eq!(sink.drain_broadcasts_into(&mut bcast).unwrap(), 2);
+    let bc: Vec<_> = NveHostEventBatchRef::parse(bcast.as_bytes()).unwrap().iter().collect();
+    assert_eq!(bc.len(), 2);
+    assert_eq!(bc[0].payload, b"theme-dark");
+    assert_eq!(bc[1].payload, b"chan-msg");
+
+    // Owner 1 & Owner 2 still get their exact Responses.
+    let mut b1 = NveHostEventBatchBuilder::with_capacity(1024);
+    assert_eq!(sink.drain_batch_for_owner_into(1, &mut b1).unwrap(), 1);
+    assert_eq!(
+        NveHostEventBatchRef::parse(b1.as_bytes()).unwrap().iter().next().unwrap().payload,
+        b"resp-1"
+    );
+    let mut b2 = NveHostEventBatchBuilder::with_capacity(1024);
+    assert_eq!(sink.drain_batch_for_owner_into(2, &mut b2).unwrap(), 1);
+    assert_eq!(
+        NveHostEventBatchRef::parse(b2.as_bytes()).unwrap().iter().next().unwrap().payload,
+        b"resp-2"
+    );
+    assert_eq!(sink.queued_count(), 0);
+
+    // CountingAlloc 0-alloc steady-state guard: keep a sibling owner-2 record in the queue so
+    // `drain_batch_for_owner_into(1, ...)` and `drain_broadcasts_into(...)` must retain in-place!
+    let sib = sink
+        .register_in_flight_for_owner(2, 500, SERVICE_CLIPBOARD, 1)
+        .expect("sibling");
+    assert!(sink.complete_ok(sib, Vec::new()));
+
+    let allocs = count_thread_allocs(|| {
+        for i in 1..=8u64 {
+            let id = sink
+                .register_in_flight_for_owner(1, i, SERVICE_CLIPBOARD, 1)
+                .expect("steady owner 1");
+            assert!(sink.complete_ok(id, Vec::new()));
+            b1.clear();
+            assert_eq!(sink.drain_batch_for_owner_into(1, &mut b1).unwrap(), 1);
+
+            sink.push_event(SERVICE_SYSTEM_ENV, 1, Vec::new());
+            bcast.clear();
+            assert_eq!(sink.drain_broadcasts_into(&mut bcast).unwrap(), 1);
+        }
+    });
+    assert_eq!(
+        allocs, 0,
+        "steady-state owner-scoped and broadcast drains with retained sibling records must do 0 allocs"
+    );
+    assert_eq!(sink.queued_count(), 1, "sibling owner-2 record must remain queued");
+}
+
+#[test]
+fn over_ffi_max_response_not_cached_and_cancel_all_pending_clears_completed_slots() {
+    // 1. OversizedRetryCache MUST NOT cache payloads exceeding FFI_MAX_RESPONSE_BYTES.
+    struct TooBigProvider;
+    impl HostServiceProvider for TooBigProvider {
+        fn invoke_raw_with_id(
+            &self,
+            _: u32,
+            _: u32,
+            _: u64,
+            _: &[u8],
+        ) -> Result<InvokeResult, ServiceError> {
+            Ok(InvokeResult::Ready(ResponseBuf::Heap(vec![
+                0x77u8;
+                nve_host_services::FFI_MAX_RESPONSE_BYTES + 1
+            ])))
+        }
+        fn channel_publish(&self, _: u32, _: bool, _: &[u8]) -> Result<(), ServiceError> {
+            Ok(())
+        }
+        fn poll_host_events(&self) -> Vec<nve_host_services::HostEvent> {
+            Vec::new()
+        }
+    }
+    let provider = TooBigProvider;
+    let cache = nve_host_services::OversizedRetryCache::new();
+    let mut small_buf = [0u8; 64];
+    let mut out_len = 0usize;
+    // SAFETY: `provider`, `small_buf`, and `out_len` are valid stack objects for this sync FFI call.
+    let status = unsafe {
+        nve_host_services::dispatch_ffi_invoke_with_cache::<TooBigProvider>(
+            (&raw const provider).cast_mut().cast(),
+            SERVICE_CLIPBOARD,
+            1,
+            42,
+            nve_abi::NveBufferSlice::from_slice(&[]),
+            small_buf.as_mut_ptr(),
+            small_buf.len(),
+            &raw mut out_len,
+            Some(&cache),
+        )
+    };
+    assert_eq!(status, NveHostStatus::BufferTooSmall.as_i32());
+    assert_eq!(out_len, nve_host_services::FFI_MAX_RESPONSE_BYTES + 1);
+    assert_eq!(
+        cache.cached_count(),
+        0,
+        "payloads > FFI_MAX_RESPONSE_BYTES must never be cached in OversizedRetryCache"
+    );
+
+    // 2. RequestTable::cancel_all_pending clears uncollected Completed slots so inline slots free up.
+    let mut tbl = nve_host_services::RequestTable::new();
+    for id in 1..=10u64 {
+        assert!(tbl.register_pending(id, None));
+        let _ = tbl.resolve(id, Ok(vec![id as u8]));
+    }
+    assert_eq!(tbl.pending_count(), 0);
+    assert_eq!(tbl.total_slot_count(), 10);
+    let (cancelled, cbs) = tbl.cancel_all_pending();
+    assert_eq!(cancelled, 0);
+    assert!(cbs.is_empty());
+    assert_eq!(
+        tbl.total_slot_count(),
+        0,
+        "cancel_all_pending must purge uncollected Completed slots so inline slots do not spill"
+    );
+}

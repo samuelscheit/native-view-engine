@@ -23,6 +23,10 @@ use crate::provider::{
 /// while several long-lived `Pending` requests are outstanding.
 const INLINE_IN_FLIGHT_SLOTS: usize = 8;
 
+/// High-bit tag separating owner-scoped (`owner_tag != 0`) host request tokens from typical
+/// unscoped (`owner_tag == 0`) caller IDs so concurrent callers never collide.
+const SCOPED_HOST_ID_BIT: u64 = 1u64 << 63;
+
 /// Default maximum number of queued outbound records retained by [`CompletionSink`].
 pub const DEFAULT_COMPLETION_QUEUE_CAP: usize = 4096;
 
@@ -60,6 +64,7 @@ struct PendingMeta {
 #[derive(Debug, Clone)]
 struct QueuedRecord {
     owner_tag: u64,
+    host_request_id: u64,
     kind: NveHostEventKind,
     flags: u8,
     status: NveHostStatus,
@@ -67,6 +72,23 @@ struct QueuedRecord {
     method_or_event_or_channel: u32,
     request_id: u64,
     payload: Vec<u8>,
+}
+
+impl QueuedRecord {
+    #[inline]
+    fn response(host_request_id: u64, meta: PendingMeta, status: NveHostStatus, payload: Vec<u8>) -> Self {
+        Self {
+            owner_tag: meta.owner_tag,
+            host_request_id,
+            kind: NveHostEventKind::Response,
+            flags: 0,
+            status,
+            service_id: meta.service_id,
+            method_or_event_or_channel: meta.method_id,
+            request_id: meta.caller_request_id,
+            payload,
+        }
+    }
 }
 
 type ReadyWakeFn = Arc<dyn Fn() + Send + Sync>;
@@ -92,6 +114,47 @@ impl CompletionSinkState {
             dropped_oversized_records: 0,
             dropped_overflow_records: 0,
         }
+    }
+
+    #[inline]
+    fn has_owner_caller_id(&self, owner_tag: u64, caller_request_id: u64) -> bool {
+        self.inline_in_flight.iter().any(|slot| {
+            matches!(
+                slot,
+                Some((_, m)) if m.owner_tag == owner_tag && m.caller_request_id == caller_request_id
+            )
+        }) || (!self.overflow_in_flight.is_empty()
+            && self.overflow_in_flight.values().any(|m| {
+                m.owner_tag == owner_tag && m.caller_request_id == caller_request_id
+            }))
+    }
+
+    #[inline]
+    fn has_host_id(&self, host_id: u64) -> bool {
+        self.inline_in_flight
+            .iter()
+            .any(|slot| matches!(slot, Some((id, _)) if *id == host_id))
+            || (!self.overflow_in_flight.is_empty()
+                && self.overflow_in_flight.contains_key(&host_id))
+            || self
+                .records
+                .iter()
+                .any(|r| r.kind == NveHostEventKind::Response && r.host_request_id == host_id)
+    }
+
+    #[inline]
+    fn owner_tag_for(&self, host_id: u64) -> Option<u64> {
+        for slot in &self.inline_in_flight {
+            if let Some((id, meta)) = slot
+                && *id == host_id
+            {
+                return Some(meta.owner_tag);
+            }
+        }
+        if self.overflow_in_flight.is_empty() {
+            return None;
+        }
+        self.overflow_in_flight.get(&host_id).map(|m| m.owner_tag)
     }
 
     #[inline]
@@ -235,22 +298,35 @@ impl CompletionSink {
         service_id: u32,
         method_id: u32,
     ) -> Option<u64> {
+        let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if st.has_owner_caller_id(owner_tag, caller_request_id) {
+            return None;
+        }
         let host_id = if owner_tag == 0 {
+            if st.has_host_id(caller_request_id) {
+                return None;
+            }
             caller_request_id
         } else {
-            next_host_request_id()
+            let mut candidate = next_host_request_id() | SCOPED_HOST_ID_BIT;
+            while st.has_host_id(candidate) {
+                candidate = next_host_request_id() | SCOPED_HOST_ID_BIT;
+            }
+            candidate
         };
-        let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         st.insert_in_flight(
             host_id,
-            PendingMeta {
-                owner_tag,
-                caller_request_id,
-                service_id,
-                method_id,
-            },
+            PendingMeta { owner_tag, caller_request_id, service_id, method_id },
         )
         .then_some(host_id)
+    }
+
+    /// Returns the `owner_tag` associated with an in-flight `host_request_id`, if present.
+    pub fn owner_tag_for_in_flight(&self, host_request_id: u64) -> Option<u64> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .owner_tag_for(host_request_id)
     }
 
     /// Cleans up a pre-registered slot when the handler returned synchronously (`Ready` or `Err`).
@@ -258,7 +334,7 @@ impl CompletionSink {
         let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if st.remove_in_flight(host_request_id).is_none() {
             st.records.retain(|r| {
-                !(r.kind == NveHostEventKind::Response && r.request_id == host_request_id)
+                !(r.kind == NveHostEventKind::Response && r.host_request_id == host_request_id)
             });
         }
     }
@@ -276,16 +352,7 @@ impl CompletionSink {
             } else {
                 (status, payload)
             };
-            st.push_record_bounded(QueuedRecord {
-                owner_tag: meta.owner_tag,
-                kind: NveHostEventKind::Response,
-                flags: 0,
-                status: final_status,
-                service_id: meta.service_id,
-                method_or_event_or_channel: meta.method_id,
-                request_id: meta.caller_request_id,
-                payload: final_payload,
-            });
+            st.push_record_bounded(QueuedRecord::response(request_id, meta, final_status, final_payload));
             st.on_ready.clone()
         };
         if let Some(cb) = wake {
@@ -304,8 +371,7 @@ impl CompletionSink {
         self.complete(request_id, err.to_status(), Vec::new())
     }
 
-    /// Enqueues an unsolicited host-to-app `Push` record into the next drained batch.
-    pub fn push_event(&self, service_id: u32, event_id: u32, payload: Vec<u8>) {
+    fn push_unscoped(&self, kind: NveHostEventKind, flags: u8, service_id: u32, event_or_chan: u32, payload: Vec<u8>) {
         let wake = {
             let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             if payload.len() > NVE_HOST_BATCH_MAX_PAYLOAD {
@@ -314,11 +380,12 @@ impl CompletionSink {
             }
             st.push_record_bounded(QueuedRecord {
                 owner_tag: 0,
-                kind: NveHostEventKind::Push,
-                flags: 0,
+                host_request_id: 0,
+                kind,
+                flags,
                 status: NveHostStatus::Ok,
                 service_id,
-                method_or_event_or_channel: event_id,
+                method_or_event_or_channel: event_or_chan,
                 request_id: 0,
                 payload,
             });
@@ -327,45 +394,29 @@ impl CompletionSink {
         if let Some(cb) = wake {
             cb();
         }
+    }
+
+    /// Enqueues an unsolicited host-to-app `Push` record into the next drained batch.
+    pub fn push_event(&self, service_id: u32, event_id: u32, payload: Vec<u8>) {
+        self.push_unscoped(NveHostEventKind::Push, 0, service_id, event_id, payload);
     }
 
     /// Enqueues an inbound `Channel` record into the next drained batch.
     pub fn push_channel(&self, channel_id: u32, retain: bool, payload: Vec<u8>) {
-        let flags = if retain {
-            NVE_HOST_RECORD_FLAG_RETAIN
-        } else {
-            0
-        };
-        let wake = {
-            let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            if payload.len() > NVE_HOST_BATCH_MAX_PAYLOAD {
-                st.dropped_oversized_records = st.dropped_oversized_records.saturating_add(1);
-                return;
-            }
-            st.push_record_bounded(QueuedRecord {
-                owner_tag: 0,
-                kind: NveHostEventKind::Channel,
-                flags,
-                status: NveHostStatus::Ok,
-                service_id: SERVICE_CHANNEL,
-                method_or_event_or_channel: channel_id,
-                request_id: 0,
-                payload,
-            });
-            st.on_ready.clone()
-        };
-        if let Some(cb) = wake {
-            cb();
-        }
+        let flags = if retain { NVE_HOST_RECORD_FLAG_RETAIN } else { 0 };
+        self.push_unscoped(NveHostEventKind::Channel, flags, SERVICE_CHANNEL, channel_id, payload);
     }
 
-    /// Drains all queued `Push` and `Channel` records as [`HostEvent`]s, leaving `Response`
-    /// records intact in the sink.
+    /// Drains all queued `Push` and `Channel` records as [`HostEvent`]s in-place, leaving
+    /// `Response` records intact in the sink.
     pub fn poll_host_events(&self) -> Vec<HostEvent> {
         let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let mut events = Vec::new();
-        let mut remaining = VecDeque::with_capacity(st.records.len());
-        while let Some(rec) = st.records.pop_front() {
+        let initial_len = st.records.len();
+        for _ in 0..initial_len {
+            let Some(rec) = st.records.pop_front() else {
+                break;
+            };
             match rec.kind {
                 NveHostEventKind::Push => events.push(HostEvent::Push(HostPushEvent {
                     service_id: rec.service_id,
@@ -377,25 +428,18 @@ impl CompletionSink {
                     retain: (rec.flags & NVE_HOST_RECORD_FLAG_RETAIN) != 0,
                     payload: rec.payload,
                 })),
-                NveHostEventKind::Response => remaining.push_back(rec),
+                NveHostEventKind::Response => st.records.push_back(rec),
             }
         }
-        st.records = remaining;
         events
     }
 
     pub fn dropped_oversized_count(&self) -> u64 {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .dropped_oversized_records
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).dropped_oversized_records
     }
 
     pub fn dropped_overflow_count(&self) -> u64 {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .dropped_overflow_records
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).dropped_overflow_records
     }
 
     /// Flushes every currently in-flight `Pending` request as a [`NveHostStatus::Cancelled`]
@@ -405,33 +449,14 @@ impl CompletionSink {
             let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             let mut count = 0usize;
             for idx in 0..INLINE_IN_FLIGHT_SLOTS {
-                if let Some((_, meta)) = st.inline_in_flight[idx].take() {
-                    st.push_record_bounded(QueuedRecord {
-                        owner_tag: meta.owner_tag,
-                        kind: NveHostEventKind::Response,
-                        flags: 0,
-                        status: NveHostStatus::Cancelled,
-                        service_id: meta.service_id,
-                        method_or_event_or_channel: meta.method_id,
-                        request_id: meta.caller_request_id,
-                        payload: Vec::new(),
-                    });
+                if let Some((host_id, meta)) = st.inline_in_flight[idx].take() {
+                    st.push_record_bounded(QueuedRecord::response(host_id, meta, NveHostStatus::Cancelled, Vec::new()));
                     count += 1;
                 }
             }
             if !st.overflow_in_flight.is_empty() {
-                let overflow = std::mem::take(&mut st.overflow_in_flight);
-                for (_, meta) in overflow {
-                    st.push_record_bounded(QueuedRecord {
-                        owner_tag: meta.owner_tag,
-                        kind: NveHostEventKind::Response,
-                        flags: 0,
-                        status: NveHostStatus::Cancelled,
-                        service_id: meta.service_id,
-                        method_or_event_or_channel: meta.method_id,
-                        request_id: meta.caller_request_id,
-                        payload: Vec::new(),
-                    });
+                for (host_id, meta) in std::mem::take(&mut st.overflow_in_flight) {
+                    st.push_record_bounded(QueuedRecord::response(host_id, meta, NveHostStatus::Cancelled, Vec::new()));
                     count += 1;
                 }
             }
@@ -474,44 +499,37 @@ impl CompletionSink {
             }
         }
         let before = st.overflow_in_flight.len();
-        st.overflow_in_flight
-            .retain(|_, meta| meta.owner_tag != owner_tag);
+        st.overflow_in_flight.retain(|_, meta| meta.owner_tag != owner_tag);
         discarded += before - st.overflow_in_flight.len();
         st.records
             .retain(|r| !(r.kind == NveHostEventKind::Response && r.owner_tag == owner_tag));
         discarded
     }
 
-    /// Drains queued records matching `owner_tag` (plus unscoped `Push`/`Channel` records) into
-    /// `builder`, leaving other owners' `Response` records intact.
-    pub fn drain_batch_for_owner_into(
+    /// Shared in-place ring-buffer drain helper (zero steady-state reallocation) enforcing `u16::MAX`
+    /// and `max_bytes` caps and re-arming `on_ready` outside the lock when matching records remain.
+    fn drain_filtered_into_with_budget(
         &self,
-        owner_tag: u64,
         builder: &mut NveHostEventBatchBuilder,
+        max_bytes: usize,
+        mut matches: impl FnMut(&QueuedRecord) -> bool,
     ) -> Result<usize, NveHostBatchError> {
         let (written, remaining_wake) = {
             let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             let mut written = 0usize;
-            let mut deferred = VecDeque::new();
             let mut stopped_on_cap = false;
-            while let Some(rec) = st.records.pop_front() {
-                let belongs = rec.kind != NveHostEventKind::Response
-                    || owner_tag == 0
-                    || rec.owner_tag == owner_tag;
-                if !belongs {
-                    deferred.push_back(rec);
+            let initial_len = st.records.len();
+            for _ in 0..initial_len {
+                let Some(rec) = st.records.pop_front() else {
+                    break;
+                };
+                if !matches(&rec) || stopped_on_cap {
+                    st.records.push_back(rec);
                     continue;
                 }
-                if stopped_on_cap {
-                    deferred.push_back(rec);
-                    continue;
-                }
-                let rec_bytes = host_batch_padded_record_len(rec.payload.len());
-                if written > 0
-                    && builder.as_bytes().len().saturating_add(rec_bytes)
-                        > NVE_HOST_BATCH_MAX_BYTES
-                {
-                    deferred.push_back(rec);
+                let rec_bytes = host_batch_padded_record_len(rec.payload.len()).unwrap_or(usize::MAX);
+                if written > 0 && builder.as_bytes().len().saturating_add(rec_bytes) > max_bytes {
+                    st.records.push_back(rec);
                     stopped_on_cap = true;
                     continue;
                 }
@@ -530,12 +548,11 @@ impl CompletionSink {
                             st.dropped_oversized_records.saturating_add(1);
                     }
                     Err(_) => {
-                        deferred.push_back(rec);
+                        st.records.push_back(rec);
                         stopped_on_cap = true;
                     }
                 }
             }
-            st.records = deferred;
             let wake = (stopped_on_cap && !st.records.is_empty())
                 .then(|| st.on_ready.clone())
                 .flatten();
@@ -547,19 +564,36 @@ impl CompletionSink {
         Ok(written)
     }
 
+    /// Drains unscoped `Push` and `Channel` broadcast records into `builder` in-place (leaving all
+    /// owner-scoped `Response` records intact) so multi-window hosts can broadcast them to every
+    /// open window without sibling drops.
+    pub fn drain_broadcasts_into(
+        &self,
+        builder: &mut NveHostEventBatchBuilder,
+    ) -> Result<usize, NveHostBatchError> {
+        self.drain_filtered_into_with_budget(builder, NVE_HOST_BATCH_MAX_BYTES, |r| {
+            r.kind != NveHostEventKind::Response
+        })
+    }
+
+    /// Drains ONLY queued `Response` records whose `owner_tag` equals `owner_tag` (strict match,
+    /// including `owner_tag == 0`, never wildcard-stealing nonzero owners or broadcasts) in-place.
+    pub fn drain_batch_for_owner_into(
+        &self,
+        owner_tag: u64,
+        builder: &mut NveHostEventBatchBuilder,
+    ) -> Result<usize, NveHostBatchError> {
+        self.drain_filtered_into_with_budget(builder, NVE_HOST_BATCH_MAX_BYTES, |r| {
+            r.kind == NveHostEventKind::Response && r.owner_tag == owner_tag
+        })
+    }
+
     pub fn in_flight_count(&self) -> usize {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .in_flight_len()
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).in_flight_len()
     }
 
     pub fn queued_count(&self) -> usize {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .records
-            .len()
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).records.len()
     }
 
     pub fn take_completed_response(
@@ -594,43 +628,7 @@ impl CompletionSink {
         builder: &mut NveHostEventBatchBuilder,
         max_bytes: usize,
     ) -> Result<usize, NveHostBatchError> {
-        let (written, remaining_wake) = {
-            let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            let mut written = 0usize;
-            while let Some(front) = st.records.front() {
-                let rec_bytes = host_batch_padded_record_len(front.payload.len());
-                if written > 0 && builder.as_bytes().len().saturating_add(rec_bytes) > max_bytes {
-                    break;
-                }
-                match builder.push_record(
-                    front.kind,
-                    front.flags,
-                    front.status,
-                    front.service_id,
-                    front.method_or_event_or_channel,
-                    front.request_id,
-                    &front.payload,
-                ) {
-                    Ok(()) => {
-                        let _ = st.records.pop_front();
-                        written += 1;
-                    }
-                    Err(NveHostBatchError::PayloadTooLarge(_)) => {
-                        let _ = st.records.pop_front();
-                        st.dropped_oversized_records =
-                            st.dropped_oversized_records.saturating_add(1);
-                    }
-                    Err(NveHostBatchError::CountOverflow) => break,
-                    Err(_) => break,
-                }
-            }
-            let wake = (!st.records.is_empty()).then(|| st.on_ready.clone()).flatten();
-            (written, wake)
-        };
-        if let Some(cb) = remaining_wake {
-            cb();
-        }
-        Ok(written)
+        self.drain_filtered_into_with_budget(builder, max_bytes, |_| true)
     }
 
     /// Drains queued records into a canonical `NveHostEventBatch` byte buffer (`None` when empty).

@@ -86,36 +86,6 @@ impl RequestTable {
         }
     }
 
-    /// Removes a pre-registered pending slot after synchronous completion or error, returning any
-    /// uninvoked callback so the caller can fire it outside the lock.
-    pub fn cancel_pending(&mut self, request_id: u64) -> Option<AsyncCallback> {
-        for slot in &mut self.inline {
-            if let Some((id, _)) = slot
-                && *id == request_id
-            {
-                return match slot.take() {
-                    Some((_, RequestSlot::Pending { callback })) => callback,
-                    Some((id, done @ RequestSlot::Completed(_))) => {
-                        *slot = Some((id, done));
-                        None
-                    }
-                    None => None,
-                };
-            }
-        }
-        if self.overflow.is_empty() {
-            return None;
-        }
-        match self.overflow.remove(&request_id) {
-            Some(RequestSlot::Pending { callback }) => callback,
-            Some(done @ RequestSlot::Completed(_)) => {
-                self.overflow.insert(request_id, done);
-                None
-            }
-            None => None,
-        }
-    }
-
     /// Resolves `request_id` from a completed async host response **exactly once**.
     /// Returns any registered callback so the caller can invoke it outside the mutex lock.
     /// Duplicate or unknown `request_id` completions are ignored cleanly.
@@ -160,31 +130,29 @@ impl RequestTable {
         }
     }
 
-    /// Removes every currently `Pending` slot (both callback-bearing and polled) so unbind /
-    /// reload / drop never leaks zombie entries, returning `(total_cancelled_count, callbacks)`
-    /// for lock-free `ServiceError::Cancelled` invocation.
+    /// Clears every slot (both `Pending` and uncollected `Completed` entries) so unbind /
+    /// reload / drop never leaks zombie entries or permanently spills inline slots into
+    /// `overflow`, returning `(pending_cancelled_count, callbacks)` for lock-free
+    /// `ServiceError::Cancelled` invocation.
     pub fn cancel_all_pending(&mut self) -> (usize, Vec<AsyncCallback>) {
         let mut total = 0usize;
         let mut callbacks = Vec::new();
         for slot in &mut self.inline {
-            if let Some((_, RequestSlot::Pending { .. })) = slot {
+            if let Some((_, RequestSlot::Pending { callback })) = slot.take() {
                 total += 1;
-                if let Some((_, RequestSlot::Pending { callback: Some(cb) })) = slot.take() {
+                if let Some(cb) = callback {
                     callbacks.push(cb);
                 }
             }
         }
         if !self.overflow.is_empty() {
-            let ids: Vec<u64> = self
-                .overflow
-                .iter()
-                .filter_map(|(&id, s)| matches!(s, RequestSlot::Pending { .. }).then_some(id))
-                .collect();
-            for id in ids {
-                total += 1;
-                if let Some(RequestSlot::Pending { callback: Some(cb) }) = self.overflow.remove(&id)
-                {
-                    callbacks.push(cb);
+            let overflow = std::mem::take(&mut self.overflow);
+            for (_, entry) in overflow {
+                if let RequestSlot::Pending { callback } = entry {
+                    total += 1;
+                    if let Some(cb) = callback {
+                        callbacks.push(cb);
+                    }
                 }
             }
         }

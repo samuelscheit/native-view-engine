@@ -472,43 +472,57 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
         }
     }
 
-    /// Drains queued async `CompletionSink` records per window owner tag using one reusable
-    /// [`NveHostEventBatchBuilder`] and dispatches them into each window's app.
+    /// Drains unscoped `Push`/`Channel` broadcasts once and fans them out to every open window,
+    /// then drains owner-scoped `Response` records per window using one reusable builder.
     pub(crate) fn drain_host_service_batches(&mut self) -> bool {
         let mut any_handled = false;
+        self.host_batch_builder.clear();
+        if self.host_services.drain_broadcasts_into(&mut self.host_batch_builder) > 0 {
+            let bytes = self.host_batch_builder.as_bytes();
+            for sw in self.windows.values_mut() {
+                if sw.session.dispatch_host_batch(bytes) {
+                    any_handled = true;
+                    Self::refresh_window_after_host_batch(sw);
+                }
+            }
+            if let Some(primary) = self.primary_session.as_mut()
+                && primary.dispatch_host_batch(bytes)
+            {
+                any_handled = true;
+                let _ = primary.render_and_rasterize();
+            }
+        }
         for sw in self.windows.values_mut() {
             let owner_tag = sw.session.host_owner_tag();
             self.host_batch_builder.clear();
-            let written = self
-                .host_services
-                .drain_batch_for_owner_into(owner_tag, &mut self.host_batch_builder);
-            if written > 0
-                && sw
-                    .session
-                    .dispatch_host_batch(self.host_batch_builder.as_bytes())
+            if self.host_services.drain_batch_for_owner_into(owner_tag, &mut self.host_batch_builder) > 0
+                && sw.session.dispatch_host_batch(self.host_batch_builder.as_bytes())
             {
                 any_handled = true;
-                if let Err(err) = sw.session.render_and_rasterize() {
-                    eprintln!("[nve-skia-shell] host batch render error: {err}");
-                }
-                sw.sync_title();
-                sw.sync_ime_state();
-                sw.sync_a11y_state(false);
-                sw.window.request_redraw();
+                Self::refresh_window_after_host_batch(sw);
             }
         }
         if let Some(primary) = self.primary_session.as_mut() {
             let owner_tag = primary.host_owner_tag();
             self.host_batch_builder.clear();
-            let written = self
-                .host_services
-                .drain_batch_for_owner_into(owner_tag, &mut self.host_batch_builder);
-            if written > 0 && primary.dispatch_host_batch(self.host_batch_builder.as_bytes()) {
+            if self.host_services.drain_batch_for_owner_into(owner_tag, &mut self.host_batch_builder) > 0
+                && primary.dispatch_host_batch(self.host_batch_builder.as_bytes())
+            {
                 any_handled = true;
                 let _ = primary.render_and_rasterize();
             }
         }
         any_handled
+    }
+
+    fn refresh_window_after_host_batch(sw: &mut SurfaceWindow<A>) {
+        if let Err(err) = sw.session.render_and_rasterize() {
+            eprintln!("[nve-skia-shell] host batch render error: {err}");
+        }
+        sw.sync_title();
+        sw.sync_ime_state();
+        sw.sync_a11y_state(false);
+        sw.window.request_redraw();
     }
 
     pub(crate) fn process_pending_remote_frames(&mut self) {

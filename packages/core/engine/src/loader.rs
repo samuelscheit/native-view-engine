@@ -264,39 +264,71 @@ impl HotAppInstance {
     }
 
     /// Transactional reload binding `next_host` onto the candidate dylib **once** before swapping
-    /// out the previous generation (so a failed reload leaves generation N untouched, and a
-    /// successful reload never double-binds generation N+1).
+    /// out and unbinding the previous generation (so a failed reload leaves generation N untouched,
+    /// generation N is unbound BEFORE `destroy`, and generation N+1 is never double-bound).
     pub fn reload_with_host(
         &mut self,
         new_dylib_path: &Path,
         next_host: Option<NveHostCallbacks>,
     ) -> Result<ReloadOutcome, LoaderError> {
         let surface_id = self.surface_id;
-        let previous_generation = self.generation;
-        let next_gen = previous_generation + 1;
-
-        let (mut candidate, preserved_state_bytes) = {
+        let next_gen = self.generation + 1;
+        let (candidate, preserved_state_bytes) = {
             let saved = self.snapshot_state();
             let len = saved.len();
             let prior = (!saved.is_empty()).then_some(saved);
             (Self::load(new_dylib_path, surface_id, next_gen, prior)?, len)
         };
+        Ok(self.commit_reloaded_candidate(candidate, next_host, preserved_state_bytes, || {}))
+    }
+
+    /// Transactional reload using caller-captured `prior_state` (avoiding redundant double
+    /// `snapshot_state()` calls) and invoking `on_old_unbound` strictly AFTER `old.bind_host(None)`
+    /// and BEFORE `old`'s `destroy` runs.
+    pub fn reload_with_host_and_state(
+        &mut self,
+        new_dylib_path: &Path,
+        next_host: Option<NveHostCallbacks>,
+        prior_state: Option<&[u8]>,
+        on_old_unbound: impl FnOnce(),
+    ) -> Result<ReloadOutcome, LoaderError> {
+        let len = prior_state.map_or(0, <[u8]>::len);
+        let candidate = Self::load(new_dylib_path, self.surface_id, self.generation + 1, prior_state)?;
+        Ok(self.commit_reloaded_candidate(candidate, next_host, len, on_old_unbound))
+    }
+
+    fn commit_reloaded_candidate(
+        &mut self,
+        mut candidate: Self,
+        next_host: Option<NveHostCallbacks>,
+        preserved_state_bytes: usize,
+        on_old_unbound: impl FnOnce(),
+    ) -> ReloadOutcome {
+        let previous_generation = self.generation;
+        let next_gen = candidate.generation;
         if let Some(cb) = next_host {
             candidate.bind_host(Some(cb));
         }
-        let old = std::mem::replace(self, candidate);
+        let mut old = std::mem::replace(self, candidate);
+        if old.bound_host.is_some() {
+            let _ = old.bind_host(None);
+        }
+        on_old_unbound();
         drop(old);
-        Ok(ReloadOutcome {
+        ReloadOutcome {
             previous_generation,
             generation: next_gen,
             preserved_state_bytes,
-        })
+        }
     }
 }
 
 impl Drop for HotAppInstance {
     fn drop(&mut self) {
         if !self.handle.is_null() {
+            if self.bound_host.is_some() {
+                let _ = self.bind_host(None);
+            }
             // SAFETY: `self.handle` was created by `self.surface.create` and is destroyed once before unloading `staged`.
             unsafe { (self.surface.destroy)(self.handle) };
             self.handle = std::ptr::null_mut();
