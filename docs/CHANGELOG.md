@@ -4,9 +4,37 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
 
 ---
 
+## Track 2 Slice 2B — Delete `style_buf` & Runtime CSS Parser, Binary `RowPatch` Tier-1 Hot Reload & `inline_style_keys` Guard
+
+- **Typed-style-only authoring & binary Tier-1 hot reload (`11b5b3bb`, `nve-tables`, `nve-engine`, `nve-dioxus`, `nve-dioxus-macros`, `nve-backend-web`, `nve-ui`, `nve-docs`, `nve-cli`, `nve-arch-invariants`)**:
+  - Deleted `packages/core/dioxus/src/style_buf/` and the runtime CSS string parser completely, unified `TypedStyle` with Track 2A `capture_mode` / `Position::Fixed`, banned author `style:` repo-wide (`inline_style_keys` guard), and migrated remaining test/app call sites onto `nve_style: TypedStyle`.
+  - Upgraded Tier-1 hot reload (`HotPatchIndex` + `nve_dioxus::rsx!`) to emit zero-alloc binary `RowPatch` deltas directly instead of CSS text strings, lowering `no_banned_legacy_4_letter_acronyms_ratchet` (`429 → 424`).
+
+## Track 1B-2 Slice 2 — Android/Compose Runtime ABI v6, `NveRuntime.cmake` NDK Derivation & `export_rn`/`export_compose` Rebind
+
+- **Android JNI, `host-java`, `compose-kit` & Kotlin codegen on ABI v6 (`f50fade3`, `0791546b`, `bfba8a34`)**:
+  - Bound ABI v6 `set_props`, `drain_emitted_events`, `snapshot_state`, `apply_hot_patch`, `measure_surface`, Frame-0 save/boot, and `NVE_IFACE_HOST = 5` callbacks through `dev.nve.host.NativeRuntime` / `RuntimeSurface`, rebinding `export_rn` Android `ViewManager.generated.kt` and `export_compose` onto `compose-kit`'s `NveSurfaceController` (`libnve_runtime`) + shared `kotlin_bin_codec.rs` (`<= 609` lines) with real Kotlin 2.1.10 / Gradle / Robolectric / Compose tests (55/55) and `-Werror` Java tests (4,540/4,540).
+  - Hardened JNI & JVM lifetime/safety: fixed `RuntimeSurface.close()` AB-BA callback drain deadlock (with real `NativeRuntime.pushHostEvent` regression test), added per-copy `SetByteArrayRegion` JNI exception checks, `PushLocalFrame`/`PopLocalFrame` frames, 512 B stack `byte[]` ingress fast paths, `ComposeView.disposeComposition()` teardown before `close()`, gated `NveRuntime.cmake` cross-compile `CC_<triple>`/`AR_<triple>`/Cargo linker derivation, and relative `CARGO_TARGET_DIR` resolution in `compose-kit/build.gradle.kts`.
+
+## Authoritative Rust `nve-abi` Macros, Unified Core/Runtime Schema Hashing & Zero-Dep `#[derive(ReprEnum)]`
+
+- **Single-source Rust ABI definitions & zero-dep repr-enum conversions (`9356001d`, `041e9200`, `nve-abi-macros`, `nve-abi`, `nve-codegen`, `nve-arch-invariants`)**:
+  - Added zero-dep `#[derive(NveAbi)]` (vtables, aliases, records, enums) + `abi_{consts,aliases,callbacks}!`, unified Core + Runtime schema hashing (`core_hash=0xACB88FC60D0B4699`, `runtime_hash=0x5E14B3F697517F31`, incl. `NveSurfaceToken` cross-data-model layout verification across all 5 targets), and migrated 22+ `#[repr(<int>)]` unit enums across the workspace onto zero-dep `#[derive(ReprEnum)]` with 21 cross-platform `trybuild` UI tests (`#[cfg(all())]`).
+  - Added `[INV:no-manual-repr-enum-converters]` and lowered `cross_file_enums_converters_and_match_tables` ceiling (`100 → 67`).
+
+## Direct-First Hybrid FFI Phase 1 — Generic `ByteTransport`, Lock-Free `ServiceSlots`, `AsyncBytesDoneGuard` & Standalone `nve-storage`
+
+- **Direct-first FFI transport foundation & storage hardening (`8e0e535d`, `baf3e77b`, `nve-abi`, `nve-codec`, `nve-host-services`, `nve-storage`)**:
+  - Shipped generic zero-`unsafe` `ByteTransport` in `nve-codec`, 2-party atomic ownership (`PHASE_* | FLAG_GUARD_DROPPED`) + panic isolation in `AsyncBytesDoneGuard` + post-violation short-circuit in `nve-abi::sink`, lock-free `ServiceSlots` (32 B `HotSlotEntry`, single-lock `invoke_raw_with_id`) in `nve-host-services`, and standalone `nve-storage` WAL hardening (`has_valid_committed_frame_after` bounded framed `XXH64`+`NKCM` verification, `append_frame` rollback poisoning, `out.reserve(needed)`, replay `StorageError::Corrupt` mapping).
+
+## `trait CanvasPainter`, Single-Pass Flat-Word `DrawList`, GPU `SkiaNativeSink` & Direct-vs-Recorded Canvas Mode
+
+- **Direct & recorded 2D canvas architecture (`86e718c7`, `nve-canvas`, `nve-canvas-skia`, `nve-canvas-web`, `nve-backend-skia`, `nve-backend-web`, `nve-docs-site`)**:
+  - Shipped `trait CanvasPainter` over both single-pass flat-word `DrawList` recording and direct GPU `SkiaNativeSink` / Canvas2D painting (direct-vs-recorded mode) with 0-alloc `CountingAlloc` guards (`nve-backend-skia` 6/6) and Criterion benches, lowering `all_crate_benches` ceiling (`28 → 26`).
+
 ## Track 1B-2 Slice 1 — Runtime ABI v6, `RuntimeHostRouter`, `measure_surface`, Frame-0 Boot & `skia-shell` Cleanup
 
-- **Runtime ABI v6 (`37` slots `0..=36`), dry-run measurement, Frame-0 boot & host router (`nve-abi`, `nve-layout`, `nve-layout-yoga`, `nve-engine`, `nve-runtime`, `nve-dioxus`, `nve-motion`, `hosts/skia-shell`, `host-{cxx,dart}`, `swiftui-kit`)**:
+- **Runtime ABI v6 (`37` slots `0..=36`), dry-run measurement, Frame-0 boot & host router (`a643bc97`, `nve-abi`, `nve-layout`, `nve-layout-yoga`, `nve-engine`, `nve-runtime`, `nve-dioxus`, `nve-motion`, `hosts/skia-shell`, `host-{cxx,dart}`, `swiftui-kit`)**:
   - Upgraded `NveRuntimeApi` to v6 (`runtime_hash=0xDCA4E1BA4674FF40`) with `NveSurfaceMeasure` (16 B), `NVE_MEASURE_FLAG_{DRY_RUN,IDEAL}`, `NveRuntimeIntrinsicSizeInvalidatedFn`, and slots `28..=36` (`measure_surface`, `set_intrinsic_size_invalidated_callback`, `save_frame0_file`, `boot_frame0_file`, `boot_frame0_bytes`, `set_host_callbacks`, `complete_host_request`, `push_host_event`, `publish_host_channel`) plus ILP32 odd-slot tail-padding assertions across Rust, C, and Dart.
   - Implemented `measure_root` (`TaffyStoreLayout` + `YogaLayoutEngine`), `IntrinsicSizeNotifier`, `Frame0File::read_and_validate_bytes`, `RuntimeHostRouter` (`CompletionSink` + `OversizedRetryCache` + monotonic `OwnerBinding` reload tags + central `SERVICE_WINDOW::METHOD_WINDOW_REQUEST_FRAME -> WakeBridge`), completed `DioxusRuntimeApp` (`HostProps`, `HostEventEmitter`, `SignalRegistry`, `Arc<FfiHostServices>`), added opt-in `MotionRuntimeTickHook`, deleted `hosts/skia-shell/src/window/{pair_client,dioxus_app}.rs`, and synced C++/Dart/SwiftUI thin wrappers (`NveEventKind::pointerCancel` included).
 - **5-crate zero-alloc guards, benchmarks & Track 3A/DrawList/i18n review hardening (`3e32c87c`, `97c7382d`, `16c7c745`)**:
