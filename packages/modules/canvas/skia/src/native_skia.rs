@@ -18,13 +18,23 @@ fn to_skia_color(c: ColorRgba) -> Color {
     Color::from_argb(c.a, c.r, c.g, c.b)
 }
 
-/// Post-sanitization [`CanvasSink`] emitting native `skia_safe::Canvas` vector draw calls.
+#[inline(always)]
+fn sanitize_dim(v: f32) -> f32 {
+    if v.is_finite() && v > 0.0 {
+        v
+    } else {
+        0.0
+    }
+}
+
+/// Post-sanitization [`CanvasSink`] emitting native `skia_safe::Canvas` vector draw calls onto an
+/// isolated canvas surface (`NativeSkiaSurface` layer or dedicated offscreen `CpuSkiaSurface`).
 pub struct SkiaNativeSink<'a> {
     canvas: &'a Canvas,
     width: f32,
     height: f32,
     paint: Paint,
-    has_drawn: bool,
+    path_builder: PathBuilder,
 }
 
 impl<'a> SkiaNativeSink<'a> {
@@ -35,10 +45,10 @@ impl<'a> SkiaNativeSink<'a> {
         paint.set_stroke_join(PaintJoin::Round);
         Self {
             canvas,
-            width,
-            height,
+            width: sanitize_dim(width),
+            height: sanitize_dim(height),
             paint,
-            has_drawn: false,
+            path_builder: PathBuilder::new(),
         }
     }
 }
@@ -46,26 +56,23 @@ impl<'a> SkiaNativeSink<'a> {
 impl CanvasSink for SkiaNativeSink<'_> {
     #[inline]
     fn clear(&mut self, color: ColorRgba) {
-        let bounds = Rect::from_xywh(0.0, 0.0, self.width, self.height);
-        if color.a == 0 {
-            // An initial transparent clear on a fresh clipped surface leaves parent backdrop
-            // intact (matching a transparent `PixelBuffer` composited with `SrcOver`); a later
-            // transparent clear overwrites previously drawn pixels inside the active clip rect.
-            if self.has_drawn {
-                self.paint.set_style(PaintStyle::Fill);
-                self.paint.set_anti_alias(false);
-                self.paint.set_blend_mode(BlendMode::Clear);
-                self.paint.set_color(Color::TRANSPARENT);
-                self.canvas.draw_rect(bounds, &self.paint);
-                self.paint.set_blend_mode(BlendMode::SrcOver);
-            }
+        if self.width <= 0.0 || self.height <= 0.0 {
             return;
         }
+        // Always runs on an isolated surface (`NativeSkiaSurface` save_layer or dedicated surface),
+        // so `Clear` / `Src` replaces only this canvas's own pixels across `a == 0`, `0 < a < 255`,
+        // and `a == 255` (matching `WebCanvas2dSink` and isolated RGBA `SkiaPixelSink`).
+        let bounds = Rect::from_xywh(0.0, 0.0, self.width, self.height);
         self.paint.set_style(PaintStyle::Fill);
         self.paint.set_anti_alias(false);
+        self.paint.set_blend_mode(if color.a == 0 {
+            BlendMode::Clear
+        } else {
+            BlendMode::Src
+        });
         self.paint.set_color(to_skia_color(color));
         self.canvas.draw_rect(bounds, &self.paint);
-        self.has_drawn = true;
+        self.paint.set_blend_mode(BlendMode::SrcOver);
     }
 
     #[inline]
@@ -74,10 +81,9 @@ impl CanvasSink for SkiaNativeSink<'_> {
             return;
         }
         self.paint.set_style(PaintStyle::Fill);
-        self.paint.set_anti_alias(false);
+        self.paint.set_anti_alias(true);
         self.paint.set_color(to_skia_color(color));
         self.canvas.draw_rect(Rect::from_xywh(x, y, w, h), &self.paint);
-        self.has_drawn = true;
     }
 
     #[inline]
@@ -94,17 +100,15 @@ impl CanvasSink for SkiaNativeSink<'_> {
             return;
         }
         self.paint.set_style(PaintStyle::Fill);
+        self.paint.set_anti_alias(true);
         self.paint.set_color(to_skia_color(color));
         let rect = Rect::from_xywh(x, y, w, h);
         if radius <= 0.0 {
-            self.paint.set_anti_alias(false);
             self.canvas.draw_rect(rect, &self.paint);
         } else {
-            self.paint.set_anti_alias(true);
             let rrect = RRect::new_rect_xy(rect, radius, radius);
             self.canvas.draw_rrect(rrect, &self.paint);
         }
-        self.has_drawn = true;
     }
 
     #[inline]
@@ -116,7 +120,6 @@ impl CanvasSink for SkiaNativeSink<'_> {
         self.paint.set_anti_alias(true);
         self.paint.set_color(to_skia_color(color));
         self.canvas.draw_circle((cx, cy), radius, &self.paint);
-        self.has_drawn = true;
     }
 
     #[inline]
@@ -129,7 +132,6 @@ impl CanvasSink for SkiaNativeSink<'_> {
         self.paint.set_stroke_width(width);
         self.paint.set_color(to_skia_color(color));
         self.canvas.draw_line((x0, y0), (x1, y1), &self.paint);
-        self.has_drawn = true;
     }
 
     #[inline]
@@ -144,7 +146,6 @@ impl CanvasSink for SkiaNativeSink<'_> {
                 self.paint.set_color(to_skia_color(color));
                 self.canvas
                     .draw_circle((px, py), (width * 0.5).max(0.5), &self.paint);
-                self.has_drawn = true;
             }
             return;
         }
@@ -154,7 +155,7 @@ impl CanvasSink for SkiaNativeSink<'_> {
         self.paint.set_color(to_skia_color(color));
 
         // Opaque polylines emit zero-alloc round-capped segments directly onto `skia_safe::Canvas`;
-        // translucent polylines use a `PathBuilder` to avoid double-blending at interior vertices.
+        // translucent polylines reuse `path_builder` to avoid double-blending at interior vertices.
         if color.a == 255 {
             let mut iter = points.iter();
             if let Some(mut prev) = iter.next() {
@@ -162,19 +163,17 @@ impl CanvasSink for SkiaNativeSink<'_> {
                     self.canvas.draw_line(prev, cur, &self.paint);
                     prev = cur;
                 }
-                self.has_drawn = true;
             }
         } else {
             let mut iter = points.iter();
             if let Some(first) = iter.next() {
-                let mut builder = PathBuilder::new();
-                builder.move_to(first);
+                self.path_builder.reset();
+                self.path_builder.move_to(first);
                 for pt in iter {
-                    builder.line_to(pt);
+                    self.path_builder.line_to(pt);
                 }
-                let path = builder.detach();
+                let path = self.path_builder.snapshot();
                 self.canvas.draw_path(&path, &self.paint);
-                self.has_drawn = true;
             }
         }
     }
@@ -209,15 +208,17 @@ impl<'a> SkiaNativeCanvasPainter<'a> {
         height: f32,
         scale_factor: f32,
     ) -> (Self, CanvasPaintSize) {
+        let w = sanitize_dim(width);
+        let h = sanitize_dim(height);
         let scale = if scale_factor.is_finite() && scale_factor > 0.0 {
             scale_factor
         } else {
             1.0
         };
-        let size = CanvasPaintSize::new(width, height, scale);
+        let size = CanvasPaintSize::new(w, h, scale);
         (
             Self {
-                inner: GuardedPainter::new(SkiaNativeSink::new(canvas, width, height)),
+                inner: GuardedPainter::new(SkiaNativeSink::new(canvas, w, h)),
             },
             size,
         )

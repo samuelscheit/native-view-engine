@@ -6,7 +6,7 @@
 //! allocations, so [`nve_store::FlatResource::write_words`] is a single `memcpy` and
 //! [`DrawList::record_into_words`] writes straight into `ResourceStore`'s reused scratch buffer.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use nve_abi::ColorRgba;
 use nve_store::FlatResource;
@@ -22,6 +22,9 @@ use crate::types::{paint_sparkline, CanvasOp, MAX_DRAW_OPS};
 
 /// Average flat `u32` words per draw op used to pre-size `DrawListRecorder` word buffers.
 const WORDS_PER_OP_ESTIMATE: usize = 6;
+
+/// Shared zero-allocation backing slice for [`DrawList::empty`].
+static EMPTY_DRAW_LIST_WORDS: OnceLock<Arc<[u32]>> = OnceLock::new();
 
 /// Immutable, `O(1)`-clonable flat 4-byte-aligned vector draw list (`Arc<[u32]>`).
 ///
@@ -51,7 +54,7 @@ impl DrawList {
     #[inline]
     pub fn empty() -> Self {
         Self {
-            words: Arc::from([0u32]),
+            words: Arc::clone(EMPTY_DRAW_LIST_WORDS.get_or_init(|| Arc::from([0u32]))),
         }
     }
 
@@ -88,11 +91,35 @@ impl DrawList {
     /// Designed for `tx.edit::<Canvas>(node).draw_list_ephemeral_with(|out| { ...; true })`.
     #[inline]
     pub fn record_into_words(out: &mut Vec<u32>, f: impl FnOnce(&mut DrawListRecorder)) {
+        struct RestoreGuard<'a> {
+            out: &'a mut Vec<u32>,
+            base: usize,
+            rec: Option<DrawListRecorder>,
+        }
+        impl Drop for RestoreGuard<'_> {
+            fn drop(&mut self) {
+                if let Some(mut rec) = self.rec.take() {
+                    rec.inner.unwind_clips();
+                    let mut words = std::mem::take(&mut rec.inner.sink_mut().words);
+                    words.truncate(self.base);
+                    *self.out = words;
+                }
+            }
+        }
+
         let base = out.len();
         let buf = std::mem::take(out);
-        let mut rec = DrawListRecorder::from_word_buf(buf, base);
-        f(&mut rec);
-        *out = rec.finish_words_vec();
+        let mut guard = RestoreGuard {
+            out,
+            base,
+            rec: Some(DrawListRecorder::from_word_buf(buf, base)),
+        };
+        if let Some(rec) = guard.rec.as_mut() {
+            f(rec);
+        }
+        if let Some(rec) = guard.rec.take() {
+            *guard.out = rec.finish_words_vec();
+        }
     }
 
     /// Encodes a raw vector of typed [`CanvasOp`]s directly into flat `u32` words.
@@ -241,8 +268,9 @@ impl DrawListSink {
 
     #[inline(always)]
     fn can_push_draw(&self) -> bool {
-        // Reserve one op slot per currently-open clip so unwind `RestoreClip`s never exceed `MAX_DRAW_OPS`.
-        self.op_count + self.open_clips < MAX_DRAW_OPS
+        // Never let draw ops escape a `MAX_DRAW_OPS`-skipped clip into the parent clip, and reserve
+        // one op slot per currently-open clip so unwind `RestoreClip`s never exceed `MAX_DRAW_OPS`.
+        self.skipped_clips == 0 && self.op_count + self.open_clips < MAX_DRAW_OPS
     }
 }
 
@@ -353,7 +381,7 @@ impl CanvasSink for DrawListSink {
 
     #[inline]
     fn push_clip_rect(&mut self, x: f32, y: f32, w: f32, h: f32) {
-        if self.op_count + self.open_clips + 2 <= MAX_DRAW_OPS {
+        if self.skipped_clips == 0 && self.op_count + self.open_clips + 2 <= MAX_DRAW_OPS {
             self.words.extend_from_slice(&[
                 OP_CLIP_RECT,
                 x.to_bits(),

@@ -30,9 +30,9 @@ impl CanvasPaintSize {
 /// Object-safe vector drawing surface implemented by [`crate::DrawListRecorder`],
 /// [`GuardedPainter`], and backend painters (`SkiaCanvasPainter`, `WebCanvas2dPainter`).
 ///
-/// Write one `paint_scene(p: &mut impl CanvasPainter, size: CanvasPaintSize, ...)` function and
-/// drive it either directly in-process (zero `DrawList` encode/decode) or into a recorded
-/// [`crate::DrawList`] for SSR, `NVE2` wire, `Frame0File`, or out-of-process hosts.
+/// Write one `paint_scene(p: &mut (impl CanvasPainter + ?Sized), size: CanvasPaintSize, ...)`
+/// function and drive it either directly in-process (zero `DrawList` encode/decode) or into a
+/// recorded [`crate::DrawList`] for SSR, `NVE2` wire, `Frame0File`, or out-of-process hosts.
 pub trait CanvasPainter {
     fn clear(&mut self, color: ColorRgba);
     fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: ColorRgba);
@@ -127,7 +127,7 @@ const _: fn(&mut dyn CanvasPainter) = |_| {};
 /// - `stroke_polyline`: finite `width > 0.0`, `1 <= points.len() <= MAX_POLYLINE_POINTS`, and
 ///   every vertex finite.
 /// - `push_clip_rect` / `pop_clip`: strictly balanced with live depth `<= MAX_CLIP_DEPTH`,
-///   finite non-negative `(x, y, w, h)`, and guaranteed RAII unwind on [`GuardedPainter::drop`].
+///   finite `(x, y)` and finite non-negative `(w, h)`, and guaranteed RAII unwind on [`GuardedPainter::drop`].
 pub trait CanvasSink {
     fn clear(&mut self, color: ColorRgba);
     fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: ColorRgba);

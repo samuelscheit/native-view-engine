@@ -381,4 +381,136 @@ mod tests {
         assert!(from_words.is_validated_words());
         assert!(!from_slice.is_validated_words());
     }
+
+    #[test]
+    #[allow(clippy::panic)]
+    fn direct_registry_liveness_order_safe_invalidate_and_unbind_zero_leak() {
+        let reg = DirectCanvasRegistry::new();
+        let mut store = NodeStore::new();
+        let mut changes = ChangeSet::default();
+
+        // Create node A, remove it, and recycle its index into live node B bound to `reg`.
+        let (stale_a, live_b) = {
+            let mut tx = store.tx();
+            let a = tx.create();
+            tx.set_children(NodeId::ROOT, &[a]);
+            tx.commit_into(&mut changes);
+            let mut tx = store.tx();
+            tx.remove(a);
+            tx.commit_into(&mut changes);
+            let mut tx = store.tx();
+            let b = tx.create();
+            tx.set_children(NodeId::ROOT, &[b]);
+            tx.commit_into(&mut changes);
+            (a, b)
+        };
+        assert_eq!(stale_a.index(), live_b.index());
+        assert_ne!(stale_a, live_b);
+
+        let b_calls = Arc::new(AtomicUsize::new(0));
+        {
+            let mut tx = store.tx();
+            let bc = Arc::clone(&b_calls);
+            reg.bind(&mut tx, live_b, move |_, _| {
+                bc.fetch_add(1, Ordering::Relaxed);
+            });
+            tx.commit_into(&mut changes);
+        }
+        assert_eq!(reg.len(), 1);
+
+        // Passing stale `stale_a` to `bind_arc` panics in `tx.edit`, and MUST NOT clobber
+        // `live_b`'s slot or corrupt `live_count`!
+        let stale_cb: Arc<DirectPaintFn> = Arc::new(|_, _| {});
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut tx = store.tx();
+            reg.bind_arc(&mut tx, stale_a, Arc::clone(&stale_cb));
+        }));
+        assert!(res.is_err(), "bind_arc on dead NodeId must panic");
+        assert_eq!(reg.len(), 1);
+        assert!(reg.contains(live_b));
+        assert!(!reg.contains(stale_a));
+        let mut sink = DrawListRecorder::new();
+        assert!(reg.paint(live_b, &mut sink, CanvasPaintSize::new(10.0, 10.0, 1.0)));
+        assert_eq!(b_calls.load(Ordering::Relaxed), 1);
+
+        // Removing `live_b` without calling `reg.remove`: `invalidate` must return `None` and
+        // evict the stale slot rather than panicking in `tx.edit`.
+        {
+            let mut tx = store.tx();
+            tx.remove(live_b);
+            tx.commit_into(&mut changes);
+        }
+        {
+            let mut tx = store.tx();
+            assert_eq!(reg.invalidate(&mut tx, live_b), None);
+        }
+        assert_eq!(reg.len(), 0);
+        assert_eq!(Arc::strong_count(&b_calls), 1);
+
+        // Same-transaction `create` + `bind` + `unbind` leaves zero registry leak and detaches Canvas.
+        let unbind_guard = Arc::new(AtomicUsize::new(0));
+        let c = {
+            let mut tx = store.tx();
+            let n = tx.create();
+            tx.set_children(NodeId::ROOT, &[n]);
+            let g = Arc::clone(&unbind_guard);
+            reg.bind(&mut tx, n, move |_, _| {
+                g.fetch_add(1, Ordering::Relaxed);
+            });
+            assert_eq!(reg.len(), 1);
+            assert!(reg.unbind(&mut tx, n));
+            tx.commit_into(&mut changes);
+            n
+        };
+        assert_eq!(reg.len(), 0);
+        assert!(!reg.contains(c));
+        assert!(!store.has::<Canvas>(c));
+        assert_eq!(Arc::strong_count(&unbind_guard), 1);
+    }
+
+    #[test]
+    #[allow(clippy::panic)]
+    fn record_into_words_panic_restores_prefix_and_capacity_and_empty_is_cached() {
+        // `DrawList::empty()` shares one cached `Arc<[u32]>`.
+        let e1 = DrawList::empty();
+        let e2 = DrawList::empty();
+        assert!(e1.ptr_eq(&e2));
+        assert_eq!(e1.words(), &[0]);
+
+        // `record_into_words` panic guard preserves prefix words and warmed capacity.
+        let mut out = Vec::with_capacity(256);
+        out.extend_from_slice(&[0xDEAD_BEEF, 0xCAFE_BABE]);
+        let cap_before = out.capacity();
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            DrawList::record_into_words(&mut out, |rec| {
+                rec.clip_rect(0.0, 0.0, 20.0, 20.0);
+                rec.fill_rect(1.0, 1.0, 5.0, 5.0, ColorRgba::WHITE);
+                panic!("simulated recorder closure panic");
+            });
+        }));
+        assert!(res.is_err());
+        assert_eq!(out.as_slice(), &[0xDEAD_BEEF, 0xCAFE_BABE]);
+        assert!(
+            out.capacity() >= cap_before,
+            "warmed capacity must be preserved on panic"
+        );
+    }
+
+    #[test]
+    fn paint_sparkline_handles_extreme_finite_f32_span_without_nan() {
+        let dl = DrawList::sparkline(
+            &[-3.0e38, 0.0, 3.0e38],
+            200.0,
+            60.0,
+            ColorRgba::WHITE,
+            ColorRgba::BLACK,
+        );
+        let mut words = Vec::new();
+        assert!(dl.write_words(&mut words));
+        assert!(DrawList::validate(&words));
+        assert!(
+            dl.ops().any(|op| matches!(op, CanvasOpRef::StrokePolyline { points, .. } if points.len() == 3)),
+            "extreme finite samples must still produce a valid 3-vertex polyline"
+        );
+    }
 }

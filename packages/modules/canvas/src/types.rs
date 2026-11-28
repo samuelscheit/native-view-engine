@@ -246,14 +246,15 @@ pub fn paint_sparkline<P: CanvasPainter + ?Sized>(
         return;
     }
 
-    let span = max_v - min_v;
+    let min_d = f64::from(min_v);
+    let span = f64::from(max_v) - min_d;
     let denom = (count - 1) as f32;
     let map_point = |idx: usize, v: f32| -> (f32, f32) {
         let t = idx as f32 / denom;
-        let norm = if span.abs() <= f32::EPSILON {
+        let norm = if !span.is_finite() || span.abs() <= f64::from(f32::EPSILON) {
             0.5
         } else {
-            ((v - min_v) / span).clamp(0.0, 1.0)
+            ((f64::from(v) - min_d) / span).clamp(0.0, 1.0) as f32
         };
         (pad_x + t * plot_w, pad_y + (1.0 - norm) * plot_h)
     };

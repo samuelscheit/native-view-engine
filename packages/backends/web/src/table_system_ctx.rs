@@ -177,7 +177,9 @@ pub struct WebSystemCommitCtx<'a> {
     pub(crate) write_seq: &'a mut u64,
     #[cfg(target_arch = "wasm32")]
     pub live_element: Option<&'a web_sys::Element>,
-    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) is_retagged: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) track_connected_sync: bool,
     pub(crate) connected_sync: &'a mut Vec<(TableSlot, NodeId)>,
 }
 
@@ -292,6 +294,20 @@ impl WebSystemCommitCtx<'_> {
     }
 
     pub fn set_attr(&mut self, node: NodeId, name: &str, value: &str) {
+        // Short-circuit unchanged steady-state writes on non-retagged elements (avoids redundant
+        // WASM->JS `set_attribute` FFI on 120 Hz canvas repaints while preserving retag replay).
+        if !self.is_retagged
+            && self
+                .attrs
+                .get(&node)
+                .is_some_and(|list| list.iter().any(|(k, v)| k == name && v == value))
+            && self
+                .slot_attrs
+                .get(&(node, self.current_slot))
+                .is_some_and(|owned| owned.iter().any(|e| e.name == name && e.value == value))
+        {
+            return;
+        }
         let seq = self.next_seq();
         self.write_effective_attr(node, name, value);
         let owned = self.slot_attrs.entry((node, self.current_slot)).or_default();
@@ -396,9 +412,16 @@ impl WebSystemCommitCtx<'_> {
     /// Queues [`super::WebTableSystem::sync_connected`] for `node` (current slot), run in Step 6
     /// once child reconciliation has connected and placed every element (a Step-5 move would
     /// otherwise evict state applied earlier, e.g. `:modal`). Duplicate requests coalesce at
-    /// drain time.
-    #[cfg(any(target_arch = "wasm32", test))]
+    /// drain time. No-op when no live DOM element is mounted (prevents unbounded queue growth).
     pub fn request_connected_sync(&mut self, node: NodeId) {
+        #[cfg(target_arch = "wasm32")]
+        if self.live_element.is_none() {
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if !self.track_connected_sync {
+            return;
+        }
         self.connected_sync.push((self.current_slot, node));
     }
 

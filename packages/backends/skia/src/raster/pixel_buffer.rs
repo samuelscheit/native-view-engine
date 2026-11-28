@@ -115,6 +115,12 @@ impl PixelBuffer {
         &mut self.pixels
     }
 
+    /// Returns `true` when this buffer tracks per-pixel alpha (isolated offscreen RGBA surface).
+    #[inline]
+    pub const fn has_alpha(&self) -> bool {
+        self.has_alpha
+    }
+
     #[inline]
     pub const fn pack_rgb(r: u8, g: u8, b: u8) -> u32 {
         ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)

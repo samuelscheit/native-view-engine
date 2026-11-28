@@ -119,6 +119,8 @@ pub use raster::{
     rasterize_display_list_with_plugins, rasterize_display_list_with_text_engine, PixelBuffer,
 };
 pub use retained::{CompositorScene, SceneDirtyKind, SceneSyncStats};
+#[cfg(feature = "skia")]
+pub use table_system::NativeSkiaSurface;
 pub use table_system::{SkiaSystemPaintCtx, SkiaTableRegistry, SkiaTableSystem};
 pub use text::{parse_font_weight, CosmicTextEngine, TextAlign, DEFAULT_FONT_WEIGHT};
 pub use text_bidi::{ShapedLineLayout, VisualGraphemeCluster};

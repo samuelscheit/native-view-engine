@@ -537,3 +537,65 @@ fn record_into_words_ephemeral_with_allocates_zero_when_warm() {
         6
     );
 }
+
+#[test]
+fn direct_registry_paint_allows_reentrant_remove_and_invalidate_without_deadlock() {
+    let reg = DirectCanvasRegistry::new();
+    let store = Arc::new(Mutex::new(NodeStore::new()));
+    let mut changes = ChangeSet::default();
+    let (node_self_remove, node_peer) = {
+        let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
+        let mut tx = s.tx();
+        let a = tx.create();
+        let b = tx.create();
+        tx.set_children(NodeId::ROOT, &[a, b]);
+        let reg_cb = reg.clone();
+        let store_cb = Arc::clone(&store);
+        reg.bind(&mut tx, a, move |p, _| {
+            // Re-entrantly remove ourselves and invalidate a sibling node inside `paint`!
+            assert!(reg_cb.remove(a));
+            let mut s = store_cb.lock().unwrap_or_else(|e| e.into_inner());
+            let mut inner_tx = s.tx();
+            assert!(reg_cb.invalidate(&mut inner_tx, b).is_some());
+            p.clear(ColorRgba::BLACK);
+        });
+        reg.bind(&mut tx, b, |p, _| p.clear(ColorRgba::WHITE));
+        tx.commit_into(&mut changes);
+        (a, b)
+    };
+
+    let mut sink = CountingSink::default();
+    {
+        let mut painter = GuardedPainter::new(&mut sink);
+        assert!(reg.paint(
+            node_self_remove,
+            &mut painter,
+            CanvasPaintSize::new(32.0, 32.0, 1.0)
+        ));
+    }
+    assert!(!reg.contains(node_self_remove));
+    assert!(reg.contains(node_peer));
+    assert_eq!(sink.ops, 1);
+}
+
+#[test]
+fn draw_list_sink_suppresses_draws_inside_max_draw_ops_skipped_clip() {
+    use nve_canvas::MAX_DRAW_OPS;
+
+    let dl = DrawList::record_with_capacity(MAX_DRAW_OPS, |rec| {
+        // Fill exactly `MAX_DRAW_OPS - 1` draw ops so only 1 op slot remains.
+        for _ in 0..(MAX_DRAW_OPS - 1) {
+            rec.clear(ColorRgba::BLACK);
+        }
+        // This clip needs 2 slots (ClipRect + RestoreClip), so it MUST be skipped.
+        rec.clip_rect(0.0, 0.0, 4.0, 4.0);
+        // This draw MUST NOT escape unclipped into the parent clip!
+        rec.fill_rect(0.0, 0.0, 100.0, 100.0, ColorRgba::rgb(255, 0, 0));
+        rec.restore_clip();
+    });
+    assert_eq!(dl.len(), MAX_DRAW_OPS - 1);
+    assert!(
+        dl.ops().all(|op| matches!(op, CanvasOpRef::Clear { .. })),
+        "draws inside a MAX_DRAW_OPS-skipped clip must never escape unclipped"
+    );
+}

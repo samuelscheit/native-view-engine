@@ -15,6 +15,8 @@ mod raster;
 pub use native_skia::{SkiaNativeCanvasPainter, SkiaNativeSink};
 pub use painter::{SkiaCanvasPainter, SkiaPixelSink};
 
+#[cfg(feature = "skia")]
+use nve_backend_skia::NativeSkiaSurface;
 use nve_backend_skia::{SkiaSystemPaintCtx, SkiaTableSystem};
 use nve_canvas::{Canvas, DirectCanvasRegistry, DrawList};
 use nve_store::{NodeId, NodeStore, NveTable, TableSlot};
@@ -93,16 +95,16 @@ impl SkiaTableSystem for CanvasSkiaSystem {
         &self,
         _store: &NodeStore,
         node: NodeId,
-        canvas: &skia_safe::Canvas,
-        width: f32,
-        height: f32,
-        scale: f32,
+        surface: &mut NativeSkiaSurface<'_>,
     ) -> bool {
-        let Some(reg) = &self.direct else {
+        let Some(cb) = self.direct.as_ref().and_then(|reg| reg.lookup(node)) else {
             return false;
         };
+        let (width, height, scale) = (surface.width(), surface.height(), surface.scale());
+        let canvas = surface.begin();
         let (mut painter, size) = SkiaNativeCanvasPainter::new(canvas, width, height, scale);
-        reg.paint(node, &mut painter, size)
+        cb(&mut painter, size);
+        true
     }
 }
 

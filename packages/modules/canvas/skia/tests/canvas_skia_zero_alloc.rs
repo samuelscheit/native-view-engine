@@ -440,8 +440,22 @@ fn skia_native_sink_matches_pixel_sink_across_all_8_ops_and_clips() {
         // Leave 63 clips open to verify RAII Drop unwind on `skia_safe::Canvas`.
     };
 
-    // 1. Render via software `SkiaCanvasPainter` (`SkiaPixelSink`).
-    let mut pixel_buf = PixelBuffer::new(64, 64);
+    // Also exercise the translucent polyline (`PathBuilder`) branch + translucent `clear` overwrite
+    // inside a clipped sub-region (`(0..12, 46..54)`).
+    let paint_scene_full = |p: &mut dyn CanvasPainter| {
+        paint_scene(p);
+        p.stroke_polyline(
+            &[(6.0, 36.0), (24.0, 36.0), (24.0, 46.0)],
+            4.0,
+            ColorRgba::rgba(255, 40, 200, 128),
+        );
+        p.clip_rect(2.0, 46.0, 12.0, 8.0);
+        p.clear(ColorRgba::rgba(30, 140, 250, 128));
+        p.restore_clip();
+    };
+
+    // 1. Render via software `SkiaCanvasPainter` (`SkiaPixelSink`) on an isolated RGBA buffer.
+    let mut pixel_buf = PixelBuffer::new_transparent_rgba(64, 64);
     let rect = LayoutRect {
         x: 0.0,
         y: 0.0,
@@ -451,7 +465,7 @@ fn skia_native_sink_matches_pixel_sink_across_all_8_ops_and_clips() {
     {
         let (mut p, _) =
             SkiaCanvasPainter::new(&mut pixel_buf, rect, None, 1.0, 1.0).expect("pixel painter");
-        paint_scene(&mut p);
+        paint_scene_full(&mut p);
     }
 
     // 2. Render via native `SkiaNativeCanvasPainter` (`SkiaNativeSink`) onto `CpuSkiaSurface`.
@@ -459,7 +473,7 @@ fn skia_native_sink_matches_pixel_sink_across_all_8_ops_and_clips() {
     let save_before = surface.canvas().save_count();
     {
         let (mut p, _) = SkiaNativeCanvasPainter::new(surface.canvas(), 64.0, 64.0, 1.0);
-        paint_scene(&mut p);
+        paint_scene_full(&mut p);
     }
     assert_eq!(
         surface.canvas().save_count(),
@@ -493,9 +507,23 @@ fn skia_native_sink_matches_pixel_sink_across_all_8_ops_and_clips() {
             "SkiaNativeSink vs SkiaPixelSink mismatch at {label} ({x},{y})"
         );
     }
+    // Translucent polyline (`PathBuilder` branch) matches software blend within +-2 rounding LSB.
+    let (nr, ng, nb) = native_buf.get_rgb(15, 36).expect("native polyline");
+    let (pr, pg, pb) = pixel_buf.get_rgb(15, 36).expect("pixel polyline");
+    assert!(
+        (i16::from(nr) - i16::from(pr)).abs() <= 2
+            && (i16::from(ng) - i16::from(pg)).abs() <= 2
+            && (i16::from(nb) - i16::from(pb)).abs() <= 2,
+        "translucent polyline mismatch: native=({nr},{ng},{nb}) pixel=({pr},{pg},{pb})"
+    );
+    // Translucent `clear(rgba(30, 140, 250, 128))` inside `(2..14, 46..54)` replaces prior pixels
+    // (readback returns unpremultiplied `(30, 140, 250)` or premul-rounded close to `(15, 70, 125)`
+    // over transparent, strictly matching non-bg).
+    assert_ne!(native_buf.get_rgb(8, 50), Some((12, 16, 24)));
 
     // 3. Hostile wire `DrawList::from_ops` (unmatched leading restore + 66 clips) replayed into
-    //    `SkiaNativeCanvasPainter` must also leave `save_count` strictly balanced.
+    //    `SkiaNativeCanvasPainter` must also leave `save_count` strictly balanced AND actually clear
+    //    the clipped region `(0..32, 0..32)` to transparent `(0, 0, 0)`.
     let mut hostile_ops = vec![CanvasOp::RestoreClip];
     for _ in 0..(MAX_CLIP_DEPTH + 2) {
         hostile_ops.push(CanvasOp::ClipRect {
@@ -516,4 +544,17 @@ fn skia_native_sink_matches_pixel_sink_across_all_8_ops_and_clips() {
         DrawList::view(vw).replay(&mut p);
     }
     assert_eq!(surface.canvas().save_count(), save_before);
+    surface
+        .copy_to_pixel_buffer(&mut native_buf)
+        .expect("post-clear readback");
+    assert_eq!(
+        native_buf.get_rgb(10, 8),
+        Some((0, 0, 0)),
+        "clear(TRANSPARENT) inside clip must wipe prior pixels in isolated surface"
+    );
+    assert_eq!(
+        native_buf.get_rgb(46, 14),
+        Some((50, 120, 240)),
+        "pixels outside the hostile clip must remain untouched"
+    );
 }

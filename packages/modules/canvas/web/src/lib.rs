@@ -18,6 +18,22 @@ use nve_canvas::{Canvas, DirectCanvasRegistry, DrawList};
 use nve_store::{NodeId, NodeStore, NveTable, TableSlot};
 use nve_tables::tables::Layout;
 
+/// Stack-formats a decimal `usize` without heap allocation.
+#[inline]
+fn format_usize_ascii(mut v: usize, buf: &mut [u8; 20]) -> &str {
+    if v == 0 {
+        buf[19] = b'0';
+        return core::str::from_utf8(&buf[19..]).unwrap_or("0");
+    }
+    let mut pos = buf.len();
+    while v > 0 {
+        pos -= 1;
+        buf[pos] = b'0' + (v % 10) as u8;
+        v /= 10;
+    }
+    core::str::from_utf8(&buf[pos..]).unwrap_or("0")
+}
+
 /// `WebTableSystem` plugin for [`Canvas`] (`nve.canvas`).
 #[derive(Debug, Default, Clone)]
 pub struct CanvasWebSystem {
@@ -103,7 +119,12 @@ impl WebTableSystem for CanvasWebSystem {
                 .resource::<DrawList>(row.draw_list())
                 .map_or(0, |d| d.len());
             if count > 0 {
-                ctx.set_attr(node, "data-nve-draw-ops", &count.to_string());
+                let mut count_buf = [0u8; 20];
+                ctx.set_attr(
+                    node,
+                    "data-nve-draw-ops",
+                    format_usize_ascii(count, &mut count_buf),
+                );
             } else {
                 ctx.remove_attr(node, "data-nve-draw-ops");
             }
@@ -111,7 +132,7 @@ impl WebTableSystem for CanvasWebSystem {
 
         // Queue Step-6 connected repaint so responsive `<canvas>` elements measure true connected
         // layout dimensions (and coalesce commit + retag + Layout resize into one paint).
-        #[cfg(target_arch = "wasm32")]
+        // Guarded inside `WebSystemCommitCtx::request_connected_sync` when unmounted.
         ctx.request_connected_sync(node);
     }
 
@@ -421,5 +442,89 @@ mod tests {
         assert_eq!(reg.len(), 0);
         assert!(!reg.contains(nc));
         assert_eq!(Arc::strong_count(&guard_c), 1);
+    }
+
+    #[test]
+    fn connected_sync_queues_on_canvas_and_layout_edits_and_skips_when_unmounted() {
+        use nve_backend_web::table_system::WebStoreRenderer;
+
+        let reg = DirectCanvasRegistry::new();
+        let mut renderer =
+            WebStoreRenderer::new().with_table_system(CanvasWebSystem::with_direct(reg.clone()));
+        let mut store = NodeStore::new();
+        let mut changes = ChangeSet::default();
+
+        // 1. Unmounted/SSR default (`track_connected_sync == false`): zero entries queued.
+        let node = {
+            let mut tx = store.tx();
+            let n = tx.create();
+            tx.set_children(NodeId::ROOT, &[n]);
+            tx.edit::<Layout>(n)
+                .width(Length::points(120.0))
+                .height(Length::points(60.0));
+            reg.bind(&mut tx, n, |p, size| {
+                p.fill_rect(0.0, 0.0, size.width, size.height, ColorRgba::WHITE);
+            });
+            tx.commit_into(&mut changes);
+            n
+        };
+        renderer.commit(&store, &changes).expect("unmounted commit");
+        assert!(
+            renderer.drain_connected_sync_requests().is_empty(),
+            "unmounted commits must never leak connected_sync entries"
+        );
+
+        // 2. Mounted mode (`track_connected_sync == true`): `Canvas` invalidate & watched `Layout`
+        //    changes both queue `(Canvas::slot(), node)`, and steady-state `data-nve-canvas` stays stable.
+        renderer.set_track_connected_sync(true);
+        {
+            let mut tx = store.tx();
+            assert!(reg.invalidate(&mut tx, node).is_some());
+            tx.commit_into(&mut changes);
+        }
+        renderer.commit(&store, &changes).expect("invalidate commit");
+        assert_eq!(
+            renderer.drain_connected_sync_requests(),
+            vec![(Canvas::slot(), node)]
+        );
+        assert_eq!(
+            renderer.plugin_attrs(node),
+            &[("data-nve-canvas".to_string(), "direct".to_string())]
+        );
+
+        // Watched `Layout` resize with zero `Canvas` changes still queues connected sync!
+        {
+            let mut tx = store.tx();
+            tx.edit::<Layout>(node).width(Length::points(240.0));
+            tx.commit_into(&mut changes);
+        }
+        renderer.commit(&store, &changes).expect("layout resize commit");
+        assert_eq!(
+            renderer.drain_connected_sync_requests(),
+            vec![(Canvas::slot(), node)]
+        );
+
+        // Recorded mode uses zero-alloc stack decimal formatter for `data-nve-draw-ops`.
+        reg.remove(node);
+        let dl = DrawList::record(|p| {
+            p.clear(ColorRgba::BLACK);
+            p.fill_rect(0.0, 0.0, 10.0, 10.0, ColorRgba::WHITE);
+        });
+        {
+            let mut tx = store.tx();
+            tx.edit::<Canvas>(node)
+                .draw_list_ephemeral(dl)
+                .generation(99);
+            tx.commit_into(&mut changes);
+        }
+        renderer.commit(&store, &changes).expect("recorded commit");
+        assert_eq!(
+            renderer.plugin_attrs(node),
+            &[("data-nve-draw-ops".to_string(), "2".to_string())]
+        );
+        assert_eq!(
+            renderer.drain_connected_sync_requests(),
+            vec![(Canvas::slot(), node)]
+        );
     }
 }

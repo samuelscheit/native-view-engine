@@ -130,6 +130,9 @@ mod dom {
         }
 
         fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: ColorRgba) {
+            if color.a == 0 {
+                return;
+            }
             let mut css = CssColorBuf::new();
             self.ctx2d.set_fill_style_str(css.format(color));
             self.ctx2d
@@ -145,6 +148,9 @@ mod dom {
             radius: f32,
             color: ColorRgba,
         ) {
+            if color.a == 0 {
+                return;
+            }
             let x = f64::from(x);
             let y = f64::from(y);
             let rw = f64::from(w);
@@ -168,6 +174,9 @@ mod dom {
         }
 
         fn fill_circle(&mut self, cx: f32, cy: f32, radius: f32, color: ColorRgba) {
+            if color.a == 0 {
+                return;
+            }
             self.ctx2d.begin_path();
             let _ = self.ctx2d.arc(
                 f64::from(cx),
@@ -190,6 +199,9 @@ mod dom {
             width: f32,
             color: ColorRgba,
         ) {
+            if color.a == 0 {
+                return;
+            }
             let mut css = CssColorBuf::new();
             self.ctx2d.begin_path();
             self.ctx2d.move_to(f64::from(x0), f64::from(y0));
@@ -200,6 +212,9 @@ mod dom {
         }
 
         fn stroke_polyline(&mut self, points: PolylinePoints<'_>, width: f32, color: ColorRgba) {
+            if color.a == 0 {
+                return;
+            }
             if points.len() == 1 {
                 // 1-point polyline dot parity with `nve-canvas-skia`.
                 if let Some((px, py)) = points.get(0) {
@@ -364,10 +379,10 @@ mod dom {
             }
         }
         if logical_w <= 0.0 {
-            logical_w = f64::from(canvas.width().max(300)) / dpr;
+            logical_w = 300.0;
         }
         if logical_h <= 0.0 {
-            logical_h = f64::from(canvas.height().max(150)) / dpr;
+            logical_h = 150.0;
         }
 
         let backing_w = ((logical_w * dpr).round() as u32).clamp(1, 8192);
@@ -386,10 +401,17 @@ mod dom {
             return;
         };
 
-        let _ = ctx2d.set_transform(dpr, 0.0, 0.0, dpr, 0.0, 0.0);
+        // Derive transform from actual clamped backing size so `8192px` clamping scales smoothly
+        // instead of cropping the right/bottom edges.
+        let scale_x = f64::from(backing_w) / logical_w;
+        let scale_y = f64::from(backing_h) / logical_h;
+        let _ = ctx2d.set_transform(scale_x, 0.0, 0.0, scale_y, 0.0, 0.0);
         ctx2d.clear_rect(0.0, 0.0, logical_w, logical_h);
+        ctx2d.set_line_cap("round");
+        ctx2d.set_line_join("round");
 
-        let size = CanvasPaintSize::new(logical_w as f32, logical_h as f32, dpr as f32);
+        let eff_scale = scale_x.min(scale_y) as f32;
+        let size = CanvasPaintSize::new(logical_w as f32, logical_h as f32, eff_scale);
         let mut painter = WebCanvas2dPainter::new(&ctx2d, logical_w, logical_h);
         if let Some(reg) = direct
             && reg.paint(node, &mut painter, size)

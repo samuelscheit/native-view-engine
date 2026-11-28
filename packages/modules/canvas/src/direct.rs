@@ -8,7 +8,7 @@ use core::fmt;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
-use nve_store::{NodeId, TxCore};
+use nve_store::{NodeId, NveTable, TxCore};
 
 use crate::{Canvas, CanvasPaintSize, CanvasPainter, DrawList};
 
@@ -89,12 +89,19 @@ impl DirectCanvasRegistry {
     }
 
     /// Binds a pre-shared `Arc<DirectPaintFn>` to `node` without re-boxing the closure.
+    ///
+    /// Mutates `tx` (which validates `node` liveness) *before* updating internal slots so a
+    /// stale/dead `NodeId` can never clobber a recycled live slot or corrupt `live_count`.
     pub fn bind_arc(&self, tx: &mut TxCore<'_>, node: NodeId, painter: Arc<DirectPaintFn>) -> u32 {
         if node.is_null() {
             return 0;
         }
-        let idx = node.index();
         let next_gen = next_nonzero_u32(&self.inner.next_gen);
+        tx.edit::<Canvas>(node)
+            .draw_list(None)
+            .generation(next_gen);
+
+        let idx = node.index();
         let replaced = {
             let mut slots = self
                 .inner
@@ -112,20 +119,33 @@ impl DirectCanvasRegistry {
         };
         // Drop replaced closure outside the write lock to avoid re-entrant deadlocks.
         drop(replaced);
-
-        tx.edit::<Canvas>(node)
-            .draw_list(None)
-            .generation(next_gen);
         next_gen
+    }
+
+    /// Detaches [`Canvas`] from `node` (if still live and attached) and removes any bound direct
+    /// closure immediately — preventing leaks on same-transaction `create` + `bind` + `detach`.
+    pub fn unbind(&self, tx: &mut TxCore<'_>, node: NodeId) -> bool {
+        let removed = self.remove(node);
+        if !node.is_null()
+            && tx.store().is_live(node)
+            && tx.store().has_slot(node, Canvas::slot())
+        {
+            tx.detach::<Canvas>(node);
+        }
+        removed
     }
 
     /// Bumps `Canvas::generation` for an already-bound direct canvas without reallocating its
     /// closure (0 heap allocations for 120 Hz animating canvases capturing shared state).
     ///
-    /// Returns `Some(next_gen)` if `node` is currently bound with matching generation, or `None`
-    /// without mutating `tx` otherwise.
+    /// Returns `Some(next_gen)` if `node` is live, carries [`Canvas`], and is currently bound with
+    /// matching generation; evicts any stale entry and returns `None` without panicking otherwise.
     pub fn invalidate(&self, tx: &mut TxCore<'_>, node: NodeId) -> Option<u32> {
         if node.is_null() || self.inner.live_count.load(Ordering::Acquire) == 0 {
+            return None;
+        }
+        if !tx.store().is_live(node) || !tx.store().has_slot(node, Canvas::slot()) {
+            self.remove(node);
             return None;
         }
         let bound = {
@@ -143,6 +163,21 @@ impl DirectCanvasRegistry {
         Some(next_gen)
     }
 
+    /// Returns a cloned handle to the bound direct painter for `node` with at most one read lock
+    /// (zero locks when the registry is empty).
+    #[inline]
+    pub fn lookup(&self, node: NodeId) -> Option<Arc<DirectPaintFn>> {
+        if node.is_null() || self.inner.live_count.load(Ordering::Acquire) == 0 {
+            return None;
+        }
+        let slots = self.inner.slots.read().unwrap_or_else(|e| e.into_inner());
+        slots
+            .get(node.index())
+            .and_then(Option::as_ref)
+            .filter(|slot| slot.node == node)
+            .map(|slot| Arc::clone(&slot.painter))
+    }
+
     /// Invokes the bound direct painter for `node` into `painter` with `size`.
     ///
     /// Returns `true` if a matching live direct painter was invoked, or `false` if the caller
@@ -154,18 +189,7 @@ impl DirectCanvasRegistry {
         painter: &mut dyn CanvasPainter,
         size: CanvasPaintSize,
     ) -> bool {
-        if node.is_null() || self.inner.live_count.load(Ordering::Acquire) == 0 {
-            return false;
-        }
-        let cb = {
-            let slots = self.inner.slots.read().unwrap_or_else(|e| e.into_inner());
-            slots
-                .get(node.index())
-                .and_then(Option::as_ref)
-                .filter(|slot| slot.node == node)
-                .map(|slot| Arc::clone(&slot.painter))
-        };
-        if let Some(cb) = cb {
+        if let Some(cb) = self.lookup(node) {
             cb(painter, size);
             true
         } else {

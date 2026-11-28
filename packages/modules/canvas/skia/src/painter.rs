@@ -105,7 +105,19 @@ impl CanvasSink for SkiaPixelSink<'_> {
     #[inline]
     fn clear(&mut self, color: ColorRgba) {
         let clip = self.active_clip();
-        if color.a == 0 {
+        if self.buffer.has_alpha() {
+            // Isolated RGBA buffer: exact `BlendMode::Src` / `Clear` overwrite across all alpha
+            // values (matching `SkiaNativeSink` inside `save_layer` and `WebCanvas2dSink`).
+            let eff_a = ((f32::from(color.a) * self.opacity).round() as u32).min(255) as u8;
+            let c = if eff_a == 0 {
+                ColorRgba::TRANSPARENT
+            } else {
+                ColorRgba::rgba(color.r, color.g, color.b, eff_a)
+            };
+            clear_rect_overwrite(self.buffer, clip, c);
+        } else if color.a == 0 {
+            clear_rect_overwrite(self.buffer, clip, ColorRgba::TRANSPARENT);
+        } else if color.a == 255 && self.opacity >= 1.0 {
             clear_rect_overwrite(self.buffer, clip, color);
         } else {
             fill_rect(

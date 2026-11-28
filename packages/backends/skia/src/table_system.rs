@@ -12,6 +12,82 @@ use nve_store::{NodeId, NodeStore, Rgba, TableSlot};
 
 use crate::raster::PixelBuffer;
 
+/// Lazy, RAII-isolated native `skia_safe::Canvas` surface passed to
+/// [`SkiaTableSystem::paint_skia_canvas`].
+///
+/// Delays `canvas.save()` / `clip_rect` / `save_layer` / `translate` until a plugin commits to
+/// painting via [`Self::begin`] (zero Skia FFI overhead when returning `false`), isolates the
+/// plugin surface so `BlendMode::Clear` / `BlendMode::Src` inside `clear()` replace only the
+/// plugin's own pixels while compositing cleanly over parent backdrops and node backgrounds, and
+/// guarantees `restore_to_count` on [`Drop`] even if a direct paint closure panics.
+#[cfg(feature = "skia")]
+pub struct NativeSkiaSurface<'a> {
+    canvas: &'a skia_safe::Canvas,
+    rect: LayoutRect,
+    scale: f32,
+    saved: Option<usize>,
+}
+
+#[cfg(feature = "skia")]
+impl<'a> NativeSkiaSurface<'a> {
+    #[inline]
+    pub(crate) fn new(canvas: &'a skia_safe::Canvas, rect: LayoutRect, scale: f32) -> Self {
+        Self {
+            canvas,
+            rect,
+            scale,
+            saved: None,
+        }
+    }
+
+    #[inline]
+    pub fn width(&self) -> f32 {
+        self.rect.width
+    }
+
+    #[inline]
+    pub fn height(&self) -> f32 {
+        self.rect.height
+    }
+
+    #[inline]
+    pub fn scale(&self) -> f32 {
+        self.scale
+    }
+
+    /// Lazily establishes the clipped, translated, isolated offscreen layer on `canvas` and
+    /// returns it ready for logical-coordinate `(0..width, 0..height)` drawing.
+    #[inline]
+    pub fn begin(&mut self) -> &'a skia_safe::Canvas {
+        if self.saved.is_none() {
+            let saved = self.canvas.save();
+            self.saved = Some(saved);
+            let dst = skia_safe::Rect::from_xywh(
+                self.rect.x,
+                self.rect.y,
+                self.rect.width,
+                self.rect.height,
+            );
+            self.canvas
+                .clip_rect(dst, Some(skia_safe::ClipOp::Intersect), Some(true));
+            self.canvas
+                .save_layer(&skia_safe::canvas::SaveLayerRec::default().bounds(&dst));
+            self.canvas.translate((self.rect.x, self.rect.y));
+        }
+        self.canvas
+    }
+}
+
+#[cfg(feature = "skia")]
+impl Drop for NativeSkiaSurface<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        if let Some(saved) = self.saved {
+            self.canvas.restore_to_count(saved);
+        }
+    }
+}
+
 /// Paint context passed to [`SkiaTableSystem::paint_node`].
 pub struct SkiaSystemPaintCtx<'a> {
     pub buffer: &'a mut PixelBuffer,
@@ -57,17 +133,16 @@ pub trait SkiaTableSystem: Send + Sync + 'static {
         false
     }
 
-    /// Optional native `skia_safe::Canvas` paint hook (`--features skia`), called with `canvas`
-    /// clipped to `(0, 0, width, height)` in logical coordinates under the active `scale`.
+    /// Optional native `skia_safe::Canvas` paint hook (`--features skia`).
+    ///
+    /// Implementations should confirm they will paint *before* calling `surface.begin()`, keeping
+    /// non-native nodes at zero Skia FFI overhead.
     #[cfg(feature = "skia")]
     fn paint_skia_canvas(
         &self,
         _store: &NodeStore,
         _node: NodeId,
-        _canvas: &skia_safe::Canvas,
-        _width: f32,
-        _height: f32,
-        _scale: f32,
+        _surface: &mut NativeSkiaSurface<'_>,
     ) -> bool {
         false
     }
@@ -163,44 +238,64 @@ impl SkiaTableRegistry {
         }
     }
 
-    /// Returns `true` iff at least one plugin is attached to `node` and every attached plugin
-    /// prefers native `skia_safe::Canvas` painting over the cached `PixelBuffer` path.
-    #[cfg(feature = "skia")]
-    pub fn prefers_skia_canvas(&self, store: &NodeStore, node: NodeId) -> bool {
-        let mut any_attached = false;
-        for sys in &self.systems {
-            if store.has_slot(node, sys.slot()) {
-                any_attached = true;
-                if !sys.prefers_skia_canvas(store, node) {
-                    return false;
-                }
-            }
-        }
-        any_attached
-    }
-
-    /// Paints `node` directly onto a native `skia_safe::Canvas` iff at least one attached plugin
-    /// is present and every attached plugin prefers native `skia_safe::Canvas` painting.
+    /// Single-pass native `skia_safe::Canvas` dispatch with lazy RAII layer isolation.
     ///
-    /// Returns `false` without drawing when any attached plugin requires the cached `PixelBuffer`
-    /// path, preventing mixed-plugin double-painting.
+    /// - Common single-plugin nodes scan `self.systems` once and delegate directly to
+    ///   [`SkiaTableSystem::paint_skia_canvas`] (at most one plugin lock; zero Skia FFI calls if
+    ///   the plugin declines).
+    /// - Multi-plugin nodes verify [`SkiaTableSystem::prefers_skia_canvas`] across all attached
+    ///   plugins before beginning the layer, preventing mixed-plugin double-painting.
     #[cfg(feature = "skia")]
-    pub fn paint_skia_canvas(
+    pub fn try_paint_skia_canvas(
         &self,
         store: &NodeStore,
         node: NodeId,
         canvas: &skia_safe::Canvas,
-        width: f32,
-        height: f32,
+        rect: LayoutRect,
         scale: f32,
     ) -> bool {
-        if !self.prefers_skia_canvas(store, node) {
+        let mut attached = [0usize; 8];
+        let mut count = 0usize;
+        for (i, sys) in self.systems.iter().enumerate() {
+            if store.has_slot(node, sys.slot()) {
+                if count < attached.len() {
+                    attached[count] = i;
+                }
+                count += 1;
+            }
+        }
+        if count == 0 {
             return false;
         }
+        if count == 1 {
+            let mut surface = NativeSkiaSurface::new(canvas, rect, scale);
+            return self.systems[attached[0]].paint_skia_canvas(store, node, &mut surface);
+        }
+        if count <= attached.len() {
+            for &idx in &attached[..count] {
+                if !self.systems[idx].prefers_skia_canvas(store, node) {
+                    return false;
+                }
+            }
+            let mut surface = NativeSkiaSurface::new(canvas, rect, scale);
+            let mut painted = false;
+            for &idx in &attached[..count] {
+                if self.systems[idx].paint_skia_canvas(store, node, &mut surface) {
+                    painted = true;
+                }
+            }
+            return painted;
+        }
+        for sys in &self.systems {
+            if store.has_slot(node, sys.slot()) && !sys.prefers_skia_canvas(store, node) {
+                return false;
+            }
+        }
+        let mut surface = NativeSkiaSurface::new(canvas, rect, scale);
         let mut painted = false;
         for sys in &self.systems {
             if store.has_slot(node, sys.slot())
-                && sys.paint_skia_canvas(store, node, canvas, width, height, scale)
+                && sys.paint_skia_canvas(store, node, &mut surface)
             {
                 painted = true;
             }
