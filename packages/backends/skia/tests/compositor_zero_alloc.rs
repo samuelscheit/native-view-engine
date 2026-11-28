@@ -498,12 +498,18 @@ fn warm_retained_scene_replay_covers_text_image_gradient_shadows_and_plugin_zero
     let mut soft_buf = PixelBuffer::new(320, 240);
     backend.set_scroll_offset(&store, scroll, 0.0, 4.0);
     backend.rasterize_with_store(&store, &mut soft_buf, ColorRgba::BLACK);
+    let soft_pixels_before = soft_buf.pixels().to_vec();
     let soft_allocs = measure_allocs(|| {
         for step in 1..=4u32 {
             backend.set_scroll_offset(&store, scroll, 0.0, (step as f32) * 8.0);
             backend.rasterize_with_store(&store, &mut soft_buf, ColorRgba::BLACK);
         }
     });
+    assert_ne!(
+        soft_buf.pixels(),
+        soft_pixels_before.as_slice(),
+        "warm software scroll replay must actually move rendered pixels"
+    );
     assert_eq!(
         soft_allocs, 0,
         "warm software replay of gradient+outer/inset shadows+image+text+plugin must perform 0 allocs"

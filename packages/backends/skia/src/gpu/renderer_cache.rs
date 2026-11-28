@@ -226,15 +226,21 @@ impl SkiaRendererCaches {
         self.stats = RendererCacheStats::default();
     }
 
-    /// Drops every GPU-backed `skia_safe::Image` immediately. MUST be called before dropping or
-    /// abandoning the associated Ganesh `DirectContext` / native GPU device.
+    /// Drops every GPU-backed `skia_safe::Image` and any unreachable non-zero `context_tag`
+    /// fallback/negative entries immediately. MUST be called before dropping or abandoning the
+    /// associated Ganesh `DirectContext` / native GPU device.
     pub(crate) fn evict_gpu_entries(&mut self) {
-        self.images.retain(|_, v| !v.gpu_backed);
-        self.plugins.retain(|_, v| !v.gpu_backed);
         #[cfg(any(feature = "skia-metal", feature = "skia-vulkan", feature = "skia-d3d"))]
         {
+            self.images.retain(|k, v| !v.gpu_backed && k.context_tag == 0);
+            self.plugins.retain(|k, v| !v.gpu_backed && k.context_tag == 0);
             self.active_context_id = None;
             self.active_context_tag = 0;
+        }
+        #[cfg(not(any(feature = "skia-metal", feature = "skia-vulkan", feature = "skia-d3d")))]
+        {
+            self.images.retain(|_, v| !v.gpu_backed);
+            self.plugins.retain(|_, v| !v.gpu_backed);
         }
     }
 

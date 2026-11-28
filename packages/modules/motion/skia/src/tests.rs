@@ -429,6 +429,28 @@ fn motion_driver_compositor_scene_composite_and_paint_oracle_parity() {
         Some(SceneDirtyKind::PaintOnly),
         "paint+composite tick must update last_dirty_kind to PaintOnly"
     );
+    let mid_paint_vis = skia.animated_style(&store, paint_node).unwrap();
+    let mid_comp_vis2 = skia.animated_style(&store, comp_node).unwrap();
+    let mid_comp_tf2 = skia.animated_transform(&store, comp_node).unwrap();
+    assert!(
+        mid_paint_vis.background.r.abs_diff(100) <= 1
+            && mid_paint_vis.background.g.abs_diff(56) <= 1
+            && mid_paint_vis.background.b.abs_diff(60) <= 1
+            && mid_paint_vis.text_color.r.abs_diff(165) <= 1
+            && mid_paint_vis.text_color.g.abs_diff(249) <= 1
+            && mid_paint_vis.text_color.b.abs_diff(225) <= 1
+            && (mid_paint_vis.border_radius - 6.8).abs() < 1e-2,
+        "analytic 40% paint midpoint expected (bg~rgb(100,56,60), fg~rgb(165,249,225), r=6.8), got bg={:?} fg={:?} r={}",
+        mid_paint_vis.background,
+        mid_paint_vis.text_color,
+        mid_paint_vis.border_radius
+    );
+    assert!(
+        (mid_comp_vis2.opacity - 0.48).abs() < 1e-3 && (mid_comp_tf2.translate_x - 32.0).abs() < 1e-2,
+        "analytic 80% composite progress expected (op=0.48, tx=32.0), got ({}, {})",
+        mid_comp_vis2.opacity,
+        mid_comp_tf2.translate_x
+    );
     let mid_paint_buf = assert_ground_truth_oracle(&skia, &store, "composite+paint mid-flight");
     assert_ne!(mid_paint_buf.pixels(), mid_comp_buf.pixels());
 
@@ -437,9 +459,8 @@ fn motion_driver_compositor_scene_composite_and_paint_oracle_parity() {
     skia.set_reduced_motion(&store, true);
     assert!(!skia.needs_next_frame());
     let snapped_buf = assert_ground_truth_oracle(&skia, &store, "reduced motion snap");
-    let mut fresh_changes = ChangeSet::default();
+    let fresh_changes = ChangeSet::default();
     let fresh_store_backend = backend(&store, &fresh_changes, false);
-    let _ = &mut fresh_changes;
     let mut direct_buf = PixelBuffer::new(240, 120);
     fresh_store_backend.rasterize(&mut direct_buf, clear);
     assert_eq!(

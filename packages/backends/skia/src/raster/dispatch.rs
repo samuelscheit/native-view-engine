@@ -127,7 +127,6 @@ impl<'a> SoftwareRasterCtx<'a> {
     ) {
         let cur_opacity = self.opacity_stack.current();
         let scale = self.scale;
-        let scaled = scale_rect(rect, scale);
         if !self.transform_stack.is_identity() {
             let m = self.transform_stack.current();
             if inset {
@@ -135,13 +134,14 @@ impl<'a> SoftwareRasterCtx<'a> {
                     self.buffer,
                     &self.clip_stack,
                     m,
-                    scaled,
-                    radius * scale,
-                    border_width * scale,
-                    offset_x * scale,
-                    offset_y * scale,
-                    blur_radius * scale,
-                    spread_radius * scale,
+                    rect,
+                    radius,
+                    border_width,
+                    offset_x,
+                    offset_y,
+                    blur_radius,
+                    spread_radius,
+                    scale,
                     color,
                     cur_opacity,
                 );
@@ -150,12 +150,13 @@ impl<'a> SoftwareRasterCtx<'a> {
                     self.buffer,
                     &self.clip_stack,
                     m,
-                    scaled,
-                    radius * scale,
-                    offset_x * scale,
-                    offset_y * scale,
-                    blur_radius * scale,
-                    spread_radius * scale,
+                    rect,
+                    radius,
+                    offset_x,
+                    offset_y,
+                    blur_radius,
+                    spread_radius,
+                    scale,
                     color,
                     cur_opacity,
                 );
@@ -164,13 +165,14 @@ impl<'a> SoftwareRasterCtx<'a> {
             draw_inset_box_shadow(
                 self.buffer,
                 &self.clip_stack,
-                scaled,
-                radius * scale,
-                border_width * scale,
-                offset_x * scale,
-                offset_y * scale,
-                blur_radius * scale,
-                spread_radius * scale,
+                rect,
+                radius,
+                border_width,
+                offset_x,
+                offset_y,
+                blur_radius,
+                spread_radius,
+                scale,
                 color,
                 cur_opacity,
             );
@@ -178,12 +180,13 @@ impl<'a> SoftwareRasterCtx<'a> {
             draw_box_shadow(
                 self.buffer,
                 &self.clip_stack,
-                scaled,
-                radius * scale,
-                offset_x * scale,
-                offset_y * scale,
-                blur_radius * scale,
-                spread_radius * scale,
+                rect,
+                radius,
+                offset_x,
+                offset_y,
+                blur_radius,
+                spread_radius,
+                scale,
                 color,
                 cur_opacity,
             );

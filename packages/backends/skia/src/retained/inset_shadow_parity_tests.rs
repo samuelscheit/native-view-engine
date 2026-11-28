@@ -452,3 +452,190 @@ fn inset_shadow_group_opacity_nested_rounded_clips_and_pill_radius_parity() {
     }
     assert_cpu_gpu_parity_roi(&cpu_p, gpu_p.as_ref(), (19, 19, 121, 71), 5.5, "pill radius > half_extent");
 }
+
+fn build_transformed_box(
+    canvas: (u32, u32),
+    scale: f32,
+    rect: (f32, f32, f32, f32),
+    radius: f32,
+    shadows: Vec<BoxShadow>,
+    (sx, sy, rot_deg): (f32, f32, f32),
+) -> (NodeStore, SkiaBackend) {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut backend = SkiaBackend::new();
+    backend.set_viewport(
+        SurfaceId::ROOT,
+        Viewport { width: canvas.0 as f32, height: canvas.1 as f32, scale_factor: scale },
+    );
+    {
+        let mut tx = store.tx();
+        tx.edit::<Layout>(NodeId::ROOT)
+            .width(Length::points(canvas.0 as f32))
+            .height(Length::points(canvas.1 as f32));
+        let card = tx.create();
+        tx.edit::<Layout>(card)
+            .position(Position::Absolute)
+            .inset_left(Length::points(rect.0))
+            .inset_top(Length::points(rect.1))
+            .width(Length::points(rect.2))
+            .height(Length::points(rect.3));
+        tx.edit::<Visual>(card)
+            .background(Rgba::WHITE)
+            .border_radius(radius)
+            .box_shadows(Some(BoxShadows::new(shadows)));
+        tx.edit::<Transform>(card).scale_x(sx).scale_y(sy).rotate_deg(rot_deg);
+        tx.set_children(NodeId::ROOT, &[card]);
+        tx.commit_into(&mut changes);
+    }
+    backend.commit(&store, &changes).expect("commit transformed box");
+    (store, backend)
+}
+
+#[test]
+fn singular_transform_and_2x_hidpi_rotated_non_uniform_scale_shadow_parity() {
+    // 1. Singular transform (`scale_x = 0.0`) with outer, ring inset, and collapsed inset shadows:
+    //    must never panic/NaN and must leave the entire canvas untouched (`BG_CLEAR`) on CPU & GPU.
+    let (s_sing, mut b_sing) = build_transformed_box(
+        (120, 120),
+        2.0,
+        (20.0, 20.0, 80.0, 80.0),
+        8.0,
+        vec![
+            BoxShadow::new(4.0, 6.0, 10.0, Rgba::new(220, 38, 38, 220)),
+            BoxShadow::new(0.0, 4.0, 8.0, Rgba::new(15, 23, 180, 220)).inset(),
+            BoxShadow::new(0.0, 0.0, 6.0, Rgba::rgb(20, 180, 90)).spread(60.0).inset(),
+        ],
+        (0.0, 1.0, 0.0),
+    );
+    let (cpu_s, gpu_s) = render_cpu_and_optionally_gpu(&mut b_sing, &s_sing, 120, 120);
+    for (side, buf) in std::iter::once(("cpu", &cpu_s)).chain(gpu_s.as_ref().map(|g| ("gpu", g))) {
+        for y in (0..buf.height()).step_by(8) {
+            for x in (0..buf.width()).step_by(8) {
+                assert_eq!(
+                    buf.get_rgb(x, y),
+                    Some((BG_CLEAR.r, BG_CLEAR.g, BG_CLEAR.b)),
+                    "{side}: singular scale_x=0 must draw nothing at ({x},{y})"
+                );
+            }
+        }
+    }
+    assert_cpu_gpu_parity_roi(&cpu_s, gpu_s.as_ref(), (0, 0, 240, 240), 0.1, "singular scale_x=0");
+
+    // 2. Combined 2x HiDPI + 30 deg rotation with BOTH outer & inset shadows.
+    let (s_rot, mut b_rot) = build_transformed_box(
+        (160, 160),
+        2.0,
+        (40.0, 50.0, 80.0, 60.0),
+        8.0,
+        vec![
+            BoxShadow::new(6.0, 8.0, 8.0, Rgba::new(220, 38, 38, 210)),
+            BoxShadow::new(0.0, 0.0, 8.0, Rgba::new(15, 23, 180, 225)).spread(6.0).inset(),
+        ],
+        (1.0, 1.0, 30.0),
+    );
+    assert_scene_matches_fresh_display_list(&mut b_rot, &s_rot, 160, 160, "2x rotated shadow");
+    let (cpu_r, gpu_r) = render_cpu_and_optionally_gpu(&mut b_rot, &s_rot, 160, 160);
+    assert_cpu_gpu_parity_roi(&cpu_r, gpu_r.as_ref(), (40, 40, 290, 290), 6.5, "2x HiDPI + 30deg rotation");
+
+    // 3. Combined 2x HiDPI + non-uniform scale (`1.6 x 0.65`) with BOTH outer & inset shadows.
+    let (s_nu, mut b_nu) = build_transformed_box(
+        (200, 140),
+        2.0,
+        (60.0, 30.0, 80.0, 80.0),
+        8.0,
+        vec![
+            BoxShadow::new(0.0, 6.0, 10.0, Rgba::new(220, 38, 38, 210)),
+            BoxShadow::new(0.0, 6.0, 10.0, Rgba::new(15, 23, 180, 220)).inset(),
+        ],
+        (1.6, 0.65, 0.0),
+    );
+    assert_scene_matches_fresh_display_list(&mut b_nu, &s_nu, 200, 140, "2x non-uniform scale");
+    let (cpu_n, gpu_n) = render_cpu_and_optionally_gpu(&mut b_nu, &s_nu, 200, 140);
+    assert_cpu_gpu_parity_roi(&cpu_n, gpu_n.as_ref(), (32, 40, 368, 256), 6.5, "2x HiDPI + non-uniform scale");
+}
+
+#[test]
+fn extreme_blur_and_spread_2e38_at_2x_and_extreme_offset_negative_spread_solid_fill_parity() {
+    // 1. `blur_radius = 2e38 @ 2x` (`2e38 * 2.0` would overflow `f32` to `+Inf` if pre-scaled!):
+    //    both axis-aligned and transformed paths MUST clamp cleanly to `MAX_BLUR_SIGMA = 512px`.
+    let make_blur_2x = |blur: f32| {
+        build_single_box(BoxSpec {
+            canvas: (120, 120),
+            scale: 2.0,
+            rect: (20.0, 20.0, 80.0, 80.0),
+            bg: Rgba::WHITE,
+            radius: 8.0,
+            border: (0.0, Rgba::TRANSPARENT),
+            shadows: vec![
+                BoxShadow::new(0.0, 0.0, blur, Rgba::new(220, 38, 38, 200)),
+                BoxShadow::new(0.0, 0.0, blur, Rgba::new(0, 0, 0, 220)).inset(),
+            ],
+        })
+    };
+    let (s_2e38, mut b_2e38, _) = make_blur_2x(2e38);
+    let (s_cap, mut b_cap, _) = make_blur_2x(512.0);
+    let (cpu_2e38, gpu_2e38) = render_cpu_and_optionally_gpu(&mut b_2e38, &s_2e38, 120, 120);
+    let (cpu_cap, gpu_cap) = render_cpu_and_optionally_gpu(&mut b_cap, &s_cap, 120, 120);
+    assert_eq!(cpu_2e38.pixels(), cpu_cap.pixels(), "CPU blur=2e38 @ 2x must match 512px cap");
+    if let (Some(g), Some(g_cap)) = (gpu_2e38.as_ref(), gpu_cap.as_ref()) {
+        assert_eq!(g.pixels(), g_cap.pixels(), "GPU blur=2e38 @ 2x must match 512px cap");
+    }
+    assert!(luma(cpu_2e38.get_rgb(120, 120).unwrap()) < 245.0, "blur=2e38 @ 2x must not drop");
+
+    // 2. Finite extreme positive inset `spread_radius = 2e38 @ 2x`: must render `SolidFill`
+    //    (NOT `Empty` from `spread * scale` overflow!) identically on CPU & GPU.
+    let (s_sp, mut b_sp, _) = build_single_box(BoxSpec {
+        canvas: (100, 100),
+        scale: 2.0,
+        rect: (10.0, 10.0, 80.0, 80.0),
+        bg: Rgba::WHITE,
+        radius: 10.0,
+        border: (2.0, Rgba::rgb(16, 185, 129)),
+        shadows: vec![BoxShadow::new(0.0, 0.0, 8.0, Rgba::rgb(220, 38, 38)).spread(2e38).inset()],
+    });
+    let (cpu_sp, gpu_sp) = render_cpu_and_optionally_gpu(&mut b_sp, &s_sp, 100, 100);
+    for (side, buf) in std::iter::once(("cpu", &cpu_sp)).chain(gpu_sp.as_ref().map(|g| ("gpu", g))) {
+        assert_eq!(buf.get_rgb(100, 100), Some((220, 38, 38)), "{side}: spread=2e38 @ 2x must SolidFill");
+        assert_eq!(buf.get_rgb(10, 100), Some((BG_CLEAR.r, BG_CLEAR.g, BG_CLEAR.b)), "{side}: no bleed");
+    }
+    assert_cpu_gpu_parity_roi(&cpu_sp, gpu_sp.as_ref(), (18, 18, 182, 182), 4.0, "spread=2e38 @ 2x");
+
+    // 3. Extreme `offset_x = ±f32::MAX` with finite negative spread (`-4.0`, `-1e38`) @ 1x & 2x:
+    //    the finite hole is shifted infinitely away -> padding box is outside hole -> `SolidFill`!
+    for (tag, scale, offset_x, spread) in [
+        ("pos_max_neg4_1x", 1.0_f32, f32::MAX, -4.0_f32),
+        ("pos_max_neg4_2x", 2.0_f32, f32::MAX, -4.0_f32),
+        ("neg_max_neg1e38_1x", 1.0_f32, -f32::MAX, -1e38_f32),
+        ("neg_max_neg1e38_2x", 2.0_f32, -f32::MAX, -1e38_f32),
+    ] {
+        let (store, mut backend, _) = build_single_box(BoxSpec {
+            canvas: (100, 100),
+            scale,
+            rect: (10.0, 10.0, 80.0, 80.0),
+            bg: Rgba::WHITE,
+            radius: 8.0,
+            border: (2.0, Rgba::rgb(30, 64, 175)),
+            shadows: vec![BoxShadow::new(offset_x, 0.0, 8.0, Rgba::rgb(220, 38, 38))
+                .spread(spread)
+                .inset()],
+        });
+        let (cpu, gpu) = render_cpu_and_optionally_gpu(&mut backend, &store, 100, 100);
+        let center = (50.0 * scale) as u32;
+        let outside = (4.0 * scale) as u32;
+        for (side, buf) in std::iter::once(("cpu", &cpu)).chain(gpu.as_ref().map(|g| ("gpu", g))) {
+            assert_eq!(
+                buf.get_rgb(center, center),
+                Some((220, 38, 38)),
+                "{side} ({tag}): extreme offset + finite negative spread must SolidFill"
+            );
+            assert_eq!(
+                buf.get_rgb(outside, center),
+                Some((BG_CLEAR.r, BG_CLEAR.g, BG_CLEAR.b)),
+                "{side} ({tag}): must not bleed outside box"
+            );
+        }
+        let s = scale as u32;
+        assert_cpu_gpu_parity_roi(&cpu, gpu.as_ref(), (9 * s, 9 * s, 91 * s, 91 * s), 4.0, tag);
+    }
+}

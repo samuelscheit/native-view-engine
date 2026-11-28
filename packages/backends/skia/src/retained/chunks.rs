@@ -322,110 +322,110 @@ impl ChunkArenas {
         self.compactions = self.compactions.wrapping_add(1);
 
         let mut new_ops = Vec::with_capacity(self.live_op_count);
-            let mut new_str =
-                String::with_capacity(self.str_arena.len().saturating_sub(self.dead_str_bytes));
-            let mut new_grads =
-                Vec::with_capacity(self.grad_arena.len().saturating_sub(self.dead_grads));
-            let mut new_image_handles = Vec::with_capacity(
-                self.image_handles
-                    .len()
-                    .saturating_sub(self.dead_image_handles),
-            );
+        let mut new_str =
+            String::with_capacity(self.str_arena.len().saturating_sub(self.dead_str_bytes));
+        let mut new_grads =
+            Vec::with_capacity(self.grad_arena.len().saturating_sub(self.dead_grads));
+        let mut new_image_handles = Vec::with_capacity(
+            self.image_handles
+                .len()
+                .saturating_sub(self.dead_image_handles),
+        );
 
-            for meta in chunks.iter_mut() {
-                if !meta.is_live() {
-                    meta.shadow_start = 0;
-                    meta.shadow_len = 0;
-                    meta.op_start = 0;
-                    meta.op_len = 0;
-                    continue;
-                }
-                let sh_start = new_ops.len() as u32;
-                let old_sh_s = meta.shadow_start as usize;
-                let old_sh_e = old_sh_s.saturating_add(meta.shadow_len as usize);
-                if let Some(slice) = self.ops.get(old_sh_s..old_sh_e) {
-                    new_ops.extend_from_slice(slice);
-                }
-                meta.shadow_start = sh_start;
+        for meta in chunks.iter_mut() {
+            if !meta.is_live() {
+                meta.shadow_start = 0;
+                meta.shadow_len = 0;
+                meta.op_start = 0;
+                meta.op_len = 0;
+                continue;
+            }
+            let sh_start = new_ops.len() as u32;
+            let old_sh_s = meta.shadow_start as usize;
+            let old_sh_e = old_sh_s.saturating_add(meta.shadow_len as usize);
+            if let Some(slice) = self.ops.get(old_sh_s..old_sh_e) {
+                new_ops.extend_from_slice(slice);
+            }
+            meta.shadow_start = sh_start;
 
-                let op_start = new_ops.len() as u32;
-                let old_op_s = meta.op_start as usize;
-                let old_op_e = old_op_s.saturating_add(meta.op_len as usize);
-                if let Some(slice) = self.ops.get(old_op_s..old_op_e) {
-                    for &op in slice {
-                        let rewritten = match op {
+            let op_start = new_ops.len() as u32;
+            let old_op_s = meta.op_start as usize;
+            let old_op_e = old_op_s.saturating_add(meta.op_len as usize);
+            if let Some(slice) = self.ops.get(old_op_s..old_op_e) {
+                for &op in slice {
+                    let rewritten = match op {
+                        LocalPaintOp::DrawText {
+                            local_rect,
+                            str_off,
+                            str_len,
+                            font_size,
+                            font_weight,
+                            text_align,
+                            color,
+                        } => {
+                            let text = self.str_slice(str_off, str_len);
+                            let off = new_str.len() as u32;
+                            new_str.push_str(text);
                             LocalPaintOp::DrawText {
                                 local_rect,
-                                str_off,
-                                str_len,
+                                str_off: off,
+                                str_len: text.len() as u32,
                                 font_size,
                                 font_weight,
                                 text_align,
                                 color,
-                            } => {
-                                let text = self.str_slice(str_off, str_len);
-                                let off = new_str.len() as u32;
-                                new_str.push_str(text);
-                                LocalPaintOp::DrawText {
-                                    local_rect,
-                                    str_off: off,
-                                    str_len: text.len() as u32,
-                                    font_size,
-                                    font_weight,
-                                    text_align,
-                                    color,
-                                }
                             }
+                        }
+                        LocalPaintOp::DrawImage {
+                            local_rect,
+                            radius,
+                            str_off,
+                            str_len,
+                            fit,
+                            handle_idx,
+                        } => {
+                            let src = self.str_slice(str_off, str_len);
+                            let off = new_str.len() as u32;
+                            new_str.push_str(src);
+                            let next_hidx = new_image_handles.len() as u32;
+                            new_image_handles.push(Cell::new(self.image_handle(handle_idx)));
                             LocalPaintOp::DrawImage {
                                 local_rect,
                                 radius,
-                                str_off,
-                                str_len,
+                                str_off: off,
+                                str_len: src.len() as u32,
                                 fit,
-                                handle_idx,
-                            } => {
-                                let src = self.str_slice(str_off, str_len);
-                                let off = new_str.len() as u32;
-                                new_str.push_str(src);
-                                let next_hidx = new_image_handles.len() as u32;
-                                new_image_handles.push(Cell::new(self.image_handle(handle_idx)));
-                                LocalPaintOp::DrawImage {
-                                    local_rect,
-                                    radius,
-                                    str_off: off,
-                                    str_len: src.len() as u32,
-                                    fit,
-                                    handle_idx: next_hidx,
-                                }
+                                handle_idx: next_hidx,
                             }
+                        }
+                        LocalPaintOp::FillRoundedRectGradient {
+                            local_rect,
+                            radius,
+                            gradient_idx,
+                        } => {
+                            let next_idx = if let Some(slot) =
+                                self.grad_arena.get_mut(gradient_idx as usize)
+                                && let Some(g) = slot.take()
+                            {
+                                let idx = new_grads.len() as u32;
+                                new_grads.push(Some(g));
+                                idx
+                            } else {
+                                u32::MAX
+                            };
                             LocalPaintOp::FillRoundedRectGradient {
                                 local_rect,
                                 radius,
-                                gradient_idx,
-                            } => {
-                                let next_idx = if let Some(slot) =
-                                    self.grad_arena.get_mut(gradient_idx as usize)
-                                    && let Some(g) = slot.take()
-                                {
-                                    let idx = new_grads.len() as u32;
-                                    new_grads.push(Some(g));
-                                    idx
-                                } else {
-                                    u32::MAX
-                                };
-                                LocalPaintOp::FillRoundedRectGradient {
-                                    local_rect,
-                                    radius,
-                                    gradient_idx: next_idx,
-                                }
+                                gradient_idx: next_idx,
                             }
-                            other => other,
-                        };
-                        new_ops.push(rewritten);
-                    }
+                        }
+                        other => other,
+                    };
+                    new_ops.push(rewritten);
                 }
-                meta.op_start = op_start;
             }
+            meta.op_start = op_start;
+        }
 
         self.ops = new_ops;
         self.str_arena = new_str;

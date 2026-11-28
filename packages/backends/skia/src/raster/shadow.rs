@@ -6,7 +6,7 @@ use nve_abi::ColorRgba;
 use nve_engine::LayoutRect;
 
 use super::clip::{rounded_rect_sdf, ClipStack};
-use super::{fill_rounded_rect, PixelBuffer};
+use super::{fill_rounded_rect, scale_rect, PixelBuffer};
 
 /// Maximum physical-pixel Gaussian blur sigma shared by CPU and GPU shadow rasterizers.
 pub(crate) const MAX_BLUR_SIGMA: f32 = 512.0;
@@ -15,30 +15,33 @@ pub(crate) const BLUR_CRISP_THRESHOLD_PX: f32 = 0.5;
 /// Minimum physical-pixel blur sigma once `phys_blur > BLUR_CRISP_THRESHOLD_PX`.
 pub(crate) const MIN_BLUR_SIGMA_PX: f32 = 0.5;
 
-/// Geometric mean column length `sqrt(|col0| * |col1|)` of a 2D affine matrix `[a, b, c, d, ..]`,
-/// matching Skia's `SkMatrix::mapRadius(1.0)` identically.
+/// Returns `(geom_scale, min_axis_scale)` of a 2D affine matrix `[a, b, c, d, ..]`, matching
+/// Skia's `SkMatrix::mapRadius(1.0)` identically via `sx.sqrt() * sy.sqrt()` so huge scales never
+/// overflow intermediate `sx * sy`.
 #[inline]
-pub(crate) fn linear_ctm_scale(m: &[f32; 6]) -> f32 {
+pub(crate) fn linear_ctm_scales(m: &[f32; 6]) -> (f32, f32) {
     let sx = m[0].hypot(m[1]);
     let sy = m[2].hypot(m[3]);
     if !sx.is_finite() || !sy.is_finite() || sx <= 0.0 || sy <= 0.0 {
-        return 0.0;
+        return (0.0, 0.0);
     }
-    (sx * sy).sqrt()
+    (sx.sqrt() * sy.sqrt(), sx.min(sy))
 }
 
-/// Evaluates the unified physical-pixel blur sigma from `blur_radius` and `ctm_scale`.
-/// Returns `None` when the shadow is crisp (`phys_blur <= 0.5 px` or degenerate scale).
+/// Evaluates the unified physical-pixel blur sigma from `blur_radius` and `ctm_scale` in `f64`
+/// so finite extreme blurs (e.g. `2e38 @ 2x`) clamp cleanly to `MAX_BLUR_SIGMA` instead of
+/// overflowing to `+Inf`. Returns `None` when crisp (`phys_blur <= 0.5 px`) or degenerate.
 #[inline]
 pub(crate) fn physical_blur_sigma(blur_radius: f32, ctm_scale: f32) -> Option<f32> {
-    if !blur_radius.is_finite() || !ctm_scale.is_finite() || ctm_scale <= 0.0 {
+    if !blur_radius.is_finite() || !ctm_scale.is_finite() || ctm_scale <= 0.0 || blur_radius <= 0.0
+    {
         return None;
     }
-    let phys_blur = blur_radius * ctm_scale;
-    if phys_blur <= BLUR_CRISP_THRESHOLD_PX {
+    let phys_blur = (blur_radius as f64) * (ctm_scale as f64);
+    if phys_blur <= BLUR_CRISP_THRESHOLD_PX as f64 {
         return None;
     }
-    Some((phys_blur * 0.5).clamp(MIN_BLUR_SIGMA_PX, MAX_BLUR_SIGMA))
+    Some((phys_blur * 0.5).clamp(MIN_BLUR_SIGMA_PX as f64, MAX_BLUR_SIGMA as f64) as f32)
 }
 
 /// Fast Abramowitz & Stegun 7.1.26 approximation of `0.5 * erfc(x)` accurate to `< 1e-6`.
@@ -110,11 +113,11 @@ pub(super) fn valid_outer_shadow_rect(
     })
 }
 
-/// Shared inset padding-box & cutout-hole geometry resolution.
-pub(super) enum InsetGeometry {
-    /// Zero shadow visible (degenerate rect or huge negative spread expanding hole to infinity).
+/// Shared inset padding-box & cutout-hole geometry resolution used by BOTH CPU and GPU rasterizers.
+pub(crate) enum InsetGeometry {
+    /// Zero shadow visible (degenerate rect, infinite negative-spread hole, or full cover past blur).
     Empty,
-    /// Cutout hole collapsed (`spread >= 0` and `hole_w <= 0 || hole_h <= 0`): solid-fill padding box.
+    /// Cutout hole collapsed or shifted past the padding box + blur tail: solid-fill padding box.
     SolidFill {
         inner_rect: LayoutRect,
         inner_radius: f32,
@@ -128,8 +131,10 @@ pub(super) enum InsetGeometry {
     },
 }
 
+/// Resolves CSS inset `box-shadow` padding-box and cutout-hole geometry in `rect`'s coordinate
+/// space, sharing exact overflow/disjoint/cover rules between CPU and GPU rasterizers.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn resolve_inset_geometry(
+pub(crate) fn resolve_inset_geometry(
     rect: LayoutRect,
     radius: f32,
     border_width: f32,
@@ -138,6 +143,7 @@ pub(super) fn resolve_inset_geometry(
     blur_radius: f32,
     spread_radius: f32,
     opacity: f32,
+    blur_margin: f32,
 ) -> InsetGeometry {
     if !rect.x.is_finite()
         || !rect.y.is_finite()
@@ -148,6 +154,8 @@ pub(super) fn resolve_inset_geometry(
         || !blur_radius.is_finite()
         || !spread_radius.is_finite()
         || !opacity.is_finite()
+        || rect.width <= 0.0
+        || rect.height <= 0.0
         || opacity <= 0.0
     {
         return InsetGeometry::Empty;
@@ -159,12 +167,20 @@ pub(super) fn resolve_inset_geometry(
     };
     let inner_w = rect.width - 2.0 * bw;
     let inner_h = rect.height - 2.0 * bw;
-    if !inner_w.is_finite() || !inner_h.is_finite() || inner_w <= 0.0 || inner_h <= 0.0 {
+    let inner_x = rect.x + bw;
+    let inner_y = rect.y + bw;
+    if !inner_w.is_finite()
+        || !inner_h.is_finite()
+        || !inner_x.is_finite()
+        || !inner_y.is_finite()
+        || inner_w <= 0.0
+        || inner_h <= 0.0
+    {
         return InsetGeometry::Empty;
     }
     let inner_rect = LayoutRect {
-        x: rect.x + bw,
-        y: rect.y + bw,
+        x: inner_x,
+        y: inner_y,
         width: inner_w,
         height: inner_h,
     };
@@ -180,15 +196,15 @@ pub(super) fn resolve_inset_geometry(
 
     let hole_w = inner_w - 2.0 * spread_radius;
     let hole_h = inner_h - 2.0 * spread_radius;
-    // Huge negative spread expands the cutout hole to infinity -> casts zero shadow (never invert!).
+    // Huge negative spread expands the cutout hole itself to infinity -> casts zero shadow.
     if spread_radius < 0.0 && (!hole_w.is_finite() || !hole_h.is_finite()) {
         return InsetGeometry::Empty;
     }
-    let hole_x = inner_rect.x + offset_x + spread_radius;
-    let hole_y = inner_rect.y + offset_y + spread_radius;
-    if spread_radius < 0.0 && (!hole_x.is_finite() || !hole_y.is_finite()) {
-        return InsetGeometry::Empty;
-    }
+    let hole_x = inner_x + offset_x + spread_radius;
+    let hole_y = inner_y + offset_y + spread_radius;
+    // When `hole_w`/`hole_h` are finite and positive while `hole_x`/`hole_y` overflowed to `±Inf`
+    // (extreme `offset_x/y`), the finite hole was shifted infinitely far away from the padding
+    // box, leaving the entire padding box outside the hole -> `SolidFill` (NOT `Empty`).
     if !hole_w.is_finite()
         || !hole_h.is_finite()
         || !hole_x.is_finite()
@@ -202,11 +218,47 @@ pub(super) fn resolve_inset_geometry(
         };
     }
 
+    let safe_margin = if blur_margin.is_finite() {
+        blur_margin.max(0.0) as f64
+    } else {
+        0.0
+    };
+    let ix0 = inner_x as f64;
+    let iy0 = inner_y as f64;
+    let ix1 = ix0 + inner_w as f64;
+    let iy1 = iy0 + inner_h as f64;
+    let hx0 = hole_x as f64;
+    let hy0 = hole_y as f64;
+    let hx1 = hx0 + hole_w as f64;
+    let hy1 = hy0 + hole_h as f64;
+
+    if hx0 >= ix1 + safe_margin
+        || hx1 <= ix0 - safe_margin
+        || hy0 >= iy1 + safe_margin
+        || hy1 <= iy0 - safe_margin
+    {
+        return InsetGeometry::SolidFill {
+            inner_rect,
+            inner_radius,
+        };
+    }
+
     let base_hole_r = if inner_radius > 0.01 {
         (inner_radius - spread_radius).max(0.0)
     } else {
         0.0
     };
+    let clamped_hole_r = base_hole_r.min(hole_w * 0.5).min(hole_h * 0.5);
+    let cover_margin = (ix0 - hx0)
+        .min(iy0 - hy0)
+        .min(hx1 - ix1)
+        .min(hy1 - iy1);
+    if cover_margin >= safe_margin
+        && (clamped_hole_r as f64) <= (inner_radius as f64) + cover_margin + 1e-4
+    {
+        return InsetGeometry::Empty;
+    }
+
     InsetGeometry::Ring {
         inner_rect,
         inner_radius,
@@ -220,7 +272,7 @@ pub(super) fn resolve_inset_geometry(
     }
 }
 
-/// Rasterizes an axis-aligned soft rounded box shadow in physical pixel coordinates.
+/// Rasterizes an axis-aligned soft rounded box shadow from logical inputs scaled by `scale`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_box_shadow(
     buf: &mut PixelBuffer,
@@ -231,13 +283,14 @@ pub(crate) fn draw_box_shadow(
     offset_y: f32,
     blur_radius: f32,
     spread_radius: f32,
+    scale: f32,
     color: ColorRgba,
     opacity: f32,
 ) {
     if color.a == 0 || clip.is_empty() {
         return;
     }
-    let Some(shadow_rect) =
+    let Some(logical_rect) =
         valid_outer_shadow_rect(rect, offset_x, offset_y, blur_radius, spread_radius, opacity)
     else {
         return;
@@ -247,13 +300,29 @@ pub(crate) fn draw_box_shadow(
     } else {
         0.0
     };
-    let base_r = if safe_r > 0.01 {
-        (safe_r + spread_radius).max(0.0)
+    let logical_base_r = if safe_r > 0.01 {
+        (safe_r + spread_radius)
+            .max(0.0)
+            .min(logical_rect.width * 0.5)
+            .min(logical_rect.height * 0.5)
     } else {
         0.0
     };
+    let shadow_rect = scale_rect(logical_rect, scale);
+    if !shadow_rect.x.is_finite()
+        || !shadow_rect.y.is_finite()
+        || !shadow_rect.width.is_finite()
+        || !shadow_rect.height.is_finite()
+        || shadow_rect.width <= 0.0
+        || shadow_rect.height <= 0.0
+    {
+        return;
+    }
+    let base_r = (logical_base_r * scale)
+        .min(shadow_rect.width * 0.5)
+        .min(shadow_rect.height * 0.5);
 
-    let Some(sigma) = physical_blur_sigma(blur_radius, 1.0) else {
+    let Some(sigma) = physical_blur_sigma(blur_radius, scale) else {
         fill_rounded_rect(buf, clip, shadow_rect, base_r, color, opacity);
         return;
     };
@@ -355,8 +424,8 @@ pub(crate) fn draw_box_shadow(
     }
 }
 
-/// Rasterizes an analytical Gaussian-falloff CSS inset `box-shadow` in physical pixel coordinates,
-/// strictly clipped to the inner padding box (`inset(rect, border_width)`).
+/// Rasterizes an analytical Gaussian-falloff CSS inset `box-shadow` from logical inputs scaled by
+/// `scale`, strictly clipped to the inner padding box (`inset(rect, border_width)`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_inset_box_shadow(
     buf: &mut PixelBuffer,
@@ -368,12 +437,15 @@ pub(crate) fn draw_inset_box_shadow(
     offset_y: f32,
     blur_radius: f32,
     spread_radius: f32,
+    scale: f32,
     color: ColorRgba,
     opacity: f32,
 ) {
     if color.a == 0 || clip.is_empty() {
         return;
     }
+    let phys_sigma = physical_blur_sigma(blur_radius, scale);
+    let blur_margin = phys_sigma.map_or(1.0, |s| s * 4.0 + 2.0) / scale.max(1e-3);
     let (inner_rect, inner_radius, hole_rect, base_hole_r) = match resolve_inset_geometry(
         rect,
         radius,
@@ -383,13 +455,21 @@ pub(crate) fn draw_inset_box_shadow(
         blur_radius,
         spread_radius,
         opacity,
+        blur_margin,
     ) {
         InsetGeometry::Empty => return,
         InsetGeometry::SolidFill {
             inner_rect,
             inner_radius,
         } => {
-            fill_rounded_rect(buf, clip, inner_rect, inner_radius, color, opacity);
+            fill_rounded_rect(
+                buf,
+                clip,
+                scale_rect(inner_rect, scale),
+                inner_radius * scale,
+                color,
+                opacity,
+            );
             return;
         }
         InsetGeometry::Ring {
@@ -397,8 +477,27 @@ pub(crate) fn draw_inset_box_shadow(
             inner_radius,
             hole_rect,
             base_hole_r,
-        } => (inner_rect, inner_radius, hole_rect, base_hole_r),
+        } => (
+            scale_rect(inner_rect, scale),
+            inner_radius * scale,
+            scale_rect(hole_rect, scale),
+            base_hole_r
+                .min(hole_rect.width * 0.5)
+                .min(hole_rect.height * 0.5)
+                * scale,
+        ),
     };
+    if !inner_rect.x.is_finite()
+        || !inner_rect.y.is_finite()
+        || !inner_rect.width.is_finite()
+        || !inner_rect.height.is_finite()
+        || !hole_rect.x.is_finite()
+        || !hole_rect.y.is_finite()
+        || !hole_rect.width.is_finite()
+        || !hole_rect.height.is_finite()
+    {
+        return;
+    }
 
     let [cx0, cy0, cx1, cy1] = clip.bounds();
     let min_x = (inner_rect.x.floor() as i32).clamp(cx0, cx1);
@@ -408,8 +507,6 @@ pub(crate) fn draw_inset_box_shadow(
     if min_x >= max_x || min_y >= max_y {
         return;
     }
-
-    let phys_sigma = physical_blur_sigma(blur_radius, 1.0);
     let crisp = phys_sigma.is_none();
     let sigma = phys_sigma.unwrap_or(MIN_BLUR_SIGMA_PX);
     let inv_sigma_sqrt2 = 1.0 / (sigma * std::f32::consts::SQRT_2);
