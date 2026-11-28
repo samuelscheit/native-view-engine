@@ -6,7 +6,7 @@ use nve_interop::crdt::{
     NveCrdtDelta, CrdtRecord, CrdtValue, HlcClock, LwwRegister, OpId, OrSet, PeerId, PnCounter,
     VersionVector,
 };
-use nve_ui::{ColorHex, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Switch, use_theme};
+use nve_ui::{Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Switch, use_theme};
 
 pub const CRDT_SIMULATOR_SOURCE: &str = r#"use nve_interop::crdt::{
     NveCrdtDelta, CrdtRecord, CrdtValue, HlcClock, LwwRegister, OrSet, PeerId, PnCounter,
@@ -234,13 +234,21 @@ pub fn CrdtSimulatorDemo() -> Element {
     rsx! {
         view {
             test_id: "pg-crdt-root",
-            style: "width: 100%; flex-direction: column; gap: 12px;",
+            nve_style: TypedStyle::col().width_pct(100.0).gap(12.0),
 
             // Convergence & NVC1 binary wire telemetry bar
             view {
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;",
+                nve_style: TypedStyle::row()
+                    .width_pct(100.0)
+                    .justify(FlexJustify::SpaceBetween)
+                    .align(FlexAlign::Center)
+                    .flex_wrap(FlexWrap::Wrap)
+                    .gap(8.0),
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; gap: 6px; align-items: center;",
+                    nve_style: TypedStyle::row()
+                        .flex_wrap(FlexWrap::Wrap)
+                        .gap(6.0)
+                        .align(FlexAlign::Center),
                     Badge {
                         test_id: Some("pg-crdt-convergence".to_string()),
                         label: if converged { "Converged ✓".to_string() } else { "Diverged (Offline)".to_string() },
@@ -268,16 +276,31 @@ pub fn CrdtSimulatorDemo() -> Element {
 
             // Dual Peer A / Peer B cards
             view {
-                style: "width: 100%; flex-direction: row; flex-wrap: wrap; gap: 10px;",
+                nve_style: TypedStyle::row()
+                    .width_pct(100.0)
+                    .flex_wrap(FlexWrap::Wrap)
+                    .gap(10.0),
 
                 // Peer A
                 view {
                     test_id: "pg-crdt-peer-a",
-                    style: "flex-grow: 1; min-width: 220px; flex-direction: column; gap: 8px; padding: 12px; border-radius: 8px; background-color: {theme.surface.raised.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                    nve_style: TypedStyle::col()
+                        .flex_grow(1.0)
+                        .min_width_px(220.0)
+                        .gap(8.0)
+                        .padding(12.0)
+                        .radius(8.0)
+                        .bg(theme.surface.raised)
+                        .border(1.0, theme.border.default),
                     view {
-                        style: "flex-direction: row; justify-content: space-between; align-items: center;",
+                        nve_style: TypedStyle::row()
+                            .justify(FlexJustify::SpaceBetween)
+                            .align(FlexAlign::Center),
                         text {
-                            style: "font-size: 13px; font-weight: 700; color: {theme.status.accent.text.hex()};",
+                            nve_style: TypedStyle::new()
+                                .font_size(13.0)
+                                .font_weight(700)
+                                .color(theme.status.accent.text),
                             "Peer A (iOS · id=1)"
                         }
                         Badge {
@@ -287,16 +310,16 @@ pub fn CrdtSimulatorDemo() -> Element {
                     }
                     text {
                         test_id: "pg-crdt-a-title",
-                        style: "font-size: 12px; color: {theme.text.primary.hex()};",
+                        nve_style: TypedStyle::new().font_size(12.0).color(theme.text.primary),
                         "LWW Title: {a_title}"
                     }
                     text {
                         test_id: "pg-crdt-a-votes",
-                        style: "font-size: 12px; color: {theme.text.secondary.hex()};",
+                        nve_style: TypedStyle::new().font_size(12.0).color(theme.text.secondary),
                         "PN-Counter: {a_votes} · OR-Set: [{a_tags}]"
                     }
                     view {
-                        style: "flex-direction: row; flex-wrap: wrap; gap: 6px;",
+                        nve_style: TypedStyle::row().flex_wrap(FlexWrap::Wrap).gap(6.0),
                         Button {
                             test_id: Some("pg-crdt-a-edit".to_string()),
                             variant: ButtonVariant::Secondary,
@@ -319,11 +342,23 @@ pub fn CrdtSimulatorDemo() -> Element {
                 // Peer B
                 view {
                     test_id: "pg-crdt-peer-b",
-                    style: "flex-grow: 1; min-width: 220px; flex-direction: column; gap: 8px; padding: 12px; border-radius: 8px; background-color: {theme.surface.raised.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                    nve_style: TypedStyle::col()
+                        .flex_grow(1.0)
+                        .min_width_px(220.0)
+                        .gap(8.0)
+                        .padding(12.0)
+                        .radius(8.0)
+                        .bg(theme.surface.raised)
+                        .border(1.0, theme.border.default),
                     view {
-                        style: "flex-direction: row; justify-content: space-between; align-items: center;",
+                        nve_style: TypedStyle::row()
+                            .justify(FlexJustify::SpaceBetween)
+                            .align(FlexAlign::Center),
                         text {
-                            style: "font-size: 13px; font-weight: 700; color: {theme.status.success.text.hex()};",
+                            nve_style: TypedStyle::new()
+                                .font_size(13.0)
+                                .font_weight(700)
+                                .color(theme.status.success.text),
                             "Peer B (Web · id=2)"
                         }
                         Badge {
@@ -333,16 +368,16 @@ pub fn CrdtSimulatorDemo() -> Element {
                     }
                     text {
                         test_id: "pg-crdt-b-title",
-                        style: "font-size: 12px; color: {theme.text.primary.hex()};",
+                        nve_style: TypedStyle::new().font_size(12.0).color(theme.text.primary),
                         "LWW Title: {b_title}"
                     }
                     text {
                         test_id: "pg-crdt-b-votes",
-                        style: "font-size: 12px; color: {theme.text.secondary.hex()};",
+                        nve_style: TypedStyle::new().font_size(12.0).color(theme.text.secondary),
                         "PN-Counter: {b_votes} · OR-Set: [{b_tags}]"
                     }
                     view {
-                        style: "flex-direction: row; flex-wrap: wrap; gap: 6px;",
+                        nve_style: TypedStyle::row().flex_wrap(FlexWrap::Wrap).gap(6.0),
                         Button {
                             test_id: Some("pg-crdt-b-edit".to_string()),
                             variant: ButtonVariant::Secondary,
@@ -365,7 +400,10 @@ pub fn CrdtSimulatorDemo() -> Element {
 
             // Binary NVC1 Delta Sync / Heal action bar
             view {
-                style: "width: 100%; flex-direction: row; gap: 8px; align-items: center;",
+                nve_style: TypedStyle::row()
+                    .width_pct(100.0)
+                    .gap(8.0)
+                    .align(FlexAlign::Center),
                 Button {
                     test_id: Some("pg-crdt-sync".to_string()),
                     variant: ButtonVariant::Primary,

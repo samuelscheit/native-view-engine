@@ -2,7 +2,6 @@
 //! `Cards`, `Card`, `LiveDemo`, `Badge`, `Kbd`, `ApiTable`, `CodeGroup`).
 
 use dioxus_core_macro::Props;
-use nve_ui::ColorHex;
 use nve_dioxus::prelude::*;
 use nve_mdx::{
     Block, CalloutKind, CardItem, ComponentNode, HydrateStrategy, PropValue, StepItem, TabItem,
@@ -189,16 +188,24 @@ pub fn ComponentBlockView(comp: ComponentNode, scope_key: String) -> Element {
             rsx! {
                 view {
                     test_id: "docs-api-table-{scope_key}",
-                    style: "width: 100%; min-width: 0px; flex-direction: column; gap: 10px; padding: 14px; border-radius: 10px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: {theme.surface.base.hex()};",
+                    nve_style: TypedStyle::new()
+                        .width_pct(100.0)
+                        .min_width_px(0.0)
+                        .flex_col()
+                        .gap(10.0)
+                        .padding(14.0)
+                        .radius(10.0)
+                        .border(1.0, theme.border.default)
+                        .bg(theme.surface.base),
                     if let Some(t) = title {
                         text {
-                            style: "font-size: 14px; font-weight: 700; color: {theme.text.primary.hex()};",
+                            nve_style: TypedStyle::new().font_size(14.0).font_weight(700).color(theme.text.primary),
                             "{t}"
                         }
                     }
                     if let Some(c) = caption {
                         text {
-                            style: "font-size: 12px; color: {theme.text.secondary.hex()};",
+                            nve_style: TypedStyle::new().font_size(12.0).color(theme.text.secondary),
                             "{c}"
                         }
                     }
@@ -218,9 +225,16 @@ pub fn ComponentBlockView(comp: ComponentNode, scope_key: String) -> Element {
             let tag_label = format!("<{}>", comp.name);
             rsx! {
                 view {
-                    style: "width: 100%; flex-direction: column; gap: 8px; padding: 12px; border-radius: 8px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: {theme.surface.base.hex()};",
+                    nve_style: TypedStyle::new()
+                        .width_pct(100.0)
+                        .flex_col()
+                        .gap(8.0)
+                        .padding(12.0)
+                        .radius(8.0)
+                        .border(1.0, theme.border.default)
+                        .bg(theme.surface.base),
                     text {
-                        style: "font-size: 12px; font-weight: 600; color: {theme.text.secondary.hex()};",
+                        nve_style: TypedStyle::new().font_size(12.0).font_weight(600).color(theme.text.secondary),
                         "{tag_label}"
                     }
                     BlocksView {
@@ -246,19 +260,29 @@ pub fn InlineComponentView(comp: ComponentNode) -> Element {
                 .or_else(|| prop_str(&comp, "variant"))
                 .unwrap_or("accent");
             let st = theme.status;
-            let tinted = |t: nve_ui::Tone| (t.subtle.hex(), t.border.hex(), t.text.hex());
+            let tinted = |t: nve_ui::Tone| (t.subtle, t.border, t.text);
             let (bg, border, fg) = match tone {
                 "success" | "tip" => tinted(st.success),
                 "warning" => tinted(st.warning),
                 "danger" | "error" => tinted(st.danger),
-                "muted" | "neutral" => (theme.surface.subtle.hex(), theme.border.default.hex(), theme.text.secondary.hex()),
+                "muted" | "neutral" => (theme.surface.subtle, theme.border.default, theme.text.secondary),
                 _ => tinted(st.accent),
             };
             rsx! {
                 view {
-                    style: "display: inline-flex; align-items: center; padding-horizontal: 7px; padding-vertical: 2px; border-radius: 999px; background-color: {bg}; border-width: 1px; border-color: {border};",
+                    nve_style: TypedStyle::new()
+                        .display(Display::InlineFlex)
+                        .align_items(FlexAlign::Center)
+                        .padding_xy(7.0, 2.0)
+                        .radius(999.0)
+                        .bg(bg)
+                        .border(1.0, border),
                     text {
-                        style: "display: inline; font-size: 11px; font-weight: 600; color: {fg};",
+                        nve_style: TypedStyle::new()
+                            .display(Display::Inline)
+                            .font_size(11.0)
+                            .font_weight(600)
+                            .color(fg),
                         "{label}"
                     }
                 }
@@ -269,9 +293,20 @@ pub fn InlineComponentView(comp: ComponentNode) -> Element {
             rsx! {
                 view {
                     nve_table: crate::render::html_semantic(nve_web_html::SemanticElement::Kbd),
-                    style: "display: inline-flex; align-items: center; padding-horizontal: 6px; padding-vertical: 1px; border-radius: 4px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                    nve_style: TypedStyle::new()
+                        .display(Display::InlineFlex)
+                        .align_items(FlexAlign::Center)
+                        .padding_xy(6.0, 1.0)
+                        .radius(4.0)
+                        .bg(theme.surface.subtle)
+                        .border(1.0, theme.border.default),
                     text {
-                        style: "display: inline; font-size: 11px; font-weight: 600; font-family: monospace; color: {theme.text.primary.hex()};",
+                        nve_style: TypedStyle::new()
+                            .display(Display::Inline)
+                            .font_size(11.0)
+                            .font_weight(600)
+                            .font_family("monospace")
+                            .color(theme.text.primary),
                         "{keys}"
                     }
                 }
@@ -281,7 +316,10 @@ pub fn InlineComponentView(comp: ComponentNode) -> Element {
             let tag_label = format!("<{} />", comp.name);
             rsx! {
                 text {
-                    style: "display: inline; font-size: 13px; color: {theme.text.secondary.hex()};",
+                    nve_style: TypedStyle::new()
+                        .display(Display::Inline)
+                        .font_size(13.0)
+                        .color(theme.text.secondary),
                     "{tag_label}"
                 }
             }

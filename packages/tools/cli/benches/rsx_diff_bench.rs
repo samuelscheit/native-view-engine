@@ -295,13 +295,11 @@ fn bench_rsx_diff(c: &mut Criterion) {
     // Dedicated benchmark for `TypedRsxPatch -> RowPatch` binary flat word encoding.
     let multi = &scenarios[3];
     let mut multi_baseline = Baseline::new(multi.old.clone());
-    let DiffOutcome::Tier1Patch {
-        patch: sample_patch,
-        ..
-    } = multi_baseline.classify("bench.rs", &multi.new, 1).0
-    else {
-        panic!("expected Tier1Patch for multi_edit_last");
-    };
+    let sample_patch = match multi_baseline.classify("bench.rs", &multi.new, 1).0 {
+        DiffOutcome::Tier1Patch { patch, .. } => Some(patch),
+        _ => None,
+    }
+    .expect("expected Tier1Patch for multi_edit_last");
     let (encoded, enc_allocs) = {
         let c0 = ALLOC_COUNT.load(Ordering::SeqCst);
         let b0 = ALLOC_BYTES.load(Ordering::SeqCst);

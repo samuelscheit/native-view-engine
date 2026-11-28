@@ -139,6 +139,18 @@ impl TypedStyle {
         }
     }
 
+    /// Shorthand for [`Self::new()`] with `flex-direction: row`.
+    #[inline]
+    pub fn row() -> Self {
+        Self::new().flex_row()
+    }
+
+    /// Shorthand for [`Self::new()`] with `flex-direction: column`.
+    #[inline]
+    pub fn col() -> Self {
+        Self::new().flex_col()
+    }
+
     /// Read-only view of the typed layout properties (mutate via builder methods so field masks
     /// stay in sync).
     #[inline]
@@ -335,6 +347,12 @@ impl TypedStyle {
         self
     }
 
+    /// Shorthand for [`Self::justify_content`].
+    #[inline]
+    pub fn justify(self, justify: FlexJustify) -> Self {
+        self.justify_content(justify)
+    }
+
     #[inline]
     pub fn justify_content_str(self, justify: &str) -> Self {
         self.justify_content(parse_flex_justify(justify))
@@ -352,6 +370,12 @@ impl TypedStyle {
         self.layout.align_items = align;
         self.layout_mask |= L_ALIGN_ITEMS;
         self
+    }
+
+    /// Shorthand for [`Self::align_items`].
+    #[inline]
+    pub fn align(self, align: FlexAlign) -> Self {
+        self.align_items(align)
     }
 
     #[inline]

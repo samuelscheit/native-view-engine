@@ -439,7 +439,11 @@ fn custom_trait_key_and_trait_scope_override_isolation() {
             TraitProvider {
                 store,
                 view {
-                    style: "width: 100%; height: 100%; flex-direction: column; gap: 6px; padding: 8px;",
+                    nve_style: TypedStyle::col()
+                        .width_pct(100.0)
+                        .height_pct(100.0)
+                        .gap(6.0)
+                        .padding(8.0),
                     StudioTraitPreviewChip {
                         test_id: Some("probe-root".into()),
                     }

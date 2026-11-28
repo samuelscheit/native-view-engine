@@ -2,7 +2,7 @@
 //! and `data-nve-island` / `data-nve-hydrate` progressive hydration attributes.
 
 use std::sync::Arc;
-use nve_ui::{ColorHex, Separator, tab_colors};
+use nve_ui::{Separator, tab_colors};
 
 use dioxus_core_macro::Props;
 use nve_dioxus::prelude::*;
@@ -88,24 +88,46 @@ pub fn LiveDemoView(
                 ("nve-island".to_owned(), id.clone()),
                 ("nve-hydrate".to_owned(), hydrate_str.to_owned()),
             ]),
-            style: "width: 100%; flex-direction: column; border-radius: 10px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: {theme.surface.base.hex()};",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .flex_col()
+                .radius(10.0)
+                .border(1.0, theme.border.default)
+                .bg(theme.surface.base),
 
             // Header with title, hydration strategy badge, and Preview | Code tabs. It wraps on
             // narrow viewports (tabs move below the title) and sits on the frame's own surface,
             // divided from the body by one hairline instead of a second nested border box.
             view {
-                style: "width: 100%; flex-direction: row; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; padding-horizontal: 12px; padding-vertical: 8px;",
+                nve_style: TypedStyle::new()
+                    .width_pct(100.0)
+                    .flex_row()
+                    .flex_wrap(FlexWrap::Wrap)
+                    .justify_content(FlexJustify::SpaceBetween)
+                    .align_items(FlexAlign::Center)
+                    .gap(8.0)
+                    .padding_xy(12.0, 8.0),
 
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; flex-shrink: 1; min-width: 0px; align-items: center; gap: 8px;",
+                    nve_style: TypedStyle::new()
+                        .flex_row()
+                        .flex_wrap(FlexWrap::Wrap)
+                        .flex_shrink(1.0)
+                        .min_width_px(0.0)
+                        .align_items(FlexAlign::Center)
+                        .gap(8.0),
                     text {
-                        style: "font-size: 13px; font-weight: 700; color: {theme.text.primary.hex()};",
+                        nve_style: TypedStyle::new().font_size(13.0).font_weight(700).color(theme.text.primary),
                         "{display_title}"
                     }
                     view {
-                        style: "padding-horizontal: 6px; padding-vertical: 1px; border-radius: 4px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                        nve_style: TypedStyle::new()
+                            .padding_xy(6.0, 1.0)
+                            .radius(4.0)
+                            .bg(theme.surface.base)
+                            .border(1.0, theme.border.default),
                         text {
-                            style: "font-size: 10px; font-weight: 600; color: {theme.status.info.text.hex()};",
+                            nve_style: TypedStyle::new().font_size(10.0).font_weight(600).color(theme.status.info.text),
                             "{hydrate_str}"
                         }
                     }
@@ -113,17 +135,21 @@ pub fn LiveDemoView(
 
                 view {
                     accessibility_role: "tablist",
-                    style: "flex-direction: row; flex-shrink: 0; gap: 4px;",
+                    nve_style: TypedStyle::new().flex_row().flex_shrink(0.0).gap(4.0),
                     pressable {
                         test_id: "docs-demo-tab-preview-{id}",
                         accessibility_role: "tab",
                         aria_selected: if is_preview { "true" } else { "false" },
-                        style: "padding-horizontal: 9px; padding-vertical: 4px; border-radius: 6px; background-color: {prev.bg.hex()}; border-width: 1px; border-color: {prev.border.hex()};",
+                        nve_style: TypedStyle::new()
+                            .padding_xy(9.0, 4.0)
+                            .radius(6.0)
+                            .bg(prev.bg)
+                            .border(1.0, prev.border),
                         onpress: move |_| {
                             state.write().set_active_tab(group_for_preview.clone(), "preview");
                         },
                         text {
-                            style: "font-size: 12px; font-weight: 600; color: {prev.fg.hex()};",
+                            nve_style: TypedStyle::new().font_size(12.0).font_weight(600).color(prev.fg),
                             "Preview"
                         }
                     }
@@ -131,12 +157,16 @@ pub fn LiveDemoView(
                         test_id: "docs-demo-tab-code-{id}",
                         accessibility_role: "tab",
                         aria_selected: if !is_preview { "true" } else { "false" },
-                        style: "padding-horizontal: 9px; padding-vertical: 4px; border-radius: 6px; background-color: {code.bg.hex()}; border-width: 1px; border-color: {code.border.hex()};",
+                        nve_style: TypedStyle::new()
+                            .padding_xy(9.0, 4.0)
+                            .radius(6.0)
+                            .bg(code.bg)
+                            .border(1.0, code.border),
                         onpress: move |_| {
                             state.write().set_active_tab(group_for_code.clone(), "code");
                         },
                         text {
-                            style: "font-size: 12px; font-weight: 600; color: {code.fg.hex()};",
+                            nve_style: TypedStyle::new().font_size(12.0).font_weight(600).color(code.fg),
                             "Code"
                         }
                     }
@@ -149,7 +179,11 @@ pub fn LiveDemoView(
             if is_preview {
                 view {
                     test_id: "docs-demo-preview-{id}",
-                    style: "width: 100%; min-height: {min_height}px; padding: 16px; background-color: {theme.surface.canvas.hex()};",
+                    nve_style: TypedStyle::new()
+                        .width_pct(100.0)
+                        .min_height_px(min_height as f32)
+                        .padding(16.0)
+                        .bg(theme.surface.canvas),
                     if let Some(registered) = entry {
                         PlaygroundHost {
                             key: "playground-{id}",
@@ -157,7 +191,7 @@ pub fn LiveDemoView(
                         }
                     } else {
                         text {
-                            style: "font-size: 13px; color: {theme.text.secondary.hex()};",
+                            nve_style: TypedStyle::new().font_size(13.0).color(theme.text.secondary),
                             "Interactive demo '{id}' is not registered in PlaygroundRegistry."
                         }
                     }
@@ -165,7 +199,7 @@ pub fn LiveDemoView(
             } else {
                 view {
                     test_id: "docs-demo-code-{id}",
-                    style: "width: 100%; padding: 10px;",
+                    nve_style: TypedStyle::new().width_pct(100.0).padding(10.0),
                     HighlightedCodeView {
                         code: source_code,
                         lang: Some(source_lang),

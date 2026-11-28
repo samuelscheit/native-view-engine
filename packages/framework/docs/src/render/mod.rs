@@ -15,7 +15,6 @@ pub use inlines::InlinesView;
 pub use live_demo::LiveDemoView;
 
 use dioxus_core_macro::Props;
-use nve_ui::ColorHex;
 use nve_dioxus::prelude::*;
 use nve_mdx::{Block, CompiledPage};
 
@@ -68,20 +67,31 @@ pub fn DocsArticle(page: CompiledPage) -> Element {
             accessibility_role: "article",
             accessibility_label: "{page.title}",
             nve_table: html_data_attrs(vec![("route".to_owned(), public_route.to_string())]),
-            style: "width: 100%; flex-direction: column; gap: 18px;",
+            nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(18.0),
 
             // Article header (badge, H1 title, description, tags)
             view {
                 test_id: "docs-article-header",
-                style: "width: 100%; flex-direction: column; gap: 10px; padding-vertical: 8px; border-width: 1px; border-color: {theme.border.default.hex()}; border-radius: 10px; padding-horizontal: 18px; background-color: {theme.surface.base.hex()};",
+                nve_style: TypedStyle::new()
+                    .width_pct(100.0)
+                    .flex_col()
+                    .gap(10.0)
+                    .padding_xy(18.0, 8.0)
+                    .border(1.0, theme.border.default)
+                    .radius(10.0)
+                    .bg(theme.surface.base),
 
                 if let Some(badge_txt) = page_badge {
                     view {
-                        style: "flex-direction: row;",
+                        nve_style: TypedStyle::new().flex_row(),
                         view {
-                            style: "padding-horizontal: 8px; padding-vertical: 2px; border-radius: 999px; background-color: {theme.status.accent.subtle.hex()}; border-width: 1px; border-color: {theme.status.accent.border.hex()};",
+                            nve_style: TypedStyle::new()
+                                .padding_xy(8.0, 2.0)
+                                .radius(999.0)
+                                .bg(theme.status.accent.subtle)
+                                .border(1.0, theme.status.accent.border),
                             text {
-                                style: "font-size: 11px; font-weight: 600; color: {theme.text.link.hex()};",
+                                nve_style: TypedStyle::new().font_size(11.0).font_weight(600).color(theme.text.link),
                                 "{badge_txt}"
                             }
                         }
@@ -93,7 +103,7 @@ pub fn DocsArticle(page: CompiledPage) -> Element {
                     accessibility_role: "heading",
                     "aria-level": "1",
                     text {
-                        style: "font-size: 32px; font-weight: 700; color: {theme.text.primary.hex()};",
+                        nve_style: TypedStyle::new().font_size(32.0).font_weight(700).color(theme.text.primary),
                         "{page.title}"
                     }
                 }
@@ -101,20 +111,24 @@ pub fn DocsArticle(page: CompiledPage) -> Element {
                 if !page.description.is_empty() {
                     text {
                         test_id: "docs-page-description",
-                        style: "font-size: 15px; color: {theme.text.secondary.hex()};",
+                        nve_style: TypedStyle::new().font_size(15.0).color(theme.text.secondary),
                         "{page.description}"
                     }
                 }
 
                 if !page_tags.is_empty() {
                     view {
-                        style: "flex-direction: row; gap: 6px; padding-vertical: 2px;",
+                        nve_style: TypedStyle::new().flex_row().gap(6.0).padding_y(2.0),
                         for tag in page_tags {
                             view {
                                 key: "tag-{tag}",
-                                style: "padding-horizontal: 8px; padding-vertical: 2px; border-radius: 999px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                                nve_style: TypedStyle::new()
+                                    .padding_xy(8.0, 2.0)
+                                    .radius(999.0)
+                                    .bg(theme.surface.subtle)
+                                    .border(1.0, theme.border.default),
                                 text {
-                                    style: "font-size: 11px; color: {theme.text.secondary.hex()};",
+                                    nve_style: TypedStyle::new().font_size(11.0).color(theme.text.secondary),
                                     "#{tag}"
                                 }
                             }

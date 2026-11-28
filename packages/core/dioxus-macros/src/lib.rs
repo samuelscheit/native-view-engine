@@ -95,18 +95,21 @@ fn push_cfg_attr(out: &mut Vec<TokenTree>, negated: bool, span: Span) {
             TokenStream::from(TokenTree::Ident(Ident::new("debug_assertions", span))),
         );
         inner.set_span(span);
-        let mut v = Vec::with_capacity(2);
-        v.push(TokenTree::Ident(Ident::new("not", span)));
-        v.push(TokenTree::Group(inner));
-        v.into_iter().collect()
+        [
+            TokenTree::Ident(Ident::new("not", span)),
+            TokenTree::Group(inner),
+        ]
+        .into_iter()
+        .collect()
     } else {
         TokenStream::from(TokenTree::Ident(Ident::new("debug_assertions", span)))
     };
     let mut cfg_args = Group::new(Delimiter::Parenthesis, cond);
     cfg_args.set_span(span);
-    let mut attr_inner = Vec::with_capacity(2);
-    attr_inner.push(TokenTree::Ident(Ident::new("cfg", span)));
-    attr_inner.push(TokenTree::Group(cfg_args));
+    let attr_inner = [
+        TokenTree::Ident(Ident::new("cfg", span)),
+        TokenTree::Group(cfg_args),
+    ];
     let mut bracket = Group::new(Delimiter::Bracket, attr_inner.into_iter().collect());
     bracket.set_span(span);
     out.push(TokenTree::Group(bracket));

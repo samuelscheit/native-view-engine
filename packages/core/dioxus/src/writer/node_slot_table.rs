@@ -1,8 +1,7 @@
-//! Generic generation-checked dense per-node side table ([`NodeSlotTable`]) and set
-//! ([`NodeSlotSet`]).
+//! Generic generation-checked dense per-node side table ([`NodeSlotTable`]).
 //!
-//! Replaces sparse per-node `HashMap<NodeId, T>` / `HashSet<NodeId>` tables in
-//! `NveMutationWriter` with a dense `NodeIndex`-indexed sparse-set layout:
+//! Replaces sparse per-node `HashMap<NodeId, T>` tables in `NveMutationWriter` with a dense
+//! `NodeIndex`-indexed sparse-set layout:
 //! - **Zero hashing / probing**: lookups index `slots[node.node_index()]` directly and verify the
 //!   exact `NodeId` (index + 8-bit generation) against `entries[pos].owner == node`.
 //! - **Compact for sparse or large `T`**: `slots` stores only 4 bytes per addressable `NodeIndex`
@@ -55,6 +54,7 @@ impl<T> NodeSlotTable<T> {
         }
     }
 
+    #[cfg(test)]
     #[inline]
     pub(crate) fn is_empty(&self) -> bool {
         self.entries.is_empty()
@@ -183,12 +183,6 @@ impl<T> NodeSlotTable<T> {
         self.reset_with(|_| {});
     }
 
-    /// Iterates live owner [`NodeId`]s in `O(k)` over the packed entry array.
-    #[inline]
-    pub(crate) fn keys(&self) -> impl Iterator<Item = NodeId> + '_ {
-        self.entries.iter().map(|e| e.owner)
-    }
-
     #[inline]
     fn insert_vacant(&mut self, idx: NodeIndex, node: NodeId, value: T) -> usize {
         if self.slots.len() <= idx.as_usize() {
@@ -204,52 +198,6 @@ impl<T> NodeSlotTable<T> {
     #[inline(never)]
     fn grow_slots(&mut self, idx: NodeIndex) {
         self.slots.resize(idx.as_usize() + 1, EMPTY);
-    }
-}
-
-/// Generation-checked dense per-node set backed by [`NodeSlotTable<()>`].
-///
-/// Iteration visits only live members in `O(k)` without scanning empty node slots.
-#[derive(Debug, Default)]
-pub(crate) struct NodeSlotSet(NodeSlotTable<()>);
-
-impl NodeSlotSet {
-    #[inline]
-    pub(crate) const fn new() -> Self {
-        Self(NodeSlotTable::new())
-    }
-
-    #[inline]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    #[inline]
-    pub(crate) fn insert(&mut self, node: NodeId) -> bool {
-        if node.is_null() {
-            return false;
-        }
-        self.0.insert(node, ()).is_none()
-    }
-
-    #[inline]
-    pub(crate) fn remove(&mut self, node: NodeId) -> bool {
-        self.0.remove(node).is_some()
-    }
-
-    #[inline]
-    pub(crate) fn reset(&mut self) {
-        self.0.reset();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_deallocated(&self) -> bool {
-        self.0.is_deallocated()
-    }
-
-    #[inline]
-    pub(crate) fn iter(&self) -> impl Iterator<Item = NodeId> + '_ {
-        self.0.keys()
     }
 }
 
@@ -396,37 +344,4 @@ mod tests {
         assert_eq!(table.get(g2), Some(&444));
     }
 
-    #[test]
-    fn node_slot_set_tracks_generations_and_iterates_only_live_members() {
-        let mut set = NodeSlotSet::new();
-        assert!(set.is_empty());
-        assert!(!set.insert(NodeId::NULL));
-        assert!(set.is_empty());
-
-        let a = NodeId::new(3, 1);
-        let a_next = NodeId::new(3, 2);
-        let b = NodeId::new(9, 5);
-        assert!(set.insert(a));
-        assert!(!set.insert(a));
-        assert!(set.insert(b));
-        assert_eq!(set.iter().collect::<Vec<_>>(), vec![a, b]);
-
-        // Removing stale generation does not drop live member.
-        assert!(!set.remove(a_next));
-        assert_eq!(set.iter().count(), 2);
-
-        // Replacing slot with newer generation drops the old member cleanly.
-        assert!(set.insert(a_next));
-        assert!(!set.remove(a));
-        let mut items: Vec<NodeId> = set.iter().collect();
-        items.sort_unstable();
-        assert_eq!(items, vec![a_next, b]);
-
-        assert!(set.remove(a_next));
-        assert_eq!(set.iter().collect::<Vec<_>>(), vec![b]);
-
-        set.reset();
-        assert!(set.is_empty());
-        assert_eq!(set.iter().count(), 0);
-    }
 }

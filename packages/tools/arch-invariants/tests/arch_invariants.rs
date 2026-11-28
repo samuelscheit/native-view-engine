@@ -307,8 +307,8 @@ fn repo_hygiene_backlog_artifacts_buzzwords_personal_paths_readmes_and_650_line_
     assert_no_violations("Tone::solid is only a fill (WCAG 1.4.11)", &theme_hygiene::check_solid_only_as_fill(idx));
     assert_no_violations("No theme mode scraped from the rendered tree", &theme_hygiene::check_no_theme_tree_scraping(idx));
     assert_no_violations(
-        "Every rsx inline style key is parsed (unknown keys silently never apply)",
-        &inline_style_keys::check_inline_style_keys_known(idx),
+        "Zero author-facing RSX `style:` attributes and zero `style: Option<String>` component props (zero runtime CSS parser)",
+        &inline_style_keys::check_no_inline_css_style_attrs(idx),
     );
 
     let mut v_hashes = Vec::new();

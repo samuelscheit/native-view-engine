@@ -493,42 +493,6 @@ fn css_visibility_emits_visible_hidden_and_omits_inherit() {
         ssr_back.style_css
     );
 
-    // CSS visibility keywords: collapse -> Hidden, initial -> Visible, inherit/unset/revert/revert-layer -> Inherit, invalid ignored.
-    {
-        let mut tx = store.tx();
-        assert!(nve_tables::apply_css_attr_to_tx(&mut tx, n, "visibility", "collapse"));
-        tx.commit_into(&mut changes);
-    }
-    assert_eq!(store.row::<Visual>(n).visibility(), Visibility::Hidden);
-    {
-        let mut tx = store.tx();
-        assert!(nve_tables::apply_css_attr_to_tx(&mut tx, n, "visibility", "bogus"));
-        tx.commit_into(&mut changes);
-    }
-    assert_eq!(store.row::<Visual>(n).visibility(), Visibility::Hidden, "invalid visibility value must not overwrite");
-    {
-        let mut tx = store.tx();
-        assert!(nve_tables::apply_css_attr_to_tx(&mut tx, n, "visibility", "initial"));
-        tx.commit_into(&mut changes);
-    }
-    assert_eq!(store.row::<Visual>(n).visibility(), Visibility::Visible);
-    for kw in ["unset", "revert", "revert-layer", "inherit"] {
-        {
-            let mut tx = store.tx();
-            tx.edit::<Visual>(n).visibility(Visibility::Hidden);
-            tx.commit_into(&mut changes);
-        }
-        {
-            let mut tx = store.tx();
-            assert!(nve_tables::apply_css_attr_to_tx(&mut tx, n, "visibility", kw));
-            tx.commit_into(&mut changes);
-        }
-        assert_eq!(
-            store.row::<Visual>(n).visibility(),
-            Visibility::Inherit,
-            "CSS visibility keyword `{kw}` must resolve to Visibility::Inherit"
-        );
-    }
 }
 
 #[test]

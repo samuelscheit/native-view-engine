@@ -140,7 +140,7 @@ pub(crate) fn emit_component_rust(spec: &RnComponentSpec, mod_name: &str) -> Str
     if spec.extends_view_props {
         writeln!(
             out,
-            "        pub const style: AttributeDescription = (\"style\", None, false);"
+            "        pub const nve_style: AttributeDescription = (\"nve_style\", None, false);"
         );
         writeln!(
             out,

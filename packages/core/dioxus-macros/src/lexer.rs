@@ -201,17 +201,13 @@ impl<'a> Lex<'a> {
                 i += 1;
                 while i < len {
                     let c = bytes[i];
-                    if c.is_ascii_alphanumeric() || c == b'_' {
-                        i += 1;
-                    } else if c == b'.'
-                        && i + 1 < len
-                        && bytes[i + 1].is_ascii_digit()
-                    {
-                        i += 1;
-                    } else if (c == b'+' || c == b'-')
-                        && i > start
-                        && matches!(bytes[i - 1], b'e' | b'E')
-                    {
+                    let is_cont = c.is_ascii_alphanumeric()
+                        || c == b'_'
+                        || (c == b'.' && i + 1 < len && bytes[i + 1].is_ascii_digit())
+                        || ((c == b'+' || c == b'-')
+                            && i > start
+                            && matches!(bytes[i - 1], b'e' | b'E'));
+                    if is_cont {
                         i += 1;
                     } else {
                         break;

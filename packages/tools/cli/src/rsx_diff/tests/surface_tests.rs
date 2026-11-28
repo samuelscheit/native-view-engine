@@ -23,9 +23,8 @@ app_with_source!(app_before, BEFORE, {
     view {
         view {
             test_id: "target",
-            padding: 8.0, margin: 2.0, width: 10.0, opacity: 0.5, z_index: 1,
+            padding: 8.0, margin: 2.0, width: 10.0, min_height: 4.0, opacity: 0.5, z_index: 1,
             border_radius: 4.0, border_width: 1.0, flex_grow: 1.0, gap: 3.0, font_size: 14.0,
-            background_color: "#111111", "min-height": "4px",
             text { "Label" }
         }
         view {
@@ -40,9 +39,8 @@ app_with_source!(app_after, AFTER, {
     view {
         view {
             test_id: "target",
-            padding: -4.5, margin: -3.0, width: 33.3, opacity: 1.25, z_index: -7,
+            padding: -4.5, margin: -3.0, width: 33.3, min_height: 12.0, opacity: 1.25, z_index: -7,
             border_radius: 6.25, border_width: 2.0, flex_grow: 2.5, gap: 0.0, font_size: 0.25,
-            background_color: "#2563eb", "min-height": "12px",
             text { "Relabeled" }
         }
         view {
@@ -112,7 +110,7 @@ fn lowered_patches_match_a_fresh_render_and_touch_only_the_target() {
     else {
         panic!("expected Tier1Patch");
     };
-    assert_eq!(patch.attr_changes.len(), 12);
+    assert_eq!(patch.attr_changes.len(), 11);
     assert_eq!(patch.text_changes.len(), 1);
     assert_eq!(messages.len(), 2);
 

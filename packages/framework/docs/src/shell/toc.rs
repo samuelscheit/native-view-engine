@@ -1,7 +1,7 @@
 //! Sticky right "On This Page" table of contents (`accessibility_role: "complementary"`, `220px`, hidden `< 1200pt`).
 
 use nve_dioxus::prelude::*;
-use nve_ui::{accent_indicator, ColorHex};
+use nve_ui::accent_indicator;
 
 use crate::state::{navigate_to_target, use_docs_state};
 
@@ -30,29 +30,37 @@ pub fn DocsToc() -> Element {
             nve_show_on: ShowOn(MediaQuery::min_width(1200)),
             accessibility_role: "complementary",
             accessibility_label: "On this page",
-            style: "width: 220px; height: 100%; flex-shrink: 0; flex-direction: column; padding: 20px; gap: 10px; background-color: {theme.surface.canvas.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+            nve_style: TypedStyle::new()
+                .width_px(220.0)
+                .height_pct(100.0)
+                .flex_shrink(0.0)
+                .flex_col()
+                .padding(20.0)
+                .gap(10.0)
+                .bg(theme.surface.canvas)
+                .border(1.0, theme.border.default),
 
             text {
                 test_id: "docs-toc-title",
-                style: "font-size: 12px; font-weight: 700; color: {theme.text.primary.hex()};",
+                nve_style: TypedStyle::new().font_size(12.0).font_weight(700).color(theme.text.primary),
                 "On This Page"
             }
 
             if headings.is_empty() {
                 text {
-                    style: "font-size: 12px; color: {theme.text.secondary.hex()};",
+                    nve_style: TypedStyle::new().font_size(12.0).color(theme.text.secondary),
                     "No sections"
                 }
             } else {
                 view {
-                    style: "flex-direction: column; gap: 4px;",
+                    nve_style: TypedStyle::new().flex_col().gap(4.0),
                     for heading in headings {
                         {
                             let is_active = active_anchor.as_deref() == Some(heading.id.as_str());
-                            let fg = if is_active { theme.text.link.hex() } else { theme.text.secondary.hex() };
-                            let rail = if is_active { accent_indicator(&theme).hex() } else { theme.border.default.hex() };
-                            let weight = if is_active { "600" } else { "400" };
-                            let pad_h = if heading.level == 3 { "16px" } else { "8px" };
+                            let fg = if is_active { theme.text.link } else { theme.text.secondary };
+                            let rail = if is_active { accent_indicator(&theme) } else { theme.border.default };
+                            let weight = if is_active { 600 } else { 400 };
+                            let pad_h = if heading.level == 3 { 16.0 } else { 8.0 };
                             let href = format!("#{}", heading.id);
                             let tid = format!("docs-toc-{}", heading.id);
                             let anchor_id = heading.id.clone();
@@ -63,15 +71,21 @@ pub fn DocsToc() -> Element {
                                     test_id: "{tid}",
                                     accessibility_role: "link",
                                     "href": "{href}",
-                                    style: "width: 100%; flex-direction: row; align-items: center; gap: 8px; padding-vertical: 4px; padding-horizontal: {pad_h}; border-radius: 4px;",
+                                    nve_style: TypedStyle::new()
+                                        .width_pct(100.0)
+                                        .flex_row()
+                                        .align_items(FlexAlign::Center)
+                                        .gap(8.0)
+                                        .padding_xy(pad_h, 4.0)
+                                        .radius(4.0),
                                     onpress: move |_| {
                                         navigate_to_target(state, None, Some(anchor_id.clone()));
                                     },
                                     view {
-                                        style: "width: 2px; height: 14px; background-color: {rail}; border-radius: 1px;",
+                                        nve_style: TypedStyle::new().width_px(2.0).height_px(14.0).bg(rail).radius(1.0),
                                     }
                                     text {
-                                        style: "font-size: 12px; font-weight: {weight}; color: {fg};",
+                                        nve_style: TypedStyle::new().font_size(12.0).font_weight(weight).color(fg),
                                         "{heading.text}"
                                     }
                                 }

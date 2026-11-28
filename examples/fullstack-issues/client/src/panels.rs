@@ -16,11 +16,10 @@ use nve_ui::prelude::*;
 #[component]
 pub(crate) fn WorkspaceStatsSection() -> Element {
     let theme = use_theme();
-    let border_hex = theme.border.default.hex();
-    let surface_hex = theme.surface.base.hex();
-    let muted_hex = theme.text.secondary.hex();
-    let danger_hex = theme.status.danger.text.hex();
-
+    let border = theme.border.default;
+    let surface = theme.surface.base;
+    let muted = theme.text.secondary;
+    let danger = theme.status.danger.text;
 
     rsx! {
         QuerySuspense {
@@ -28,9 +27,17 @@ pub(crate) fn WorkspaceStatsSection() -> Element {
             fallback: rsx! {
                 view {
                     test_id: "stats-skeleton",
-                    style: "width: 100%; padding: 14px 16px; border-radius: 10px; border: 1px solid {border_hex}; background: {surface_hex}; display: flex; flex-direction: row; align-items: center; justify-content: space-between;",
+                    nve_style: TypedStyle::new()
+                        .width_pct(100.0)
+                        .padding_xy(16.0, 14.0)
+                        .radius(10.0)
+                        .border(1.0, border)
+                        .bg(surface)
+                        .flex_row()
+                        .align_items(FlexAlign::Center)
+                        .justify_content(FlexJustify::SpaceBetween),
                     text {
-                        style: "font-size: 13px; color: {muted_hex};",
+                        nve_style: TypedStyle::new().font_size(13.0).color(muted),
                         "Loading workspace stats..."
                     }
                 }
@@ -40,9 +47,19 @@ pub(crate) fn WorkspaceStatsSection() -> Element {
                 rsx! {
                     view {
                         test_id: "stats-error-boundary",
-                        style: "width: 100%; padding: 14px 16px; border-radius: 10px; border: 1px solid {danger_hex}; background: {surface_hex}; display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px;",
+                        nve_style: TypedStyle::new()
+                            .width_pct(100.0)
+                            .padding_xy(16.0, 14.0)
+                            .radius(10.0)
+                            .border(1.0, danger)
+                            .bg(surface)
+                            .flex_row()
+                            .flex_wrap(FlexWrap::Wrap)
+                            .align_items(FlexAlign::Center)
+                            .justify_content(FlexJustify::SpaceBetween)
+                            .gap(12.0),
                         text {
-                            style: "font-size: 13px; color: {danger_hex};",
+                            nve_style: TypedStyle::new().font_size(13.0).color(danger),
                             "Failed to load workspace stats: {msg}"
                         }
                         Button {
@@ -63,10 +80,10 @@ pub(crate) fn WorkspaceStatsSection() -> Element {
 #[component]
 fn WorkspaceStatsContent() -> Element {
     let theme = use_theme();
-    let border_hex = theme.border.default.hex();
-    let surface_hex = theme.surface.base.hex();
-    let fg_hex = theme.text.primary.hex();
-    let muted_hex = theme.text.secondary.hex();
+    let border = theme.border.default;
+    let surface = theme.surface.base;
+    let fg = theme.text.primary;
+    let muted = theme.text.secondary;
 
     let stats_query = use_query_with::<GetWorkspaceStats>(
         StatsRequest::default(),
@@ -83,52 +100,68 @@ fn WorkspaceStatsContent() -> Element {
     rsx! {
         view {
             test_id: "stats-panel",
-            style: "width: 100%; display: flex; flex-direction: row; flex-wrap: wrap; align-items: stretch; gap: 10px;",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .flex_row()
+                .flex_wrap(FlexWrap::Wrap)
+                .align_items(FlexAlign::Stretch)
+                .gap(10.0),
             StatMetricTile {
                 test_id: "stats-total",
                 label: "Total",
                 value: stats.total.to_string(),
-                border_hex: border_hex.to_owned(),
-                surface_hex: surface_hex.to_owned(),
-                fg_hex: fg_hex.to_owned(),
-                muted_hex: muted_hex.to_owned(),
+                border,
+                surface,
+                fg,
+                muted,
             }
             StatMetricTile {
                 test_id: "stats-open",
                 label: "Open",
                 value: stats.open.to_string(),
-                border_hex: border_hex.to_owned(),
-                surface_hex: surface_hex.to_owned(),
-                fg_hex: fg_hex.to_owned(),
-                muted_hex: muted_hex.to_owned(),
+                border,
+                surface,
+                fg,
+                muted,
             }
             StatMetricTile {
                 test_id: "stats-in-progress",
                 label: "In Progress",
                 value: stats.in_progress.to_string(),
-                border_hex: border_hex.to_owned(),
-                surface_hex: surface_hex.to_owned(),
-                fg_hex: fg_hex.to_owned(),
-                muted_hex: muted_hex.to_owned(),
+                border,
+                surface,
+                fg,
+                muted,
             }
             StatMetricTile {
                 test_id: "stats-closed",
                 label: "Closed",
                 value: stats.closed.to_string(),
-                border_hex: border_hex.to_owned(),
-                surface_hex: surface_hex.to_owned(),
-                fg_hex: fg_hex.to_owned(),
-                muted_hex: muted_hex.to_owned(),
+                border,
+                surface,
+                fg,
+                muted,
             }
             view {
                 test_id: "stats-comments",
-                style: "flex: 1 1 130px; min-width: 110px; padding: 12px 14px; border-radius: 10px; border: 1px solid {border_hex}; background: {surface_hex}; display: flex; flex-direction: column; justify-content: center; gap: 4px;",
+                nve_style: TypedStyle::new()
+                    .flex_grow(1.0)
+                    .flex_shrink(1.0)
+                    .flex_basis_px(130.0)
+                    .min_width_px(110.0)
+                    .padding_xy(14.0, 12.0)
+                    .radius(10.0)
+                    .border(1.0, border)
+                    .bg(surface)
+                    .flex_col()
+                    .justify_content(FlexJustify::Center)
+                    .gap(4.0),
                 text {
-                    style: "font-size: 11px; font-weight: 600; color: {muted_hex};",
+                    nve_style: TypedStyle::new().font_size(11.0).font_weight(600).color(muted),
                     "Discussion"
                 }
                 text {
-                    style: "font-size: 15px; font-weight: 700; color: {fg_hex};",
+                    nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(fg),
                     "{comments_badge}"
                 }
             }
@@ -141,21 +174,31 @@ fn StatMetricTile(
     test_id: &'static str,
     label: &'static str,
     value: String,
-    border_hex: String,
-    surface_hex: String,
-    fg_hex: String,
-    muted_hex: String,
+    border: ColorRgba,
+    surface: ColorRgba,
+    fg: ColorRgba,
+    muted: ColorRgba,
 ) -> Element {
     rsx! {
         view {
             test_id: "{test_id}",
-            style: "flex: 1 1 110px; min-width: 96px; padding: 12px 14px; border-radius: 10px; border: 1px solid {border_hex}; background: {surface_hex}; display: flex; flex-direction: column; gap: 4px;",
+            nve_style: TypedStyle::new()
+                .flex_grow(1.0)
+                .flex_shrink(1.0)
+                .flex_basis_px(110.0)
+                .min_width_px(96.0)
+                .padding_xy(14.0, 12.0)
+                .radius(10.0)
+                .border(1.0, border)
+                .bg(surface)
+                .flex_col()
+                .gap(4.0),
             text {
-                style: "font-size: 11px; font-weight: 600; color: {muted_hex};",
+                nve_style: TypedStyle::new().font_size(11.0).font_weight(600).color(muted),
                 "{label}"
             }
             text {
-                style: "font-size: 20px; font-weight: 700; color: {fg_hex};",
+                nve_style: TypedStyle::new().font_size(20.0).font_weight(700).color(fg),
                 "{value}"
             }
         }
@@ -170,12 +213,11 @@ fn StatMetricTile(
 #[component]
 pub(crate) fn FeaturedCommentsSection(issue_id: IssueId) -> Element {
     let theme = use_theme();
-    let border_hex = theme.border.default.hex();
-    let surface_hex = theme.surface.base.hex();
-    let muted_hex = theme.text.secondary.hex();
-    let danger_hex = theme.status.danger.text.hex();
+    let border = theme.border.default;
+    let surface = theme.surface.base;
+    let muted = theme.text.secondary;
+    let danger = theme.status.danger.text;
     let id_num = issue_id.0;
-
 
     rsx! {
         QuerySuspense {
@@ -183,13 +225,20 @@ pub(crate) fn FeaturedCommentsSection(issue_id: IssueId) -> Element {
             fallback: rsx! {
                 view {
                     test_id: "comments-skeleton",
-                    style: "width: 100%; padding: 16px; border-radius: 10px; border: 1px solid {border_hex}; background: {surface_hex}; display: flex; flex-direction: column; gap: 6px;",
+                    nve_style: TypedStyle::new()
+                        .width_pct(100.0)
+                        .padding(16.0)
+                        .radius(10.0)
+                        .border(1.0, border)
+                        .bg(surface)
+                        .flex_col()
+                        .gap(6.0),
                     text {
-                        style: "font-size: 13px; font-weight: 600; color: {muted_hex};",
+                        nve_style: TypedStyle::new().font_size(13.0).font_weight(600).color(muted),
                         "Featured Discussion · Issue #{id_num}"
                     }
                     text {
-                        style: "font-size: 13px; color: {muted_hex};",
+                        nve_style: TypedStyle::new().font_size(13.0).color(muted),
                         "Streaming comments..."
                     }
                 }
@@ -199,7 +248,14 @@ pub(crate) fn FeaturedCommentsSection(issue_id: IssueId) -> Element {
                 rsx! {
                     view {
                         test_id: "comments-error-boundary",
-                        style: "width: 100%; padding: 16px; border-radius: 10px; border: 1px solid {danger_hex}; background: {surface_hex}; display: flex; flex-direction: column; gap: 10px;",
+                        nve_style: TypedStyle::new()
+                            .width_pct(100.0)
+                            .padding(16.0)
+                            .radius(10.0)
+                            .border(1.0, danger)
+                            .bg(surface)
+                            .flex_col()
+                            .gap(10.0),
                         Row {
                             justify: Some("space-between".to_owned()),
                             nve_style: Some(TypedStyle::new().flex_wrap(FlexWrap::Wrap).gap(8.0)),
@@ -207,12 +263,12 @@ pub(crate) fn FeaturedCommentsSection(issue_id: IssueId) -> Element {
                                 gap: Some(4.0),
                                 align: Some("flex-start".to_owned()),
                                 text {
-                                    style: "font-size: 13px; font-weight: 700; color: {danger_hex};",
+                                    nve_style: TypedStyle::new().font_size(13.0).font_weight(700).color(danger),
                                     "Could not load discussion for Issue #{id_num}"
                                 }
                                 text {
                                     test_id: "comments-error-message",
-                                    style: "font-size: 12px; color: {muted_hex};",
+                                    nve_style: TypedStyle::new().font_size(12.0).color(muted),
                                     "{msg}"
                                 }
                             }
@@ -235,11 +291,11 @@ pub(crate) fn FeaturedCommentsSection(issue_id: IssueId) -> Element {
 #[component]
 fn FeaturedCommentsContent(issue_id: IssueId) -> Element {
     let theme = use_theme();
-    let border_hex = theme.border.default.hex();
-    let surface_hex = theme.surface.base.hex();
-    let subtle_bg = theme.surface.subtle.hex();
-    let fg_hex = theme.text.primary.hex();
-    let muted_hex = theme.text.secondary.hex();
+    let border = theme.border.default;
+    let surface = theme.surface.base;
+    let subtle_bg = theme.surface.subtle;
+    let fg = theme.text.primary;
+    let muted = theme.text.secondary;
     let id_num = issue_id.0;
 
     let comments_query = use_query_with::<ListComments>(
@@ -251,11 +307,18 @@ fn FeaturedCommentsContent(issue_id: IssueId) -> Element {
     rsx! {
         view {
             test_id: "featured-comments-panel",
-            style: "width: 100%; padding: 16px; border-radius: 10px; border: 1px solid {border_hex}; background: {surface_hex}; display: flex; flex-direction: column; gap: 10px;",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .padding(16.0)
+                .radius(10.0)
+                .border(1.0, border)
+                .bg(surface)
+                .flex_col()
+                .gap(10.0),
             Row {
                 justify: Some("space-between".to_owned()),
                 text {
-                    style: "font-size: 13px; font-weight: 600; color: {muted_hex};",
+                    nve_style: TypedStyle::new().font_size(13.0).font_weight(600).color(muted),
                     "Featured Discussion · Issue #{id_num}"
                 }
                 Badge {
@@ -271,7 +334,7 @@ fn FeaturedCommentsContent(issue_id: IssueId) -> Element {
             if comments.is_empty() {
                 text {
                     test_id: "featured-comments-empty",
-                    style: "font-size: 13px; color: {muted_hex};",
+                    nve_style: TypedStyle::new().font_size(13.0).color(muted),
                     "No comments on this issue yet."
                 }
             } else {
@@ -279,13 +342,20 @@ fn FeaturedCommentsContent(issue_id: IssueId) -> Element {
                     view {
                         key: "{comment.id.0}",
                         test_id: "featured-comment-{comment.id.0}",
-                        style: "width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid {border_hex}; background: {subtle_bg}; display: flex; flex-direction: column; gap: 4px;",
+                        nve_style: TypedStyle::new()
+                            .width_pct(100.0)
+                            .padding_xy(12.0, 10.0)
+                            .radius(8.0)
+                            .border(1.0, border)
+                            .bg(subtle_bg)
+                            .flex_col()
+                            .gap(4.0),
                         text {
-                            style: "font-size: 12px; font-weight: 600; color: {muted_hex};",
+                            nve_style: TypedStyle::new().font_size(12.0).font_weight(600).color(muted),
                             "{comment.author}"
                         }
                         text {
-                            style: "font-size: 14px; color: {fg_hex};",
+                            nve_style: TypedStyle::new().font_size(14.0).color(fg),
                             "{comment.body}"
                         }
                     }

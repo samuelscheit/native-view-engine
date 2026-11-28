@@ -159,12 +159,18 @@ fn MultiCardApp() -> Element {
         view {
             view {
                 test_id: "card-alpha",
-                style: "padding: 8px; background-color: #111111; border-radius: 4px;",
+                nve_style: TypedStyle::new()
+                    .padding(8.0)
+                    .bg(ColorRgba::rgb(0x11, 0x11, 0x11))
+                    .radius(4.0),
                 text { "# engineering" }
             }
             view {
                 test_id: "card-beta",
-                style: "padding: 8px; background-color: #222222; border-radius: 4px;",
+                nve_style: TypedStyle::new()
+                    .padding(8.0)
+                    .bg(ColorRgba::rgb(0x22, 0x22, 0x22))
+                    .radius(4.0),
                 text { "# design-sync" }
             }
         }

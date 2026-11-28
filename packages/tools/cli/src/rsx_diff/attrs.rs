@@ -66,7 +66,7 @@ impl KeywordEnum {
 
     /// Matches a kebab-case or lowercase keyword string (e.g. `"space-between"`, `"nowrap"`)
     /// case-insensitively with `-` ignored against this enum's Rust variant names.
-    pub fn from_keyword_str(&self, raw: &str) -> Option<u8> {
+    pub fn parse_keyword_str(&self, raw: &str) -> Option<u8> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             return None;

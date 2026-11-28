@@ -8,7 +8,7 @@
 use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
 use nve_store::{Length, ResourceId, Rgba, RowPatch};
 
-use crate::css_values::dim_to_length;
+use crate::style_layers::dim_to_length;
 use crate::interaction::CursorKind;
 use crate::layout_ext::{GridTrackPlacement, LayoutDirection, LayoutExt, PositionMode};
 use crate::snapshots::{

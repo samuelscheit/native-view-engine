@@ -219,17 +219,17 @@ impl TypedStyle {
         self.apply_style_layers_to_tx(tx, node, nve_tables::STYLE_LAYER_ALL);
 
         if let Some(ref ext) = self.layout_ext {
-            if let Some(ref g) = ext.grid {
-                if !g.template_columns.is_empty() || !g.template_rows.is_empty() {
-                    let mut gl = tx.edit::<GridLayout>(node);
-                    if !g.template_columns.is_empty() {
-                        gl = gl.template_columns(Some(GridTracks(g.template_columns.clone().into())));
-                    }
-                    if !g.template_rows.is_empty() {
-                        gl = gl.template_rows(Some(GridTracks(g.template_rows.clone().into())));
-                    }
-                    let _ = gl;
+            if let Some(ref g) = ext.grid
+                && (!g.template_columns.is_empty() || !g.template_rows.is_empty())
+            {
+                let mut gl = tx.edit::<GridLayout>(node);
+                if !g.template_columns.is_empty() {
+                    gl = gl.template_columns(Some(GridTracks(g.template_columns.clone().into())));
                 }
+                if !g.template_rows.is_empty() {
+                    gl = gl.template_rows(Some(GridTracks(g.template_rows.clone().into())));
+                }
+                let _ = gl;
             }
             if !ext.grid_item.column.is_auto() || !ext.grid_item.row.is_auto() {
                 tx.edit::<GridItem>(node)

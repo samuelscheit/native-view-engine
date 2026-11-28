@@ -1,5 +1,5 @@
 //! Cross-platform core word tables (`tables::*`), responsive/state style patches, paint fills,
-//! transforms, and shared CSS/color parsers.
+//! and 2D transforms (zero runtime CSS string parsing).
 //!
 //! Zero dependencies on optional capability modules (`motion`, `svg`, `canvas`, `blur`, `webview`,
 //! `video`, `camera`, `web-element`, `web-html`).
@@ -7,11 +7,6 @@
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
 pub mod client_hints;
-pub mod css;
-mod css_shorthand;
-#[cfg(test)]
-mod css_tests;
-mod css_values;
 pub mod input_hints;
 pub mod interaction;
 pub mod keyboard;
@@ -20,15 +15,16 @@ pub mod media;
 pub mod paint;
 pub mod snapshots;
 pub mod style_ext;
+pub mod style_layers;
 pub mod tables;
 pub mod transform;
 
 pub use client_hints::{
     ClientHintsSnapshot, SSR_ACCEPT_CH_HEADER, SSR_CRITICAL_CH_HEADER, SSR_VARY_HEADER,
 };
-pub use css_values::{
-    dim_to_length, parse_color, parse_dim, parse_flex_align, parse_flex_direction,
-    parse_flex_justify, parse_font_weight, parse_px, try_parse_dim, try_parse_font_weight,
+pub use style_layers::{
+    dim_to_length, effective_text_color, STYLE_LAYER_ALL, STYLE_LAYER_LAYOUT,
+    STYLE_LAYER_TYPOGRAPHY, STYLE_LAYER_VISUAL,
 };
 pub use input_hints::{AutofillHint, InputMode};
 pub use interaction::{
@@ -63,32 +59,38 @@ pub use style_ext::StylePatchExt;
 pub use tables::{Display, FlexWrap, Overflow, TextAlign};
 pub use transform::{affine_concat, affine_inverse_map_point, affine_map_point, Transform2D};
 
-pub use css::{
-    apply_css_attr_layers_status_to_tx, apply_css_attr_layers_to_tx, apply_css_attr_to_tx,
-    apply_inline_style_layers_to_tx, css_attr_layer, css_border_color_source, css_key_bits,
-    css_key_rank, effective_text_color, mask_border_color_source, prop_bits_to_layers,
-    resolve_current_color_border, CssAttrResult, CSS_FLAG_BORDER_CURRENT_COLOR, STYLE_LAYER_ALL,
-    STYLE_LAYER_LAYOUT, STYLE_LAYER_TYPOGRAPHY, STYLE_LAYER_VISUAL,
-};
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nve_store::{ChangeSet, Length, NodeStore, Rgba};
+    use nve_abi::ColorRgba;
+    use nve_store::{ChangeSet, FlatResource, Length, NodeStore, Rgba};
 
     #[test]
-    fn applies_inline_css_directly_to_nodestore_word_tables() {
+    fn applies_typed_row_patch_directly_to_nodestore_word_tables() {
+        tables::register_core_tables();
         let mut store = NodeStore::new();
-        let mut tx = store.tx();
-        let n = tx.create();
-        assert!(apply_css_attr_to_tx(
-            &mut tx,
-            n,
-            "style",
-            "width: 100%; height: 64px; flex-direction: row; gap: 12; padding: 16px; background-color: #0f172a; color: #ffffff; border-radius: 8px; font-weight: bold;"
-        ));
         let mut changes = ChangeSet::default();
-        tx.commit_into(&mut changes);
+        let patch = RowPatch::new()
+            .width_pct(100.0)
+            .height_px(64.0)
+            .flex_row()
+            .gap(12.0)
+            .padding(16.0)
+            .bg(ColorRgba::rgb(15, 23, 42))
+            .color(ColorRgba::WHITE)
+            .radius(8.0)
+            .font_weight(700);
+        let mut words = Vec::new();
+        assert!(patch.write_words(&mut words));
+        let view = RowPatchView::from_words(&words).expect("valid patch view");
+
+        let n = {
+            let mut tx = store.tx();
+            let n = tx.create();
+            tx.apply_row_patch(n, view);
+            tx.commit_into(&mut changes);
+            n
+        };
 
         let l = store.try_row::<tables::Layout>(n).unwrap();
         assert_eq!(l.width(), Length::percent(100.0));
@@ -106,17 +108,21 @@ mod tests {
         assert_eq!(t.color(), Rgba::WHITE);
         assert_eq!(t.font_weight(), 700);
 
-        for (css, expected) in [
-            ("display: inline", tables::Display::Inline),
-            ("display: inline-block", tables::Display::InlineBlock),
-            ("display: inline-flex", tables::Display::InlineFlex),
-            ("display: contents", tables::Display::Contents),
-            ("display: block", tables::Display::Block),
-            ("display: grid", tables::Display::Grid),
-            ("display: none", tables::Display::None),
+        for expected in [
+            tables::Display::Inline,
+            tables::Display::InlineBlock,
+            tables::Display::InlineFlex,
+            tables::Display::Contents,
+            tables::Display::Block,
+            tables::Display::Grid,
+            tables::Display::None,
         ] {
+            let dp = RowPatch::new().display(expected);
+            words.clear();
+            assert!(dp.write_words(&mut words));
+            let dp_view = RowPatchView::from_words(&words).expect("valid display patch view");
             let mut tx = store.tx();
-            assert!(apply_css_attr_to_tx(&mut tx, n, "style", css));
+            tx.apply_row_patch(n, dp_view);
             tx.commit_into(&mut changes);
             assert_eq!(store.try_row::<tables::Layout>(n).unwrap().display(), expected);
         }

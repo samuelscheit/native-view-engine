@@ -3,7 +3,7 @@
 
 use nve_dioxus::prelude::*;
 use nve_router::{GuardDecision, QueryParams, Routable, RouterState, guard_fn};
-use nve_ui::{ColorHex, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Switch, use_theme};
+use nve_ui::{Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Switch, use_theme};
 
 pub const ROUTER_SANDBOX_SOURCE: &str = r#"use nve_router::{GuardDecision, Routable, RouterState, guard_fn};
 
@@ -111,29 +111,41 @@ pub fn RouterSandboxDemo() -> Element {
     rsx! {
         view {
             test_id: "pg-router-root",
-            style: "width: 100%; flex-direction: column; gap: 12px;",
+            nve_style: TypedStyle::col().width_pct(100.0).gap(12.0),
 
             // Live URL bar + stack depth telemetry
             view {
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px; border-radius: 8px; background-color: {theme.surface.raised.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                nve_style: TypedStyle::row()
+                    .width_pct(100.0)
+                    .justify(FlexJustify::SpaceBetween)
+                    .align(FlexAlign::Center)
+                    .flex_wrap(FlexWrap::Wrap)
+                    .gap(8.0)
+                    .padding(10.0)
+                    .radius(8.0)
+                    .bg(theme.surface.raised)
+                    .border(1.0, theme.border.default),
                 view {
-                    style: "flex-direction: row; align-items: center; gap: 8px;",
+                    nve_style: TypedStyle::row().align(FlexAlign::Center).gap(8.0),
                     Badge {
                         label: "ROUTE".to_string(),
                         variant: BadgeVariant::Accent,
                     }
                     text {
                         test_id: "pg-router-path",
-                        style: "font-size: 14px; font-weight: 700; color: {theme.text.primary.hex()};",
+                        nve_style: TypedStyle::new()
+                            .font_size(14.0)
+                            .font_weight(700)
+                            .color(theme.text.primary),
                         "{current_path}"
                     }
                     text {
-                        style: "font-size: 12px; color: {theme.text.secondary.hex()};",
+                        nve_style: TypedStyle::new().font_size(12.0).color(theme.text.secondary),
                         "({current_title})"
                     }
                 }
                 view {
-                    style: "flex-direction: row; align-items: center; gap: 6px;",
+                    nve_style: TypedStyle::row().align(FlexAlign::Center).gap(6.0),
                     Badge {
                         test_id: Some("pg-router-depth".to_string()),
                         label: format!("Depth: {depth}"),
@@ -151,7 +163,11 @@ pub fn RouterSandboxDemo() -> Element {
 
             // Tab switches + Stack actions + Guard toggle
             view {
-                style: "width: 100%; flex-direction: row; flex-wrap: wrap; gap: 8px; align-items: center;",
+                nve_style: TypedStyle::row()
+                    .width_pct(100.0)
+                    .flex_wrap(FlexWrap::Wrap)
+                    .gap(8.0)
+                    .align(FlexAlign::Center),
                 Button {
                     test_id: Some("pg-router-tab-home".to_string()),
                     variant: if current_path == "/" { ButtonVariant::Primary } else { ButtonVariant::Secondary },
@@ -234,7 +250,12 @@ pub fn RouterSandboxDemo() -> Element {
 
             // Auth guard toggle + stack history readout
             view {
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;",
+                nve_style: TypedStyle::row()
+                    .width_pct(100.0)
+                    .justify(FlexJustify::SpaceBetween)
+                    .align(FlexAlign::Center)
+                    .flex_wrap(FlexWrap::Wrap)
+                    .gap(10.0),
                 Switch {
                     test_id: Some("pg-router-guard-toggle".to_string()),
                     checked: guard_enabled(),
@@ -256,16 +277,23 @@ pub fn RouterSandboxDemo() -> Element {
                 }
                 text {
                     test_id: "pg-router-status",
-                    style: "font-size: 12px; color: {theme.text.secondary.hex()};",
+                    nve_style: TypedStyle::new().font_size(12.0).color(theme.text.secondary),
                     "{last_event}"
                 }
             }
 
             // History stack visualization
             view {
-                style: "width: 100%; flex-direction: row; flex-wrap: wrap; gap: 6px; align-items: center;",
+                nve_style: TypedStyle::row()
+                    .width_pct(100.0)
+                    .flex_wrap(FlexWrap::Wrap)
+                    .gap(6.0)
+                    .align(FlexAlign::Center),
                 text {
-                    style: "font-size: 11px; font-weight: 600; color: {theme.text.tertiary.hex()};",
+                    nve_style: TypedStyle::new()
+                        .font_size(11.0)
+                        .font_weight(600)
+                        .color(theme.text.tertiary),
                     "Stack:"
                 }
                 for (i, seg) in stack_trail.into_iter().enumerate() {

@@ -395,7 +395,7 @@ fn eval_keyword_from(kw: &KeywordEnum, name: &str, value: &TypedAttrValue) -> Re
             .discriminant(variant)
             .ok_or_else(|| format!("`{name}` does not accept {value}")),
         TypedAttrValue::String(s) => kw
-            .from_keyword_str(s)
+            .parse_keyword_str(s)
             .ok_or_else(|| format!("`{name}` cannot parse keyword {s:?}")),
         _ => Err(format!("`{name}` cannot carry {value}")),
     }

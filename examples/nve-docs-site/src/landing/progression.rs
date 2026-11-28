@@ -2,7 +2,6 @@
 //! interactive Purple-Garden-style `NVE_DRAW1` Benchmark Progression Dashboard.
 
 use nve_dioxus::prelude::*;
-use nve_ui::ColorHex;
 use nve_docs::use_docs_state;
 
 use crate::landing::PillBadge;
@@ -84,39 +83,40 @@ pub fn DevAndBenchProgression() -> Element {
     drop(snap);
 
     let milestone_rows: Vec<&[WaveMilestone]> = WAVE_MILESTONES.chunks(4).collect();
-    let mobile_col = TypedStyle::new()
+    let mobile_col_row = TypedStyle::new()
+        .width_pct(100.0).flex_row().gap(12.0)
         .at(MediaQuery::max_width(959), RowPatch::new().flex_col());
 
     rsx! {
         view {
             test_id: "landing-progression-section",
-            style: "width: 100%; flex-direction: column; gap: 28px;",
+            nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(28.0),
 
             // Section Header + Growth Telemetry Pills
             view {
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 14px;",
+                nve_style: TypedStyle::new().width_pct(100.0).flex_row().justify_content(FlexJustify::SpaceBetween).align_items(FlexAlign::FlexEnd).flex_wrap(FlexWrap::Wrap).gap(14.0),
                 view {
-                    style: "flex-direction: column; gap: 6px; max-width: 720px;",
+                    nve_style: TypedStyle::new().flex_col().gap(6.0).max_width_px(720.0),
                     text {
-                        style: "font-size: 12px; font-weight: 700; color: {theme.text.link.hex()};",
+                        nve_style: TypedStyle::new().font_size(12.0).font_weight(700).color(theme.text.link),
                         "DEVELOPMENT & BENCHMARK PROGRESSION"
                     }
                     view {
                         accessibility_role: "heading",
                         "aria-level": "2",
                         text {
-                            style: "font-size: 28px; font-weight: 800; color: {theme.text.primary.hex()};",
+                            nve_style: TypedStyle::new().font_size(28.0).font_weight(800).color(theme.text.primary),
                             "14 engineering waves, continuously measured."
                         }
                     }
                     text {
-                        style: "font-size: 14px; color: {theme.text.secondary.hex()}; line-height: 1.5;",
+                        nve_style: TypedStyle::new().font_size(14.0).color(theme.text.secondary).line_height_ratio(1.5),
                         "Every latency and payload breakthrough below is tracked directly from benchmarks/baseline.json and rendered natively via binary NVE_DRAW1 vector canvases."
                     }
                 }
 
                 view {
-                    style: "flex-direction: row; flex-wrap: wrap; gap: 8px; align-items: center;",
+                    nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(8.0).align_items(FlexAlign::Center),
                     PillBadge { label: "1 → 10 Platform Hosts".to_string(), accent: true }
                     PillBadge { label: "411+ Rust & 8 Host Suites".to_string(), secondary: true }
                     PillBadge { label: "Waves 1 → 14".to_string() }
@@ -126,40 +126,41 @@ pub fn DevAndBenchProgression() -> Element {
             // 1. Development Progression Timeline (explicit 4x2 grid on desktop, 1-column on mobile)
             view {
                 test_id: "dev-progression-timeline",
-                style: "width: 100%; flex-direction: column; gap: 12px;",
+                nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(12.0),
                 for (ridx, row) in milestone_rows.into_iter().enumerate() {
                     view {
                         key: "wave-row-{ridx}",
-                        nve_style: mobile_col.clone(),
-                        style: "width: 100%; flex-direction: row; gap: 12px;",
+                        nve_style: mobile_col_row.clone(),
                         for m in row {
                             view {
                                 key: "wave-{m.wave}",
-                                style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 10px; padding: 16px; border-radius: 12px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                                nve_style: TypedStyle::new()
+                                    .flex_1().min_width_px(0.0).flex_col().justify_content(FlexJustify::SpaceBetween)
+                                    .gap(10.0).padding(16.0).radius(12.0).bg(theme.surface.base).border(1.0, theme.border.default),
                                 view {
-                                    style: "flex-direction: column; gap: 7px;",
+                                    nve_style: TypedStyle::new().flex_col().gap(7.0),
                                     view {
-                                        style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; gap: 6px;",
+                                        nve_style: TypedStyle::new().width_pct(100.0).flex_row().justify_content(FlexJustify::SpaceBetween).align_items(FlexAlign::Center).gap(6.0),
                                         text {
-                                            style: "font-size: 11px; font-weight: 700; color: {theme.text.link.hex()};",
+                                            nve_style: TypedStyle::new().font_size(11.0).font_weight(700).color(theme.text.link),
                                             "{m.wave}"
                                         }
                                         text {
-                                            style: "font-size: 11px; font-family: monospace; color: {theme.text.secondary.hex()};",
+                                            nve_style: TypedStyle::new().font_size(11.0).font_family("monospace").color(theme.text.secondary),
                                             "{m.commit}"
                                         }
                                     }
                                     text {
-                                        style: "font-size: 14px; font-weight: 700; color: {theme.text.primary.hex()};",
+                                        nve_style: TypedStyle::new().font_size(14.0).font_weight(700).color(theme.text.primary),
                                         "{m.title}"
                                     }
                                     text {
-                                        style: "font-size: 12px; color: {theme.text.secondary.hex()}; line-height: 1.45;",
+                                        nve_style: TypedStyle::new().font_size(12.0).color(theme.text.secondary).line_height_ratio(1.45),
                                         "{m.summary}"
                                     }
                                 }
                                 view {
-                                    style: "flex-direction: row; align-items: center; justify-content: space-between; padding-top: 6px;",
+                                    nve_style: TypedStyle::new().flex_row().align_items(FlexAlign::Center).justify_content(FlexJustify::SpaceBetween).padding_top(6.0),
                                     PillBadge { label: m.hosts.to_string() }
                                 }
                             }

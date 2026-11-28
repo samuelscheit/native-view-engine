@@ -1,7 +1,6 @@
 //! Bento Architecture & Verified Benchmark Grid + Interactive Live Examples Showcase Strip.
 
 use nve_dioxus::prelude::*;
-use nve_ui::ColorHex;
 use nve_docs::{DocsRoute, navigate_to, use_docs_state};
 
 use crate::landing::{PillBadge, resolve_example_app_href};
@@ -28,29 +27,38 @@ pub fn BentoArchitectureGrid() -> Element {
     let config = snap.config.clone();
     drop(snap);
 
-    let mobile_col = TypedStyle::new()
+    let mobile_col_row = TypedStyle::new()
+        .width_pct(100.0)
+        .flex_row()
+        .gap(16.0)
         .at(MediaQuery::max_width(959), RowPatch::new().flex_col());
     let bench_href = config.resolve_href("/docs/reference/benchmarks");
+    let card_surface = |grow: f32| {
+        TypedStyle::new()
+            .flex_grow(grow).flex_shrink(1.0).flex_basis_pct(0.0).min_width_px(0.0)
+            .flex_col().justify_content(FlexJustify::SpaceBetween).gap(16.0).padding(22.0)
+            .radius(14.0).bg(theme.surface.base).border(1.0, theme.border.default)
+    };
 
     rsx! {
         view {
             test_id: "landing-bento",
-            style: "width: 100%; flex-direction: column; gap: 20px;",
+            nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(20.0),
 
             // Section header
             view {
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 12px;",
+                nve_style: TypedStyle::new().width_pct(100.0).flex_row().justify_content(FlexJustify::SpaceBetween).align_items(FlexAlign::FlexEnd).flex_wrap(FlexWrap::Wrap).gap(12.0),
                 view {
-                    style: "flex-direction: column; gap: 6px; max-width: 760px;",
+                    nve_style: TypedStyle::new().flex_col().gap(6.0).max_width_px(760.0),
                     text {
-                        style: "font-size: 12px; font-weight: 700; color: {theme.text.link.hex()};",
+                        nve_style: TypedStyle::new().font_size(12.0).font_weight(700).color(theme.text.link),
                         "ARCHITECTURE & MEASURED BASELINES"
                     }
                     view {
                         accessibility_role: "heading",
                         "aria-level": "2",
                         text {
-                            style: "font-size: 28px; font-weight: 800; color: {theme.text.primary.hex()};",
+                            nve_style: TypedStyle::new().font_size(28.0).font_weight(800).color(theme.text.primary),
                             "Zero-VM performance, measured on real silicon."
                         }
                     }
@@ -59,12 +67,12 @@ pub fn BentoArchitectureGrid() -> Element {
                     test_id: "landing-bento-bench-link",
                     accessibility_role: "link",
                     "href": "{bench_href}",
-                    style: "padding-horizontal: 12px; padding-vertical: 7px; border-radius: 8px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                    nve_style: TypedStyle::new().padding_xy(12.0, 7.0).radius(8.0).bg(theme.surface.base).border(1.0, theme.border.default),
                     onpress: move |_| {
                         navigate_to(state, DocsRoute::new("/docs/reference/benchmarks"));
                     },
                     text {
-                        style: "font-size: 13px; font-weight: 600; color: {theme.text.link.hex()};",
+                        nve_style: TypedStyle::new().font_size(13.0).font_weight(600).color(theme.text.link),
                         "Full Criterion Benchmarks →"
                     }
                 }
@@ -72,8 +80,7 @@ pub fn BentoArchitectureGrid() -> Element {
 
             // Row 1: 3 metric cards (Modular C ABI | Binary IR & SceneView | 100k Fenwick VirtualList)
             view {
-                nve_style: mobile_col.clone(),
-                style: "width: 100%; flex-direction: row; gap: 16px;",
+                nve_style: mobile_col_row.clone(),
 
                 BentoMetricCard {
                     test_id: "bento-abi",
@@ -105,29 +112,28 @@ pub fn BentoArchitectureGrid() -> Element {
 
             // Row 2: Wide 10-Host Matrix card + Live Pairing & Local-First CRDT card
             view {
-                nve_style: mobile_col,
-                style: "width: 100%; flex-direction: row; gap: 16px;",
+                nve_style: mobile_col_row,
 
                 // 10 Host Targets Matrix
                 view {
                     test_id: "bento-hosts",
-                    style: "flex-grow: 3; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 16px; padding: 22px; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                    nve_style: card_surface(3.0),
                     view {
-                        style: "flex-direction: column; gap: 8px;",
+                        nve_style: TypedStyle::new().flex_col().gap(8.0),
                         view {
-                            style: "flex-direction: row; justify-content: space-between; align-items: center; gap: 8px;",
+                            nve_style: TypedStyle::new().flex_row().justify_content(FlexJustify::SpaceBetween).align_items(FlexAlign::Center).gap(8.0),
                             text {
-                                style: "font-size: 11px; font-weight: 700; color: {theme.text.link.hex()};",
+                                nve_style: TypedStyle::new().font_size(11.0).font_weight(700).color(theme.text.link),
                                 "10 NATIVE, GPU & WEB HOSTS"
                             }
                             PillBadge { label: "One Binary ABI".to_string(), accent: true }
                         }
                         text {
-                            style: "font-size: 19px; font-weight: 700; color: {theme.text.primary.hex()};",
+                            nve_style: TypedStyle::new().font_size(19.0).font_weight(700).color(theme.text.primary),
                             "Real platform views everywhere — from one Rust core."
                         }
                         text {
-                            style: "font-size: 13px; color: {theme.text.secondary.hex()}; line-height: 1.5;",
+                            nve_style: TypedStyle::new().font_size(13.0).color(theme.text.secondary).line_height_ratio(1.5),
                             "Native accessibility, IME, scrolling physics, and GPU swapchains across desktop, mobile, embedded, and zero-flicker Web SSR."
                         }
                     }
@@ -135,16 +141,16 @@ pub fn BentoArchitectureGrid() -> Element {
                     // 10 Host Matrix Pills
                     view {
                         test_id: "bento-host-pills",
-                        style: "width: 100%; flex-direction: row; flex-wrap: wrap; gap: 8px;",
+                        nve_style: TypedStyle::new().width_pct(100.0).flex_row().flex_wrap(FlexWrap::Wrap).gap(8.0),
                         for host in HOST_TARGETS {
                             view {
                                 key: "host-pill-{host}",
-                                style: "flex-direction: row; align-items: center; gap: 6px; padding-horizontal: 10px; padding-vertical: 6px; border-radius: 8px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                                nve_style: TypedStyle::new().flex_row().align_items(FlexAlign::Center).gap(6.0).padding_xy(10.0, 6.0).radius(8.0).bg(theme.surface.subtle).border(1.0, theme.border.default),
                                 view {
-                                    style: "width: 6px; height: 6px; border-radius: 999px; background-color: {theme.status.accent.text.hex()};",
+                                    nve_style: TypedStyle::new().width_px(6.0).height_px(6.0).radius(999.0).bg(theme.status.accent.text),
                                 }
                                 text {
-                                    style: "font-size: 12px; font-weight: 600; color: {theme.text.primary.hex()};",
+                                    nve_style: TypedStyle::new().font_size(12.0).font_weight(600).color(theme.text.primary),
                                     "{host}"
                                 }
                             }
@@ -155,28 +161,28 @@ pub fn BentoArchitectureGrid() -> Element {
                 // Live Pairing + Local-First NVC1 CRDT + Frame-0 NVE2 Boot
                 view {
                     test_id: "bento-pairing",
-                    style: "flex-grow: 2; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 16px; padding: 22px; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                    nve_style: card_surface(2.0),
                     view {
-                        style: "flex-direction: column; gap: 8px;",
+                        nve_style: TypedStyle::new().flex_col().gap(8.0),
                         text {
-                            style: "font-size: 11px; font-weight: 700; color: {theme.status.info.text.hex()};",
+                            nve_style: TypedStyle::new().font_size(11.0).font_weight(700).color(theme.status.info.text),
                             "LIVE PAIRING & LOCAL-FIRST SYNC"
                         }
                         text {
-                            style: "font-size: 28px; font-weight: 800; color: {theme.text.primary.hex()};",
+                            nve_style: TypedStyle::new().font_size(28.0).font_weight(800).color(theme.text.primary),
                             "5.18 KB/s"
                         }
                         text {
-                            style: "font-size: 15px; font-weight: 700; color: {theme.text.primary.hex()};",
+                            nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(theme.text.primary),
                             "NVT1/NVD1 Streaming + NVC1 CRDTs"
                         }
                         text {
-                            style: "font-size: 13px; color: {theme.text.secondary.hex()}; line-height: 1.5;",
+                            nve_style: TypedStyle::new().font_size(13.0).color(theme.text.secondary).line_height_ratio(1.5),
                             "Stream 60fps binary deltas to zero-cdylib thin clients over UDP/WS, boot Frame 0 from NVE2 keyframes + Taffy layout in < 2 ms, and converge offline state via binary NVC1 CRDTs."
                         }
                     }
                     view {
-                        style: "flex-direction: row; flex-wrap: wrap; gap: 6px;",
+                        nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(6.0),
                         PillBadge { label: "NVT1 / NVD1".to_string(), secondary: true }
                         PillBadge { label: "NVC1 CRDT".to_string(), secondary: true }
                         PillBadge { label: "< 2 ms Frame-0 Boot".to_string() }
@@ -202,28 +208,30 @@ fn BentoMetricCard(
     rsx! {
         view {
             test_id: "{test_id}",
-            style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 16px; padding: 22px; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+            nve_style: TypedStyle::new()
+                .flex_1().min_width_px(0.0).flex_col().justify_content(FlexJustify::SpaceBetween)
+                .gap(16.0).padding(22.0).radius(14.0).bg(theme.surface.base).border(1.0, theme.border.default),
             view {
-                style: "flex-direction: column; gap: 8px;",
+                nve_style: TypedStyle::new().flex_col().gap(8.0),
                 text {
-                    style: "font-size: 11px; font-weight: 700; color: {theme.text.link.hex()};",
+                    nve_style: TypedStyle::new().font_size(11.0).font_weight(700).color(theme.text.link),
                     "{eyebrow}"
                 }
                 text {
-                    style: "font-size: 30px; font-weight: 800; color: {theme.text.primary.hex()};",
+                    nve_style: TypedStyle::new().font_size(30.0).font_weight(800).color(theme.text.primary),
                     "{metric}"
                 }
                 text {
-                    style: "font-size: 15px; font-weight: 700; color: {theme.text.primary.hex()};",
+                    nve_style: TypedStyle::new().font_size(15.0).font_weight(700).color(theme.text.primary),
                     "{title}"
                 }
                 text {
-                    style: "font-size: 13px; color: {theme.text.secondary.hex()}; line-height: 1.5;",
+                    nve_style: TypedStyle::new().font_size(13.0).color(theme.text.secondary).line_height_ratio(1.5),
                     "{body}"
                 }
             }
             view {
-                style: "flex-direction: row; flex-wrap: wrap; gap: 6px;",
+                nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(6.0),
                 for tag in tags {
                     PillBadge { key: "{test_id}-{tag}", label: tag.to_string() }
                 }
@@ -241,7 +249,10 @@ pub fn LiveExamplesStrip() -> Element {
     let config = snap.config.clone();
     drop(snap);
 
-    let mobile_col = TypedStyle::new()
+    let mobile_col_row = TypedStyle::new()
+        .width_pct(100.0)
+        .flex_row()
+        .gap(16.0)
         .at(MediaQuery::max_width(959), RowPatch::new().flex_col());
     let examples_href = config.resolve_href("/examples");
     let studio_href = resolve_example_app_href(&config.base_path, "/examples/studio");
@@ -253,25 +264,28 @@ pub fn LiveExamplesStrip() -> Element {
         ("NVE_DRAW1 Canvas", "/docs/guides/canvas-draw1"),
         ("NVC1 CRDT Sync", "/docs/guides/local-first-crdt"),
     ];
+    let showcase_card = TypedStyle::new()
+        .flex_1().min_width_px(0.0).flex_col().justify_content(FlexJustify::SpaceBetween)
+        .gap(18.0).padding(22.0).radius(14.0).bg(theme.surface.base).border(1.0, theme.border.default);
 
     rsx! {
         view {
             test_id: "landing-examples-strip",
-            style: "width: 100%; flex-direction: column; gap: 20px;",
+            nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(20.0),
 
             view {
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 12px;",
+                nve_style: TypedStyle::new().width_pct(100.0).flex_row().justify_content(FlexJustify::SpaceBetween).align_items(FlexAlign::FlexEnd).flex_wrap(FlexWrap::Wrap).gap(12.0),
                 view {
-                    style: "flex-direction: column; gap: 6px;",
+                    nve_style: TypedStyle::new().flex_col().gap(6.0),
                     text {
-                        style: "font-size: 12px; font-weight: 700; color: {theme.text.link.hex()};",
+                        nve_style: TypedStyle::new().font_size(12.0).font_weight(700).color(theme.text.link),
                         "LIVE INTERACTIVE DEMOS"
                     }
                     view {
                         accessibility_role: "heading",
                         "aria-level": "2",
                         text {
-                            style: "font-size: 28px; font-weight: 800; color: {theme.text.primary.hex()};",
+                            nve_style: TypedStyle::new().font_size(28.0).font_weight(800).color(theme.text.primary),
                             "Launch full NVE apps — lazy-loaded on demand."
                         }
                     }
@@ -280,39 +294,38 @@ pub fn LiveExamplesStrip() -> Element {
                     test_id: "landing-examples-all-link",
                     accessibility_role: "link",
                     "href": "{examples_href}",
-                    style: "padding-horizontal: 12px; padding-vertical: 7px; border-radius: 8px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                    nve_style: TypedStyle::new().padding_xy(12.0, 7.0).radius(8.0).bg(theme.surface.base).border(1.0, theme.border.default),
                     onpress: move |_| {
                         navigate_to(state, DocsRoute::new("/examples"));
                     },
                     text {
-                        style: "font-size: 13px; font-weight: 600; color: {theme.text.link.hex()};",
+                        nve_style: TypedStyle::new().font_size(13.0).font_weight(600).color(theme.text.link),
                         "Explore Examples Gallery →"
                     }
                 }
             }
 
             view {
-                nve_style: mobile_col,
-                style: "width: 100%; flex-direction: row; gap: 16px;",
+                nve_style: mobile_col_row,
 
                 // Card 1: Aether Workspace + NVE Studio
                 view {
                     test_id: "showcase-card-studio",
-                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 18px; padding: 22px; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                    nve_style: showcase_card.clone(),
                     view {
-                        style: "flex-direction: column; gap: 10px;",
+                        nve_style: TypedStyle::new().flex_col().gap(10.0),
                         view {
-                            style: "flex-direction: row; flex-wrap: wrap; gap: 6px;",
+                            nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(6.0),
                             PillBadge { label: "WASM App".to_string(), accent: true }
                             PillBadge { label: "100k Fenwick".to_string(), secondary: true }
                             PillBadge { label: "NVC1 CRDT".to_string() }
                         }
                         text {
-                            style: "font-size: 18px; font-weight: 700; color: {theme.text.primary.hex()};",
+                            nve_style: TypedStyle::new().font_size(18.0).font_weight(700).color(theme.text.primary),
                             "Aether Workspace + NVE Studio"
                         }
                         text {
-                            style: "font-size: 13px; color: {theme.text.secondary.hex()}; line-height: 1.5;",
+                            nve_style: TypedStyle::new().font_size(13.0).color(theme.text.secondary).line_height_ratio(1.5),
                             "Flagship Linear × Notion workspace with live X-Ray layout inspection, time-travel CommandBuffer scrubbing, and NVE_DRAW1 telemetry canvas."
                         }
                     }
@@ -328,9 +341,12 @@ pub fn LiveExamplesStrip() -> Element {
                                 )]),
                             ));
                         }),
-                        style: "width: 100%; justify-content: center; align-items: center; padding-vertical: 10px; padding-horizontal: 14px; border-radius: 8px; background-color: {theme.status.accent.solid.hex()}; border-width: 1px; border-color: {theme.status.accent.solid.hex()};",
+                        nve_style: TypedStyle::new()
+                            .width_pct(100.0).justify_content(FlexJustify::Center).align_items(FlexAlign::Center)
+                            .padding_xy(14.0, 10.0).radius(8.0)
+                            .bg(theme.status.accent.solid).border(1.0, theme.status.accent.solid),
                         text {
-                            style: "font-size: 13px; font-weight: 700; color: {theme.text.on_accent.hex()};",
+                            nve_style: TypedStyle::new().font_size(13.0).font_weight(700).color(theme.text.on_accent),
                             "Launch Studio WASM →"
                         }
                     }
@@ -339,21 +355,21 @@ pub fn LiveExamplesStrip() -> Element {
                 // Card 2: Kitchen Sink Component Gallery
                 view {
                     test_id: "showcase-card-kitchen-sink",
-                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 18px; padding: 22px; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                    nve_style: showcase_card.clone(),
                     view {
-                        style: "flex-direction: column; gap: 10px;",
+                        nve_style: TypedStyle::new().flex_col().gap(10.0),
                         view {
-                            style: "flex-direction: row; flex-wrap: wrap; gap: 6px;",
+                            nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(6.0),
                             PillBadge { label: "WASM App".to_string(), accent: true }
                             PillBadge { label: "All nve-ui".to_string() }
                             PillBadge { label: "nve-i18n".to_string() }
                         }
                         text {
-                            style: "font-size: 18px; font-weight: 700; color: {theme.text.primary.hex()};",
+                            nve_style: TypedStyle::new().font_size(18.0).font_weight(700).color(theme.text.primary),
                             "NVE Kitchen Sink Gallery"
                         }
                         text {
-                            style: "font-size: 13px; color: {theme.text.secondary.hex()}; line-height: 1.5;",
+                            nve_style: TypedStyle::new().font_size(13.0).color(theme.text.secondary).line_height_ratio(1.5),
                             "Interactive showcase of every nve-ui component, theme/density/locale switching, 1k VirtualList, Canvas draw lists, and ErrorBoundary recovery."
                         }
                     }
@@ -369,9 +385,12 @@ pub fn LiveExamplesStrip() -> Element {
                                 )]),
                             ));
                         }),
-                        style: "width: 100%; justify-content: center; align-items: center; padding-vertical: 10px; padding-horizontal: 14px; border-radius: 8px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                        nve_style: TypedStyle::new()
+                            .width_pct(100.0).justify_content(FlexJustify::Center).align_items(FlexAlign::Center)
+                            .padding_xy(14.0, 10.0).radius(8.0)
+                            .bg(theme.surface.subtle).border(1.0, theme.border.default),
                         text {
-                            style: "font-size: 13px; font-weight: 700; color: {theme.text.primary.hex()};",
+                            nve_style: TypedStyle::new().font_size(13.0).font_weight(700).color(theme.text.primary),
                             "Launch Kitchen Sink WASM →"
                         }
                     }
@@ -380,25 +399,25 @@ pub fn LiveExamplesStrip() -> Element {
                 // Card 3: 5 Embedded Docs Playgrounds
                 view {
                     test_id: "showcase-card-playgrounds",
-                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 18px; padding: 22px; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                    nve_style: showcase_card,
                     view {
-                        style: "flex-direction: column; gap: 10px;",
+                        nve_style: TypedStyle::new().flex_col().gap(10.0),
                         view {
-                            style: "flex-direction: row; flex-wrap: wrap; gap: 6px;",
+                            nve_style: TypedStyle::new().flex_row().flex_wrap(FlexWrap::Wrap).gap(6.0),
                             PillBadge { label: "5 Live Playgrounds".to_string(), secondary: true }
                             PillBadge { label: "SSR + Hydrate".to_string() }
                         }
                         text {
-                            style: "font-size: 18px; font-weight: 700; color: {theme.text.primary.hex()};",
+                            nve_style: TypedStyle::new().font_size(18.0).font_weight(700).color(theme.text.primary),
                             "Embedded Docs Playgrounds"
                         }
                         text {
-                            style: "font-size: 13px; color: {theme.text.secondary.hex()}; line-height: 1.5;",
+                            nve_style: TypedStyle::new().font_size(13.0).color(theme.text.secondary).line_height_ratio(1.5),
                             "Hydrated directly inside documentation articles with zero mismatches — test components, routing, vector draw lists, and CRDT convergence."
                         }
                     }
                     view {
-                        style: "width: 100%; flex-direction: row; flex-wrap: wrap; gap: 6px;",
+                        nve_style: TypedStyle::new().width_pct(100.0).flex_row().flex_wrap(FlexWrap::Wrap).gap(6.0),
                         for (label, route) in playground_links {
                             {
                                 let href = config.resolve_href(route);
@@ -408,12 +427,12 @@ pub fn LiveExamplesStrip() -> Element {
                                         key: "showcase-pg-{route}",
                                         accessibility_role: "link",
                                         "href": "{href}",
-                                        style: "padding-horizontal: 9px; padding-vertical: 5px; border-radius: 6px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                                        nve_style: TypedStyle::new().padding_xy(9.0, 5.0).radius(6.0).bg(theme.surface.subtle).border(1.0, theme.border.default),
                                         onpress: move |_| {
                                             navigate_to(state, target.clone());
                                         },
                                         text {
-                                            style: "font-size: 12px; font-weight: 600; color: {theme.text.link.hex()};",
+                                            nve_style: TypedStyle::new().font_size(12.0).font_weight(600).color(theme.text.link),
                                             "{label} →"
                                         }
                                     }

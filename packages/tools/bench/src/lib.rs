@@ -297,23 +297,43 @@ pub fn BenchCounterApp() -> Element {
 
     rsx! {
         view {
-            style: "width: 100%; height: 100%; padding: 20px; gap: 12px; background-color: #0f172a;",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .height_pct(100.0)
+                .padding(20.0)
+                .gap(12.0)
+                .bg(ColorRgba::rgb(15, 23, 42)),
             view {
-                style: "width: 100%; padding: 16px; gap: 8px; background-color: #1e293b; border-radius: 12px;",
+                nve_style: TypedStyle::new()
+                    .width_pct(100.0)
+                    .padding(16.0)
+                    .gap(8.0)
+                    .bg(ColorRgba::rgb(30, 41, 59))
+                    .radius(12.0),
                 text {
-                    style: "color: #38bdf8; font-size: 14px;",
+                    nve_style: TypedStyle::new()
+                        .color(ColorRgba::rgb(56, 189, 248))
+                        .font_size(14.0),
                     "BENCHMARK SURFACE"
                 }
                 text {
-                    style: "color: #ffffff; font-size: 24px;",
+                    nve_style: TypedStyle::new()
+                        .color(ColorRgba::WHITE)
+                        .font_size(24.0),
                     "Count: {count}"
                 }
             }
             pressable {
-                style: "width: 160px; height: 48px; background-color: #2563eb; border-radius: 10px;",
+                nve_style: TypedStyle::new()
+                    .width_px(160.0)
+                    .height_px(48.0)
+                    .bg(ColorRgba::rgb(37, 99, 235))
+                    .radius(10.0),
                 onpress: move |_| count += 1,
                 text {
-                    style: "color: #ffffff; font-size: 16px;",
+                    nve_style: TypedStyle::new()
+                        .color(ColorRgba::WHITE)
+                        .font_size(16.0),
                     "Increment"
                 }
             }

@@ -1,7 +1,6 @@
 //! Block-level `nve-mdx` AST renderer (headings, paragraphs, lists/checklists, GFM tables, blockquotes, rules).
 
 use dioxus_core_macro::Props;
-use nve_ui::ColorHex;
 use nve_dioxus::prelude::*;
 use nve_mdx::{Block, ListItem, TableAlign};
 
@@ -19,7 +18,7 @@ use crate::state::use_docs_state;
 pub fn BlocksView(blocks: Vec<Block>, scope_prefix: String) -> Element {
     rsx! {
         view {
-            style: "width: 100%; flex-direction: column; gap: 14px;",
+            nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(14.0),
             for (idx, block) in blocks.into_iter().enumerate() {
                 BlockView {
                     key: "{scope_prefix}-blk-{idx}",
@@ -55,7 +54,7 @@ fn BlockView(block: Block, scope_key: String) -> Element {
             };
             let level_str = clamped.to_string();
             let tid = format!("docs-heading-{id}");
-            let top_pad = if clamped <= 2 { "10px" } else { "4px" };
+            let top_pad = if clamped <= 2 { 10.0 } else { 4.0 };
 
             rsx! {
                 view {
@@ -64,7 +63,7 @@ fn BlockView(block: Block, scope_key: String) -> Element {
                     accessibility_label: "{heading_text}",
                     "aria-level": "{level_str}",
                     "id": "{id}",
-                    style: "width: 100%; flex-direction: column; gap: 6px; padding-vertical: {top_pad};",
+                    nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(6.0).padding_y(top_pad),
                     InlinesView {
                         inlines: content,
                         font_size: font_size,
@@ -72,7 +71,7 @@ fn BlockView(block: Block, scope_key: String) -> Element {
                     }
                     if clamped == 2 {
                         view {
-                            style: "width: 100%; height: 1px; background-color: {theme.border.default.hex()};",
+                            nve_style: TypedStyle::new().width_pct(100.0).height_px(1.0).bg(theme.border.default),
                         }
                     }
                 }
@@ -80,7 +79,7 @@ fn BlockView(block: Block, scope_key: String) -> Element {
         }
         Block::Paragraph { content, .. } => rsx! {
             view {
-                style: "width: 100%; min-width: 0px;",
+                nve_style: TypedStyle::new().width_pct(100.0).min_width_px(0.0),
                 InlinesView {
                     inlines: content,
                     font_size: 15,
@@ -122,12 +121,24 @@ fn BlockView(block: Block, scope_key: String) -> Element {
         Block::Blockquote { blocks, .. } => rsx! {
             view {
                 accessibility_role: "blockquote",
-                style: "width: 100%; min-width: 0px; flex-direction: row; gap: 12px; padding-vertical: 10px; padding-horizontal: 14px; border-radius: 6px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                nve_style: TypedStyle::new()
+                    .width_pct(100.0)
+                    .min_width_px(0.0)
+                    .flex_row()
+                    .gap(12.0)
+                    .padding_xy(14.0, 10.0)
+                    .radius(6.0)
+                    .bg(theme.surface.base)
+                    .border(1.0, theme.border.default),
                 view {
-                    style: "width: 3px; flex-shrink: 0; border-radius: 2px; background-color: {theme.status.info.text.hex()};",
+                    nve_style: TypedStyle::new()
+                        .width_px(3.0)
+                        .flex_shrink(0.0)
+                        .radius(2.0)
+                        .bg(theme.status.info.text),
                 }
                 view {
-                    style: "flex-grow: 1; min-width: 0px; flex-direction: column; gap: 8px;",
+                    nve_style: TypedStyle::new().flex_grow(1.0).min_width_px(0.0).flex_col().gap(8.0),
                     BlocksView {
                         blocks: blocks,
                         scope_prefix: format!("{scope_key}-bq"),
@@ -138,7 +149,11 @@ fn BlockView(block: Block, scope_key: String) -> Element {
         Block::ThematicBreak { .. } => rsx! {
             view {
                 accessibility_role: "separator",
-                style: "width: 100%; height: 1px; background-color: {theme.border.default.hex()}; margin: 6px;",
+                nve_style: TypedStyle::new()
+                    .width_pct(100.0)
+                    .height_px(1.0)
+                    .bg(theme.border.default)
+                    .margin(6.0),
             }
         },
         Block::Directive(dir) => rsx! {
@@ -164,7 +179,7 @@ fn ListView(ordered: bool, start: usize, items: Vec<ListItem>, scope_prefix: Str
     rsx! {
         view {
             accessibility_role: "list",
-            style: "width: 100%; flex-direction: column; gap: 8px; padding-horizontal: 4px;",
+            nve_style: TypedStyle::new().width_pct(100.0).flex_col().gap(8.0).padding_x(4.0),
             for (idx, item) in items.into_iter().enumerate() {
                 {
                     let marker = match item.checked {
@@ -174,9 +189,9 @@ fn ListView(ordered: bool, start: usize, items: Vec<ListItem>, scope_prefix: Str
                         None => "•".to_string(),
                     };
                     let marker_color = match item.checked {
-                        Some(true) => theme.status.success.text.hex(),
-                        Some(false) => theme.text.secondary.hex(),
-                        None => theme.status.accent.text.hex(),
+                        Some(true) => theme.status.success.text,
+                        Some(false) => theme.text.secondary,
+                        None => theme.status.accent.text,
                     };
                     let checked_attr = item.checked.map(|c| if c { "true" } else { "false" }.to_string());
 
@@ -185,13 +200,22 @@ fn ListView(ordered: bool, start: usize, items: Vec<ListItem>, scope_prefix: Str
                             key: "{scope_prefix}-li-{idx}",
                             accessibility_role: "listitem",
                             aria_checked: checked_attr,
-                            style: "width: 100%; flex-direction: row; align-items: flex-start; gap: 10px;",
+                            nve_style: TypedStyle::new()
+                                .width_pct(100.0)
+                                .flex_row()
+                                .align_items(FlexAlign::FlexStart)
+                                .gap(10.0),
                             text {
-                                style: "font-size: 14px; font-weight: 600; line-height: 1.65; color: {marker_color}; min-width: 18px;",
+                                nve_style: TypedStyle::new()
+                                    .font_size(14.0)
+                                    .font_weight(600)
+                                    .line_height_ratio(1.65)
+                                    .color(marker_color)
+                                    .min_width_px(18.0),
                                 "{marker}"
                             }
                             view {
-                                style: "flex-grow: 1; min-width: 0px; flex-direction: column; gap: 6px;",
+                                nve_style: TypedStyle::new().flex_grow(1.0).min_width_px(0.0).flex_col().gap(6.0),
                                 BlocksView {
                                     blocks: item.blocks,
                                     scope_prefix: format!("{scope_prefix}-li-{idx}"),
@@ -210,8 +234,17 @@ fn ListView(ordered: bool, start: usize, items: Vec<ListItem>, scope_prefix: Str
 /// On Web, `th.nve, td.nve` in `NVE_BASE_RESET_CSS` uses `display: table-cell; width: auto;`
 /// (higher specificity than generated `.s*` classes), so browsers allocate proportional column
 /// widths via CSS table layout while Taffy/Skia and Yoga still get an exact `0px` flex base size.
-const TABLE_CELL_FLEX_STYLE: &str =
-    "flex-grow: 1; flex-shrink: 1; width: 0px; min-width: 0px; overflow-wrap: break-word;";
+fn table_cell_style(align_flex: FlexAlign, align_text: TextAlign, pad_y: f32) -> TypedStyle {
+    TypedStyle::new()
+        .flex_grow(1.0)
+        .flex_shrink(1.0)
+        .width_px(0.0)
+        .min_width_px(0.0)
+        .overflow_wrap(OverflowWrap::BreakWord)
+        .padding_xy(12.0, pad_y)
+        .align_items(align_flex)
+        .text_align(align_text)
+}
 
 #[component]
 fn TableView(
@@ -223,18 +256,18 @@ fn TableView(
     let state = use_docs_state();
     let theme = state.read().theme();
 
-    let align_css = |col: usize| -> &'static str {
+    let align_text = |col: usize| -> TextAlign {
         match alignments.get(col).copied().unwrap_or(TableAlign::None) {
-            TableAlign::Center => "center",
-            TableAlign::Right => "right",
-            TableAlign::Left | TableAlign::None => "left",
+            TableAlign::Center => TextAlign::Center,
+            TableAlign::Right => TextAlign::Right,
+            TableAlign::Left | TableAlign::None => TextAlign::Left,
         }
     };
-    let align_flex = |col: usize| -> &'static str {
+    let align_flex = |col: usize| -> FlexAlign {
         match alignments.get(col).copied().unwrap_or(TableAlign::None) {
-            TableAlign::Center => "center",
-            TableAlign::Right => "flex-end",
-            TableAlign::Left | TableAlign::None => "flex-start",
+            TableAlign::Center => FlexAlign::Center,
+            TableAlign::Right => FlexAlign::FlexEnd,
+            TableAlign::Left | TableAlign::None => FlexAlign::FlexStart,
         }
     };
 
@@ -244,41 +277,50 @@ fn TableView(
     } else {
         0
     };
-    let table_style = if min_table_w > 0 {
-        format!("width: 100%; min-width: {min_table_w}px; flex-direction: column;")
-    } else {
-        "width: 100%; flex-direction: column;".to_string()
-    };
+    let mut table_style = TypedStyle::new().width_pct(100.0).flex_col();
+    if min_table_w > 0 {
+        table_style = table_style.min_width_px(min_table_w as f32);
+    }
 
     rsx! {
         view {
             test_id: "docs-table-wrap-{scope_key}",
-            style: "width: 100%; min-width: 0px; overflow-x: auto; border-radius: 8px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: {theme.surface.base.hex()};",
+            nve_style: TypedStyle::new()
+                .width_pct(100.0)
+                .min_width_px(0.0)
+                .overflow_x(Overflow::Auto)
+                .radius(8.0)
+                .border(1.0, theme.border.default)
+                .bg(theme.surface.base),
             view {
                 test_id: "docs-table-{scope_key}",
                 nve_table: html_semantic(SemanticElement::Table),
                 accessibility_role: "table",
-                style: "{table_style}",
+                nve_style: table_style,
 
                 // Table header
                 if !headers.is_empty() {
                     view {
                         nve_table: html_semantic(SemanticElement::Thead),
-                        style: "width: 100%; flex-direction: column;",
+                        nve_style: TypedStyle::new().width_pct(100.0).flex_col(),
                         view {
                             nve_table: html_semantic(SemanticElement::Tr),
                             accessibility_role: "row",
-                            style: "width: 100%; flex-direction: row; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                            nve_style: TypedStyle::new()
+                                .width_pct(100.0)
+                                .flex_row()
+                                .bg(theme.surface.subtle)
+                                .border(1.0, theme.border.default),
                             for (col_idx, cell) in headers.into_iter().enumerate() {
                                 {
-                                    let ta = align_css(col_idx);
+                                    let ta = align_text(col_idx);
                                     let af = align_flex(col_idx);
                                     rsx! {
                                         view {
                                             key: "{scope_key}-th-{col_idx}",
                                             nve_table: html_semantic(SemanticElement::Th),
                                             accessibility_role: "columnheader",
-                                            style: "{TABLE_CELL_FLEX_STYLE} padding-horizontal: 12px; padding-vertical: 9px; align-items: {af}; text-align: {ta};",
+                                            nve_style: table_cell_style(af, ta, 9.0),
                                             InlinesView {
                                                 inlines: cell,
                                                 font_size: 13,
@@ -296,30 +338,34 @@ fn TableView(
                 if !rows.is_empty() {
                     view {
                         nve_table: html_semantic(SemanticElement::Tbody),
-                        style: "width: 100%; flex-direction: column;",
+                        nve_style: TypedStyle::new().width_pct(100.0).flex_col(),
                         for (row_idx, row) in rows.into_iter().enumerate() {
                             {
                                 let row_bg = if row_idx % 2 == 1 {
-                                    theme.surface.canvas.hex()
+                                    theme.surface.canvas
                                 } else {
-                                    theme.surface.base.hex()
+                                    theme.surface.base
                                 };
                                 rsx! {
                                     view {
                                         key: "{scope_key}-tr-{row_idx}",
                                         nve_table: html_semantic(SemanticElement::Tr),
                                         accessibility_role: "row",
-                                        style: "width: 100%; flex-direction: row; background-color: {row_bg}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                                        nve_style: TypedStyle::new()
+                                            .width_pct(100.0)
+                                            .flex_row()
+                                            .bg(row_bg)
+                                            .border(1.0, theme.border.default),
                                         for (col_idx, cell) in row.into_iter().enumerate() {
                                             {
-                                                let ta = align_css(col_idx);
+                                                let ta = align_text(col_idx);
                                                 let af = align_flex(col_idx);
                                                 rsx! {
                                                     view {
                                                         key: "{scope_key}-td-{row_idx}-{col_idx}",
                                                         nve_table: html_semantic(SemanticElement::Td),
                                                         accessibility_role: "cell",
-                                                        style: "{TABLE_CELL_FLEX_STYLE} padding-horizontal: 12px; padding-vertical: 8px; align-items: {af}; text-align: {ta};",
+                                                        nve_style: table_cell_style(af, ta, 8.0),
                                                         InlinesView {
                                                             inlines: cell,
                                                             font_size: 13,
