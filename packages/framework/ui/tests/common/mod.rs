@@ -312,12 +312,15 @@ impl UiHarness {
     }
 
     pub fn press(&mut self, tid: &str) {
+        let mut batch = EventBatchBuf::new();
+        self.push_press(&mut batch, tid);
+        self.dispatch(&batch);
+    }
+
+    pub fn push_press(&mut self, batch: &mut EventBatchBuf, tid: &str) {
         let id = self.find(tid);
         let ts = TimestampUs(self.next_ts());
-        let mut batch = EventBatchBuf::new();
         batch.push_press(SurfaceId::ROOT, id, ts, 4.0, 4.0);
-        assert!(self.surface.dispatch_events(batch.as_validated()));
-        self.render();
     }
 
     pub fn keydown(&mut self, tid: &str, key: &str, shift: bool) {
