@@ -7,9 +7,9 @@ use nve_tables::interaction::{CursorKind, StateStyleRule};
 use nve_tables::layout_ext::{LayoutDirection, PositionMode};
 use nve_tables::media::ResponsiveRule;
 use nve_tables::tables::{
-    BackgroundFillRes, BoxShadows, Direction, Display, GridItem, GridLayout,
-    GridLine as TableGridLine, GridTracks, Image, ImageFit, Interaction, Layout, Overflow,
-    Position, Responsive, ResponsiveRules, StateRules, TextAlign, Transform, Typography, Visual,
+    BackgroundFillRes, BoxShadows, Direction, Display, GridItem, GridLayout, GridTracks, Image,
+    ImageFit, Interaction, Layout, Overflow, Position, Responsive, ResponsiveRules, StateRules,
+    TextAlign, Transform, Typography, Visual,
 };
 use nve_store::{Length, NodeId, Rgba, RowPatch, TempResources, Transaction};
 
@@ -29,7 +29,7 @@ impl TypedStyle {
                     .min_height(dim_to_length(l.min_height))
                     .max_width(dim_to_length(l.max_width))
                     .max_height(dim_to_length(l.max_height))
-                    .flex_direction(l.flex_direction.into())
+                    .flex_direction(l.flex_direction)
                     .justify_content(l.justify_content.into())
                     .align_items(l.align_items.into())
                     .align_self(l.align_self)
@@ -176,10 +176,10 @@ impl TypedStyle {
             }
             if !ext.grid_item.column.is_auto() || !ext.grid_item.row.is_auto() {
                 tx.edit::<GridItem>(node)
-                    .column_start(to_table_grid_line(ext.grid_item.column.start))
-                    .column_end(to_table_grid_line(ext.grid_item.column.end))
-                    .row_start(to_table_grid_line(ext.grid_item.row.start))
-                    .row_end(to_table_grid_line(ext.grid_item.row.end));
+                    .column_start(ext.grid_item.column.start)
+                    .column_end(ext.grid_item.column.end)
+                    .row_start(ext.grid_item.row.start)
+                    .row_end(ext.grid_item.row.end);
             }
         }
 
@@ -403,14 +403,5 @@ fn dim_to_length(dim: Dimension) -> Length {
         Dimension::Auto => Length::AUTO,
         Dimension::Points(v) => Length::points(v),
         Dimension::Percent(v) => Length::percent(v),
-    }
-}
-
-#[inline]
-fn to_table_grid_line(line: nve_tables::layout_ext::GridLine) -> TableGridLine {
-    match line {
-        nve_tables::layout_ext::GridLine::Auto => TableGridLine::Auto,
-        nve_tables::layout_ext::GridLine::Line(n) => TableGridLine::Line(n),
-        nve_tables::layout_ext::GridLine::Span(s) => TableGridLine::Span(s),
     }
 }

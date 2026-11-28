@@ -2,19 +2,10 @@
 
 use nve_store::{Length, NveTable, Res, WordEnum};
 
+pub use nve_abi::FlexDirection;
 pub use nve_store::GridLine;
 
 use super::resources::GridTracks;
-
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, WordEnum)]
-pub enum FlexDirection {
-    #[default]
-    Column = 0,
-    Row = 1,
-    ColumnReverse = 2,
-    RowReverse = 3,
-}
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, WordEnum)]
@@ -275,9 +266,6 @@ macro_rules! abi_layout_enum_bridge {
 }
 
 abi_layout_enum_bridge! {
-    FlexDirection <-> nve_abi::FlexDirection {
-        Column, Row, ColumnReverse, RowReverse,
-    }
     JustifyContent <-> nve_abi::FlexJustify {
         FlexStart, Center, FlexEnd, SpaceBetween, SpaceAround, SpaceEvenly,
     }

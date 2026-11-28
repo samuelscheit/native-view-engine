@@ -1,6 +1,8 @@
 //! Core geometric and color value types shared across NVE crates (`ColorRgba`, `Dimension`,
 //! `EdgeInsets`, `FlexDirection`, `FlexJustify`, `FlexAlign`).
 
+use crate::table::ValueSetDesc;
+
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +16,7 @@ pub enum Dimension {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum FlexDirection {
     #[default]
@@ -22,6 +24,51 @@ pub enum FlexDirection {
     Row = 1,
     ColumnReverse = 2,
     RowReverse = 3,
+}
+
+impl FlexDirection {
+    pub const COUNT: usize = 4;
+    pub const BITS: u8 = 2;
+    pub const ALL: &'static [Self] = &[
+        Self::Column,
+        Self::Row,
+        Self::ColumnReverse,
+        Self::RowReverse,
+    ];
+    /// Named variants mirrored to hosts as `NVE_FLEX_DIRECTION_<VARIANT>`.
+    pub const VALUE_SET: ValueSetDesc = ValueSetDesc {
+        name: "FlexDirection",
+        flags: false,
+        values: &[
+            ("Column", 0),
+            ("Row", 1),
+            ("ColumnReverse", 2),
+            ("RowReverse", 3),
+        ],
+    };
+
+    #[inline(always)]
+    pub const fn to_word(self) -> u32 {
+        self as u32
+    }
+
+    #[inline(always)]
+    pub const fn try_from_word(bits: u32) -> Option<Self> {
+        let idx = bits as usize;
+        if idx < Self::ALL.len() {
+            Some(Self::ALL[idx])
+        } else {
+            None
+        }
+    }
+
+    #[inline(always)]
+    pub const fn opt_to_word(v: Option<Self>) -> u32 {
+        match v {
+            None => 0,
+            Some(x) => (x as u32) + 1,
+        }
+    }
 }
 
 #[repr(u8)]

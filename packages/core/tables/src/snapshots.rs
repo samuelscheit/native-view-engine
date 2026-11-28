@@ -145,7 +145,7 @@ fn apply_visual_and_typo_words(
 
 fn apply_layout_words(l_words: &[Word], l_mask: &[u32], layout: &mut LayoutSnapshot) {
     if prop_written(l_mask, Layout::FLEX_DIRECTION) {
-        layout.flex_direction = Layout::FLEX_DIRECTION.get(l_words).into();
+        layout.flex_direction = Layout::FLEX_DIRECTION.get(l_words);
     }
     if prop_written(l_mask, Layout::JUSTIFY_CONTENT) {
         layout.justify_content = Layout::JUSTIFY_CONTENT.get(l_words).into();
@@ -283,22 +283,17 @@ fn apply_layout_ext_words(
         }
     }
     if has_gi {
-        let to_ext = |g: nve_store::GridLine| match g {
-            nve_store::GridLine::Auto => crate::layout_ext::GridLine::Auto,
-            nve_store::GridLine::Line(n) => crate::layout_ext::GridLine::Line(n),
-            nve_store::GridLine::Span(n) => crate::layout_ext::GridLine::Span(n),
-        };
         if prop_written(gi_mask, GridItem::COLUMN_START) {
-            ext.grid_item.column.start = to_ext(GridItem::COLUMN_START.get(gi_words));
+            ext.grid_item.column.start = GridItem::COLUMN_START.get(gi_words);
         }
         if prop_written(gi_mask, GridItem::COLUMN_END) {
-            ext.grid_item.column.end = to_ext(GridItem::COLUMN_END.get(gi_words));
+            ext.grid_item.column.end = GridItem::COLUMN_END.get(gi_words);
         }
         if prop_written(gi_mask, GridItem::ROW_START) {
-            ext.grid_item.row.start = to_ext(GridItem::ROW_START.get(gi_words));
+            ext.grid_item.row.start = GridItem::ROW_START.get(gi_words);
         }
         if prop_written(gi_mask, GridItem::ROW_END) {
-            ext.grid_item.row.end = to_ext(GridItem::ROW_END.get(gi_words));
+            ext.grid_item.row.end = GridItem::ROW_END.get(gi_words);
         }
     }
 }

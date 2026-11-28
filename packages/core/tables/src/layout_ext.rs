@@ -233,13 +233,7 @@ impl GridTrack {
 }
 
 /// Strictly typed CSS Grid line endpoint (`auto`, signed 1-based line index, or `span N`).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub enum GridLine {
-    #[default]
-    Auto,
-    Line(i16),
-    Span(u16),
-}
+pub use nve_store::GridLine;
 
 /// Start/end placement along a single CSS Grid axis (`grid-column` or `grid-row`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]

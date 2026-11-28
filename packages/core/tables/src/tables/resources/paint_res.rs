@@ -277,10 +277,10 @@ impl FlatResource for BackgroundFillRes {
     type View<'a> = BackgroundFillView<'a>;
 
     fn write_words(&self, out: &mut Vec<u32>) -> bool {
+        let start = out.len();
         match &self.0 {
             BackgroundFill::Solid(c) => {
                 out.extend_from_slice(&[0, c.to_u32()]);
-                true
             }
             BackgroundFill::Linear(lg) => {
                 if lg.stops.len() > MAX_ITEMS {
@@ -294,7 +294,6 @@ impl FlatResource for BackgroundFillRes {
                     out.push(s.offset.to_bits());
                     out.push(s.color.to_u32());
                 }
-                true
             }
             BackgroundFill::Radial(rg) => {
                 if rg.stops.len() > MAX_ITEMS {
@@ -310,9 +309,14 @@ impl FlatResource for BackgroundFillRes {
                     out.push(s.offset.to_bits());
                     out.push(s.color.to_u32());
                 }
-                true
             }
         }
+        // Producers intern exactly what replicas accept.
+        if !Self::validate(&out[start..]) {
+            out.truncate(start);
+            return false;
+        }
+        true
     }
 
     fn validate(words: &[u32]) -> bool {
@@ -331,17 +335,33 @@ impl FlatResource for BackgroundFillRes {
                         .checked_mul(2)
                         .and_then(|n| n.checked_add(3))
                         .is_some_and(|exp| words.len() == exp)
+                    && f32::from_bits(words[1]).is_finite()
+                    && words[3..]
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .all(|stop| f32::from_bits(stop[0]).is_finite())
             }
             2 => {
                 let Some(&count_u32) = words.get(4) else {
                     return false;
                 };
                 let count = count_u32 as usize;
+                let radius = f32::from_bits(words[3]);
                 count <= MAX_ITEMS
                     && count
                         .checked_mul(2)
                         .and_then(|n| n.checked_add(5))
                         .is_some_and(|exp| words.len() == exp)
+                    && f32::from_bits(words[1]).is_finite()
+                    && f32::from_bits(words[2]).is_finite()
+                    && radius.is_finite()
+                    && radius >= 0.0
+                    && words[5..]
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .all(|stop| f32::from_bits(stop[0]).is_finite())
             }
             _ => false,
         }

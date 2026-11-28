@@ -6,36 +6,24 @@
 //! intermediate patch structs or codecs.
 
 use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
-use nve_store::{GridLine as TableGridLine, Length, ResourceId, Rgba, RowPatch};
+use nve_store::{Length, ResourceId, Rgba, RowPatch};
 
 use crate::css_values::dim_to_length;
 use crate::interaction::CursorKind;
-use crate::layout_ext::{
-    GridLine as ExtGridLine, GridTrackPlacement, LayoutDirection, LayoutExt, PositionMode,
-};
+use crate::layout_ext::{GridTrackPlacement, LayoutDirection, LayoutExt, PositionMode};
 use crate::snapshots::{
     apply_patch_to_layout, apply_patch_to_layout_ext, apply_patch_to_visual, LayoutSnapshot,
     VisualSnapshot,
 };
 use crate::tables::{
-    AlignItems, Direction, Display, FlexDirection as TableFlexDir, FlexWrap, GridItem, GridLayout,
-    Interaction, JustifyContent, Layout, Overflow, Position, TextAlign, Transform, Typography,
-    Visual,
+    AlignItems, Direction, Display, FlexWrap, GridItem, GridLayout, Interaction, JustifyContent,
+    Layout, Overflow, Position, TextAlign, Transform, Typography, Visual,
 };
 use crate::transform::Transform2D;
 
 #[inline]
 fn sanitize(v: f32) -> f32 {
     if v.is_finite() { v } else { 0.0 }
-}
-
-#[inline]
-fn map_grid_line(g: ExtGridLine) -> TableGridLine {
-    match g {
-        ExtGridLine::Auto => TableGridLine::Auto,
-        ExtGridLine::Line(n) => TableGridLine::Line(n),
-        ExtGridLine::Span(n) => TableGridLine::Span(n),
-    }
 }
 
 /// Fluent core-table style & layout builders implemented directly on [`RowPatch`].
@@ -45,8 +33,7 @@ pub trait StylePatchExt: Sized {
 
     #[inline]
     fn flex_direction(mut self, dir: FlexDirection) -> Self {
-        self.row_patch_mut()
-            .set(Layout::FLEX_DIRECTION, TableFlexDir::from(dir));
+        self.row_patch_mut().set(Layout::FLEX_DIRECTION, dir);
         self
     }
     #[inline]
@@ -341,15 +328,15 @@ pub trait StylePatchExt: Sized {
     #[inline]
     fn grid_column(mut self, p: GridTrackPlacement) -> Self {
         self.row_patch_mut()
-            .set(GridItem::COLUMN_START, map_grid_line(p.start))
-            .set(GridItem::COLUMN_END, map_grid_line(p.end));
+            .set(GridItem::COLUMN_START, p.start)
+            .set(GridItem::COLUMN_END, p.end);
         self
     }
     #[inline]
     fn grid_row(mut self, p: GridTrackPlacement) -> Self {
         self.row_patch_mut()
-            .set(GridItem::ROW_START, map_grid_line(p.start))
-            .set(GridItem::ROW_END, map_grid_line(p.end));
+            .set(GridItem::ROW_START, p.start)
+            .set(GridItem::ROW_END, p.end);
         self
     }
     #[inline]
