@@ -79,24 +79,30 @@ class NveDrawListPainterTest {
         }
 
         val first = ImageBitmap(16, 16)
+        assertEquals(0, painter.validationCount)
         assertNull(runDraw(first, good, scale = 1f))
+        assertEquals(1, painter.validationCount)
         assertEquals(androidx.compose.ui.graphics.Color.Red, first.toPixelMap()[2, 2])
         assertEquals(0f, first.toPixelMap()[6, 6].alpha)
 
-        // Same `ByteArray` ref streams via `DrawList.streamValidated` at a new scale.
+        // Same `ByteArray` ref streams via `DrawList.streamValidated` at a new scale (cache hit).
         val second = ImageBitmap(16, 16)
         assertNull(runDraw(second, good, scale = 2f))
+        assertEquals(1, painter.validationCount)
         assertEquals(androidx.compose.ui.graphics.Color.Red, second.toPixelMap()[6, 6])
 
-        // Switching to a malformed ref returns the error; repeating the same bad ref hits the cached error.
+        // Switching to a malformed ref validates once; repeating the same bad ref hits the cached error.
         val third = ImageBitmap(16, 16)
         assertEquals(DrawList.Error.TRAILING_BYTES, runDraw(third, bad))
+        assertEquals(2, painter.validationCount)
         assertEquals(DrawList.Error.TRAILING_BYTES, runDraw(third, bad))
+        assertEquals(2, painter.validationCount)
         assertEquals(0f, third.toPixelMap()[2, 2].alpha)
 
         // Switching back to a valid ref validates and paints again.
         val fourth = ImageBitmap(16, 16)
         assertNull(runDraw(fourth, good, scale = 1f))
+        assertEquals(3, painter.validationCount)
         assertEquals(androidx.compose.ui.graphics.Color.Red, fourth.toPixelMap()[2, 2])
     }
 

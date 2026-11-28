@@ -363,23 +363,31 @@ class NveSurfaceComposeTest {
         controller.start(NveSource.Paired("ws://pair.example.test:9000/nve-wire"))
         compose.setContent { NveSurface(controller, Modifier.size(300.dp, 400.dp)) }
 
-        // Type 35 distinct values without echoes: entries v1..v3 are evicted, v4..v35 stay in-flight.
+        // Cycle 1: type 35 distinct values without echoes (v1..v3 evicted; v4..v35 stay in-flight).
         for (k in 1..35) {
             compose.onNodeWithTag("field").performTextReplacement("v$k")
         }
         compose.waitForIdle()
         compose.onNodeWithTag("field").assertTextEquals("v35")
 
-        // v4 is the oldest retained entry (32nd from the end): a late echo of v4 is ignored.
+        // Deliver v3 FIRST: because v3 was evicted at the 32-entry cap, it is treated as an app
+        // rewrite and resets the field to "v3" (an unbounded queue would ignore v3 and keep "v35").
+        host.scene = fieldScene("v3", intArrayOf(3))
+        compose.runOnIdle { controller.render() }
+        compose.waitForIdle()
+        compose.onNodeWithTag("field").assertTextEquals("v3")
+
+        // Cycle 2: in a fresh queue (cleared by the app rewrite above), type v1..v35 again and
+        // deliver v4 FIRST — the 32nd entry from the end stays retained, so the field keeps "v35".
+        for (k in 1..35) {
+            compose.onNodeWithTag("field").performTextReplacement("v$k")
+        }
+        compose.waitForIdle()
+        compose.onNodeWithTag("field").assertTextEquals("v35")
+
         host.scene = fieldScene("v4", intArrayOf(3))
         compose.runOnIdle { controller.render() }
         compose.waitForIdle()
         compose.onNodeWithTag("field").assertTextEquals("v35")
-
-        // v1 was evicted when the queue hit 32: receiving v1 is treated as an app rewrite.
-        host.scene = fieldScene("v1", intArrayOf(3))
-        compose.runOnIdle { controller.render() }
-        compose.waitForIdle()
-        compose.onNodeWithTag("field").assertTextEquals("v1")
     }
 }

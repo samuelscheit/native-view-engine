@@ -23,6 +23,8 @@ class NveDrawListPainter : DrawList.Sink {
     private var bytes: ByteArray? = null
     private var buffer: ByteBuffer? = null
     private var validationError: DrawList.Error? = null
+    internal var validationCount: Int = 0
+        private set
     private var stroke: Stroke? = null
     private var strokeWidth = Float.NaN
 
@@ -41,6 +43,7 @@ class NveDrawListPainter : DrawList.Sink {
         } else {
             buf = ByteBuffer.wrap(list)
             error = DrawList.validate(buf, 0, list.size)
+            validationCount++
             bytes = list
             buffer = buf
             validationError = error
