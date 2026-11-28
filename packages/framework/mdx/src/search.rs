@@ -1,10 +1,11 @@
 //! Zero-server compact binary full-text search index (`NVS2`).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use crate::ast::{Block, CompiledPage, DirectiveBlock, Inline};
 use crate::inline::append_inline_plain_text;
 pub use crate::search_codec::{NVS2_MAGIC, NVS2_VERSION, SearchIndexError};
+pub use crate::search_query::{SearchHitRef, SearchQueryScratch};
 
 /// Field weights stored in tenths (`weight * 10`).
 const WEIGHT_TITLE_X10: u16 = 40; // 4.0
@@ -183,131 +184,28 @@ impl SearchIndex {
         crate::search_codec::decode_index(bytes)
     }
 
-    /// Execute a ranked prefix + trigram full-text query returning up to `limit` hits.
+    /// Execute a ranked prefix + trigram full-text query returning up to `limit` owned hits.
     pub fn query(&self, text: &str, limit: usize) -> Vec<SearchHit> {
         if limit == 0 || self.docs.is_empty() {
             return Vec::new();
         }
-        let q_terms = tokenize_query(text);
-        if q_terms.is_empty() {
-            return Vec::new();
-        }
+        let mut scratch = SearchQueryScratch::new();
+        let mut refs = Vec::with_capacity(limit.min(self.docs.len()));
+        self.query_refs_into(text, limit, &mut scratch, &mut refs);
+        refs.iter().map(SearchHitRef::to_owned_hit).collect()
+    }
 
-        let mut scores: HashMap<u32, (f32, usize)> = HashMap::new();
-
-        for term in &q_terms {
-            let mut matched_docs: HashMap<u32, f32> = HashMap::new();
-
-            let start = self
-                .tokens
-                .partition_point(|(k, _)| k.as_str() < term.as_str());
-            for (cand, postings) in &self.tokens[start..] {
-                if !cand.starts_with(term.as_str()) {
-                    break;
-                }
-                let mult = if cand == term {
-                    2.0f32
-                } else {
-                    1.2 + 0.3 * (term.len() as f32 / cand.len().max(1) as f32)
-                };
-                for p in postings {
-                    let s = (p.weight_x10 as f32 / 10.0) * mult;
-                    matched_docs
-                        .entry(p.doc_id)
-                        .and_modify(|e| {
-                            if s > *e {
-                                *e = s;
-                            }
-                        })
-                        .or_insert(s);
-                }
-            }
-
-            let tris = extract_trigrams(term);
-            if !tris.is_empty() {
-                let mut tri_hits: HashMap<u32, (usize, f32)> = HashMap::new();
-                for tri in &tris {
-                    if let Ok(pos) = self.trigrams.binary_search_by(|(k, _)| k.cmp(tri)) {
-                        for p in &self.trigrams[pos].1 {
-                            let w = p.weight_x10 as f32 / 10.0;
-                            tri_hits
-                                .entry(p.doc_id)
-                                .and_modify(|(cnt, best_w)| {
-                                    *cnt += 1;
-                                    if w > *best_w {
-                                        *best_w = w;
-                                    }
-                                })
-                                .or_insert((1, w));
-                        }
-                    }
-                }
-                let min_needed = (tris.len() / 2).max(1);
-                for (doc_id, (cnt, best_w)) in tri_hits {
-                    if cnt >= min_needed {
-                        let coverage = cnt as f32 / tris.len() as f32;
-                        let s = best_w * 0.45 * coverage;
-                        matched_docs
-                            .entry(doc_id)
-                            .and_modify(|e| {
-                                if s > *e {
-                                    *e = s;
-                                }
-                            })
-                            .or_insert(s);
-                    }
-                }
-            }
-
-            for (doc_id, term_score) in matched_docs {
-                scores
-                    .entry(doc_id)
-                    .and_modify(|(total, hits)| {
-                        *total += term_score;
-                        *hits += 1;
-                    })
-                    .or_insert((term_score, 1));
-            }
-        }
-
-        let num_terms = q_terms.len();
-        let mut ranked: Vec<(u32, f32)> = scores
-            .into_iter()
-            .map(|(doc_id, (base, matched))| {
-                let bonus = if num_terms > 1 && matched == num_terms {
-                    1.25
-                } else {
-                    1.0
-                };
-                (doc_id, base * bonus)
-            })
-            .collect();
-
-        ranked.sort_by(|a, b| {
-            b.1.total_cmp(&a.1)
-                .then_with(|| {
-                    let da = &self.docs[a.0 as usize];
-                    let db = &self.docs[b.0 as usize];
-                    da.anchor.is_empty().cmp(&db.anchor.is_empty()).reverse()
-                })
-                .then_with(|| a.0.cmp(&b.0))
-        });
-
-        ranked
-            .into_iter()
-            .take(limit)
-            .filter_map(|(doc_id, score)| {
-                let doc = self.docs.get(doc_id as usize)?;
-                Some(SearchHit {
-                    route: doc.route.clone(),
-                    title: doc.title.clone(),
-                    section: doc.section.clone(),
-                    anchor: doc.anchor.clone(),
-                    excerpt: doc.excerpt.clone(),
-                    score,
-                })
-            })
-            .collect()
+    /// Execute a ranked prefix + trigram full-text query into `out` (clearing `out` first) using
+    /// a reusable [`SearchQueryScratch`] workspace, performing zero heap allocations in steady
+    /// state.
+    pub fn query_refs_into<'a>(
+        &'a self,
+        text: &str,
+        limit: usize,
+        scratch: &mut SearchQueryScratch,
+        out: &mut Vec<SearchHitRef<'a>>,
+    ) {
+        crate::search_query::query_refs_into(self, text, limit, scratch, out);
     }
 }
 
@@ -512,28 +410,6 @@ fn push_word_variants(raw: &str, out: &mut Vec<String>) {
             out.push(pl);
         }
     }
-}
-
-fn tokenize_query(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    for ch in text.chars() {
-        if ch.is_alphanumeric() || ch == '_' {
-            for lc in ch.to_lowercase() {
-                cur.push(lc);
-            }
-        } else if !cur.is_empty() {
-            if cur.len() >= 2 || out.is_empty() {
-                out.push(std::mem::take(&mut cur));
-            } else {
-                cur.clear();
-            }
-        }
-    }
-    if !cur.is_empty() {
-        out.push(cur);
-    }
-    out
 }
 
 fn extract_trigrams(term: &str) -> Vec<String> {

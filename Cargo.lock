@@ -3339,6 +3339,7 @@ name = "nve-http-web"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "criterion",
  "js-sys",
  "nve-query",
  "nve-rpc",
@@ -3416,6 +3417,7 @@ dependencies = [
 name = "nve-mdx"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-codec",
  "nve-hash",
 ]
@@ -3491,6 +3493,7 @@ dependencies = [
 name = "nve-router"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "dioxus-core",
  "dioxus-core-macro",
  "dioxus-signals",

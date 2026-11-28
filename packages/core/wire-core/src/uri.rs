@@ -105,20 +105,28 @@ pub fn format_cert_hash_hex(hash: &[u8; 32]) -> String {
     out
 }
 
-/// Parses a 64-character hex string (with optional `:` separators) into a 32-byte SHA-256 hash.
+/// Parses a 64-character hex string (with optional `:` separators) into a 32-byte SHA-256 hash
+/// with zero heap allocations.
 pub fn parse_cert_hash_hex(hex: &str) -> Result<[u8; 32], NveWireError> {
-    let cleaned: Vec<u8> = hex
-        .bytes()
-        .filter(|&b| b != b':' && !b.is_ascii_whitespace())
-        .collect();
-    if cleaned.len() != 64 {
+    let mut cleaned = [0u8; 64];
+    let mut count = 0usize;
+    for b in hex.bytes() {
+        if b == b':' || b.is_ascii_whitespace() {
+            continue;
+        }
+        if count == 64 {
+            return Err(NveWireError::InvalidPayload("cert_hash must be 64 hex chars"));
+        }
+        cleaned[count] = b;
+        count += 1;
+    }
+    if count != 64 {
         return Err(NveWireError::InvalidPayload("cert_hash must be 64 hex chars"));
     }
     let mut out = [0u8; 32];
-    let (pairs, _) = cleaned.as_chunks::<2>();
-    for (i, pair) in pairs.iter().enumerate() {
-        let hi = decode_hex_nibble(pair[0])?;
-        let lo = decode_hex_nibble(pair[1])?;
+    for i in 0..32 {
+        let hi = decode_hex_nibble(cleaned[i * 2])?;
+        let lo = decode_hex_nibble(cleaned[i * 2 + 1])?;
         out[i] = (hi << 4) | lo;
     }
     Ok(out)

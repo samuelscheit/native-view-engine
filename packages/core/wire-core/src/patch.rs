@@ -291,26 +291,40 @@ impl NveNodePatchDeltaBuilder {
     }
 
     pub fn encode(&self) -> Result<Vec<u8>, NveWireError> {
+        let total = NVE_NODE_PATCH_DELTA_HEADER_SIZE
+            + self.patches.len().saturating_mul(PATCH_BYTE_SIZE)
+            + self.strings.len();
+        let mut out = Vec::with_capacity(total);
+        self.encode_into(&mut out)?;
+        Ok(out)
+    }
+
+    /// Encodes the `NodePatchDelta` payload into `out` (clearing `out` first) with zero heap
+    /// allocations once `out` has sufficient capacity.
+    pub fn encode_into(&self, out: &mut Vec<u8>) -> Result<(), NveWireError> {
         if self.patches.len() > MAX_PATCHES_PER_DELTA {
             return Err(NveWireError::InvalidPayload("patch count exceeds 65536"));
         }
         let total = NVE_NODE_PATCH_DELTA_HEADER_SIZE
             + self.patches.len() * PATCH_BYTE_SIZE
             + self.strings.len();
-        let mut w = ByteWriter::with_capacity(total);
-        w.write_u32(self.patches.len() as u32);
-        w.write_u32(self.strings.len() as u32);
-        for p in &self.patches {
-            w.write_u32(p.node_id.raw());
-            w.write_u16(p.field_tag);
-            w.write_u16(p.flags);
-            w.write_u32(p.value_lo);
-            w.write_u32(p.value_hi);
-            w.write_u32(p.transition_ms.raw());
-            w.write_u32(p.reserved);
-        }
-        w.write_raw(&self.strings);
-        Ok(w.into_bytes())
+        out.clear();
+        ByteWriter::with_buf(out, |w| {
+            w.reserve(total);
+            w.write_u32(self.patches.len() as u32);
+            w.write_u32(self.strings.len() as u32);
+            for p in &self.patches {
+                w.write_u32(p.node_id.raw());
+                w.write_u16(p.field_tag);
+                w.write_u16(p.flags);
+                w.write_u32(p.value_lo);
+                w.write_u32(p.value_hi);
+                w.write_u32(p.transition_ms.raw());
+                w.write_u32(p.reserved);
+            }
+            w.write_raw(&self.strings);
+        });
+        Ok(())
     }
 }
 
@@ -323,6 +337,25 @@ pub struct NveNodePatchDeltaView<'a> {
 
 impl<'a> NveNodePatchDeltaView<'a> {
     pub fn decode(bytes: &'a [u8]) -> Result<Self, NveWireError> {
+        let mut patches = Vec::new();
+        let string_table = Self::decode_into(bytes, &mut patches)?;
+        Ok(Self {
+            patches,
+            string_table,
+        })
+    }
+
+    /// Decodes and validates a `NodePatchDelta` payload into a reusable `out` buffer (clearing it
+    /// first) with zero heap allocations once `out` has sufficient capacity.
+    ///
+    /// Returns the validated UTF-8 string-table slice borrowed from `bytes` for lookups via
+    /// [`Self::resolve_patch_str`]. On error, `out` is cleared so partial untrusted patches are
+    /// never exposed.
+    pub fn decode_into(
+        bytes: &'a [u8],
+        out: &mut Vec<NveNodePatch>,
+    ) -> Result<&'a [u8], NveWireError> {
+        out.clear();
         if bytes.len() < NVE_NODE_PATCH_DELTA_HEADER_SIZE {
             return Err(NveWireError::Truncated {
                 expected: NVE_NODE_PATCH_DELTA_HEADER_SIZE,
@@ -354,10 +387,12 @@ impl<'a> NveNodePatchDeltaView<'a> {
 
         let str_start = NVE_NODE_PATCH_DELTA_HEADER_SIZE + patches_bytes;
         let string_table = &bytes[str_start..];
-        let mut patches = Vec::with_capacity(patch_count);
+        out.reserve(patch_count);
         for _ in 0..patch_count {
-            let node_id = NodeId::from_raw(r.read_u32()?)
-                .ok_or(NveWireError::InvalidPayload("null node_id in NveNodePatch"))?;
+            let Some(node_id) = NodeId::from_raw(r.read_u32()?) else {
+                out.clear();
+                return Err(NveWireError::InvalidPayload("null node_id in NveNodePatch"));
+            };
             let p = NveNodePatch {
                 node_id,
                 field_tag: r.read_u16()?,
@@ -368,28 +403,29 @@ impl<'a> NveNodePatchDeltaView<'a> {
                 reserved: r.read_u32()?,
             };
             if p.field().is_none() || p.reserved != 0 {
+                out.clear();
                 return Err(NveWireError::InvalidPayload(
                     "invalid NveNodePatch field or reserved",
                 ));
             }
             if (p.flags & NVE_NODE_PATCH_FLAG_STRING_SPAN) != 0 {
-                let end = (p.value_lo as usize)
-                    .checked_add(p.value_hi as usize)
-                    .ok_or(NveWireError::InvalidPayload("patch string span overflow"))?;
+                let Some(end) = (p.value_lo as usize).checked_add(p.value_hi as usize) else {
+                    out.clear();
+                    return Err(NveWireError::InvalidPayload("patch string span overflow"));
+                };
                 if end > string_table.len() {
+                    out.clear();
                     return Err(NveWireError::InvalidPayload("patch string span out of bounds"));
                 }
                 if std::str::from_utf8(&string_table[p.value_lo as usize..end]).is_err() {
+                    out.clear();
                     return Err(NveWireError::InvalidUtf8);
                 }
             }
-            patches.push(p);
+            out.push(p);
         }
 
-        Ok(Self {
-            patches,
-            string_table,
-        })
+        Ok(string_table)
     }
 
     #[inline]
@@ -399,11 +435,26 @@ impl<'a> NveNodePatchDeltaView<'a> {
 
     #[inline]
     pub fn patch_str(&self, patch: &NveNodePatch) -> Result<&'a str, NveWireError> {
+        Self::resolve_patch_str(self.string_table, patch)
+    }
+
+    /// Resolves the UTF-8 string referenced by `patch` within a validated `string_table` slice
+    /// returned by [`Self::decode_into`].
+    #[inline]
+    pub fn resolve_patch_str(
+        string_table: &'a [u8],
+        patch: &NveNodePatch,
+    ) -> Result<&'a str, NveWireError> {
         if !patch.is_string_span() {
             return Err(NveWireError::InvalidPayload("patch is not a string span"));
         }
         let start = patch.value_lo as usize;
-        let end = start + patch.value_hi as usize;
-        std::str::from_utf8(&self.string_table[start..end]).map_err(|_| NveWireError::InvalidUtf8)
+        let end = start
+            .checked_add(patch.value_hi as usize)
+            .ok_or(NveWireError::InvalidPayload("patch string span overflow"))?;
+        let slice = string_table
+            .get(start..end)
+            .ok_or(NveWireError::InvalidPayload("patch string span out of bounds"))?;
+        std::str::from_utf8(slice).map_err(|_| NveWireError::InvalidUtf8)
     }
 }
