@@ -26,5 +26,12 @@ nve-tables = { workspace = true }
 nve-store = { workspace = true }
 nve-web-html-web = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "docs_bench"
+harness = false
+
 [lints]
 workspace = true

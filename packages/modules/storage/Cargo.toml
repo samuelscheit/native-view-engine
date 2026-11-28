@@ -9,5 +9,12 @@ description = "Standalone pure-Rust crash-safe NVK2 binary KV store library"
 nve-codec = { workspace = true }
 nve-hash = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "storage_bench"
+harness = false
+
 [lints]
 workspace = true

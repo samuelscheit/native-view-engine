@@ -3121,6 +3121,7 @@ version = "0.1.0"
 name = "nve-docs"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "dioxus-core",
  "dioxus-core-macro",
  "dioxus-signals",
@@ -3488,6 +3489,7 @@ name = "nve-query-dioxus"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "criterion",
  "dioxus-core",
  "dioxus-core-macro",
  "dioxus-signals",
@@ -3635,6 +3637,7 @@ dependencies = [
 name = "nve-storage"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-codec",
  "nve-hash",
 ]
