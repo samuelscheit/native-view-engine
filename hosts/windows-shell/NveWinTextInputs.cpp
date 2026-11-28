@@ -213,12 +213,16 @@ bool WinTextInputs::on_command(WPARAM wparam, LPARAM lparam) {
   switch (HIWORD(wparam)) {
     case EN_CHANGE: {
       if (f.text.writing()) return true;  // a host write
-      // The shared edit path: the dispatch may remove the field (re-found by id); a transformed or
-      // rejected answer of an in-process app is shown now (a rejecting app republishes nothing).
+      // The shared edit path: the dispatch may remove the field (re-found by id) or destroy the
+      // window owning these inputs (`alive`, checked before `this` is touched again); a
+      // transformed or rejected answer of an in-process app is shown now (a rejecting app
+      // republishes nothing).
+      NveWinHost* const host = host_;
       (void)host::dispatch_controlled_edit<Field>(
           f.text, control_text(control),
-          [&](std::string_view sent) { return host_->dispatch_text_change(id, sent); },  // overlay re-sync is posted
-          [&]() -> host::ControlledAnswer<Field> {
+          [host, id](std::string_view sent) { return host->dispatch_text_change(id, sent); },  // overlay re-sync is posted
+          [this, id, alive = alive_]() -> host::ControlledAnswer<Field> {
+            if (!alive->load(std::memory_order_acquire) || host_ == nullptr) return {};
             const auto it = fields_.find(id);
             const WinNodeVisual* v = host_->is_paired() ? nullptr : host_->visual_tree().find(id);
             if (it == fields_.end() || it->second.hwnd == nullptr || v == nullptr) return {};

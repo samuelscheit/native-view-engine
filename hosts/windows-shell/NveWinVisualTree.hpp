@@ -129,6 +129,8 @@ struct WinNodeVisual {
   Rect bounds;                        // painted area at the last sync (damage tracking)
   float scroll_x = 0.0f;              // published visual shift of the descendants
   float scroll_y = 0.0f;
+  uint64_t touched_pass = 0u;  // damage pass that queued this node's bounds (dedup)
+  uint64_t subtree_pass = 0u;  // damage pass that queued every descendant's bounds
   bool synced = false;
 
   [[nodiscard]] bool wants(NveEventKind k) const noexcept {
@@ -255,9 +257,12 @@ class NveWinVisualTree {
   void apply_scroll_offsets(const host::SceneReader& scene);
   void resort(std::vector<uint32_t>& paint_order, std::span<const uint32_t> children) const;
   void settle_damage();
-  /// `v`'s descendants moved with it (its origin or scroll offset changed): their painted bounds
-  /// are recomputed (old and new areas damaged) by `settle_damage`.
-  void touch_descendants(const WinNodeVisual& v);
+  /// `v`'s bounds are recomputed (old and new areas damaged) by `settle_damage`; once per pass.
+  void touch(WinNodeVisual& v);
+  /// `v`'s descendants moved with it (its origin, parent or scroll offset changed): their painted
+  /// bounds are recomputed by `settle_damage`. A subtree is walked once per pass, so nested moved
+  /// ancestors queue each descendant once.
+  void touch_descendants(WinNodeVisual& v);
 
   template <class Visitor>
   void walk_children(const PaintFrame& frame, float sx, float sy, bool clips, std::span<const uint32_t> ids,
@@ -286,7 +291,8 @@ class NveWinVisualTree {
   std::vector<uint32_t> root_paint_order_;
   std::vector<uint32_t> text_inputs_;
   std::vector<uint32_t> scrolled_;  // nodes with a non-zero published offset
-  std::vector<uint32_t> touched_;   // views whose bounds must be recomputed (damage)
+  std::vector<uint32_t> touched_;   // views whose bounds must be recomputed (damage), unique per pass
+  uint64_t touch_pass_ = 1u;        // current damage pass (`settle_damage` ends it)
   std::vector<uint32_t> subtree_;   // `touch_descendants` scratch
   std::vector<uint32_t> resort_;    // parents whose children's z-index changed (0: root)
   Rect damage_;

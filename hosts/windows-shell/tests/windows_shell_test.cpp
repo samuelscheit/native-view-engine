@@ -291,6 +291,54 @@ void test_damage_follows_moved_and_removed_children() {
   NVE_CHECK(removed.y <= scrolled_child.y && removed.bottom() >= scrolled_child.bottom());
 }
 
+/// A reparented container's descendants are painted under the new parent: their damage bounds
+/// follow (old + new areas), even when the container's own parent-relative origin is unchanged
+/// and a descendant overflows it.
+void test_damage_follows_reparented_subtree() {
+  constexpr uint32_t kA = 2u, kB = 3u, kMoved = 4u, kOverflow = 5u;
+  ScriptedApp app;
+  h::Nve2Writer& w = app.w;
+  w.create(1u);
+  w.set(1u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_FLEX_DIRECTION, NVE_FLEX_DIRECTION_ROW);
+  w.create(kA);
+  sized(w, kA, 40.0f, 40.0f);
+  w.create(kB);
+  sized(w, kB, 40.0f, 40.0f);
+  w.set(kB, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_MARGIN_LEFT, h::length_points(200.0f));
+  w.create(kMoved);
+  sized(w, kMoved, 10.0f, 10.0f);
+  w.create(kOverflow);
+  sized(w, kOverflow, 20.0f, 60.0f);  // overflows both its parent and the 40px boxes
+  w.set(kOverflow, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(255, 0, 0));
+  const uint32_t overflow[] = {kOverflow};
+  w.set_children(kMoved, overflow);
+  const uint32_t moved[] = {kMoved};
+  w.set_children(kA, moved);
+  const uint32_t top[] = {kA, kB};
+  w.set_children(1u, top);
+  const auto host_owner = make_host(WinHostConfig{.width = 400.0f, .height = 300.0f});
+  NveWinHost& host = *host_owner;
+  NVE_CHECK(host.attach_interface(&ScriptedApp::get_interface));
+  (void)host.take_damage();
+  const Rect before = abs_rect(host, kOverflow);
+
+  w.set_children(kA, std::span<const uint32_t>());
+  w.set_children(kB, moved);
+  flush(host);
+  NVE_CHECK(node(host, kMoved).parent == kB);
+  const Rect after = abs_rect(host, kOverflow);
+  NVE_CHECK(approx(after.x, before.x + 240.0f, 0.5) && approx(after.y, before.y, 0.5));
+  const Rect damage = host.take_damage();
+  NVE_CHECK(damage.x <= before.x && damage.right() >= after.right());
+  NVE_CHECK(damage.bottom() >= after.bottom() && damage.bottom() < 300.0f);  // the overflowing child, not the surface
+
+  // Its cached bounds moved too: a paint-only change damages only where it is painted now.
+  w.set(kOverflow, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(0, 0, 255));
+  flush(host);
+  const Rect repaint = host.take_damage();
+  NVE_CHECK(approx(repaint.x, after.x, 0.5) && approx(repaint.width, after.width, 0.5));
+}
+
 }  // namespace
 
 void nve_test_win_media_and_input();
@@ -304,6 +352,7 @@ int main() {
   test_modules_hot_reload_and_state();
   test_live_kitchen_sink_if_configured();
   test_damage_follows_moved_and_removed_children();
+  test_damage_follows_reparented_subtree();
   nve_test_win_media_and_input();
   nve_test_win_canvas_scroll_and_windows();
 #if defined(_WIN32)

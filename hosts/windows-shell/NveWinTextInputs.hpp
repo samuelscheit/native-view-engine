@@ -15,7 +15,9 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 
@@ -24,7 +26,10 @@ namespace nve::win {
 class WinTextInputs {
  public:
   WinTextInputs() = default;
-  ~WinTextInputs() { detach(); }
+  ~WinTextInputs() {
+    alive_->store(false, std::memory_order_release);
+    detach();
+  }
   WinTextInputs(const WinTextInputs&) = delete;
   WinTextInputs& operator=(const WinTextInputs&) = delete;
 
@@ -95,6 +100,8 @@ class WinTextInputs {
   std::unordered_map<uint32_t, Field> fields_;  // packed `NodeId` -> control
   UINT next_control_id_ = 0x4E00u;
   bool busy_ = false;
+  /// Cleared on destruction: an `EN_CHANGE` dispatch may destroy the window owning `this`.
+  std::shared_ptr<std::atomic<bool>> alive_ = std::make_shared<std::atomic<bool>>(true);
 };
 
 }  // namespace nve::win

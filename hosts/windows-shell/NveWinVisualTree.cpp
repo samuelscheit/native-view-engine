@@ -158,6 +158,7 @@ void NveWinVisualTree::clear() {
   text_inputs_.clear();
   scrolled_.clear();
   touched_.clear();
+  ++touch_pass_;
   resort_.clear();
   root_id_ = 0u;
   root_background_ = 0u;
@@ -228,13 +229,25 @@ void NveWinVisualTree::set_scroll_offset(uint32_t id, float x, float y) {
   ++revision_;
 }
 
-void NveWinVisualTree::touch_descendants(const WinNodeVisual& v) {
+void NveWinVisualTree::touch(WinNodeVisual& v) {
+  if (v.touched_pass == touch_pass_) return;
+  v.touched_pass = touch_pass_;
+  touched_.push_back(v.id);
+}
+
+void NveWinVisualTree::touch_descendants(WinNodeVisual& v) {
+  if (v.subtree_pass == touch_pass_) return;
+  v.subtree_pass = touch_pass_;
   subtree_.assign(v.children.begin(), v.children.end());
   while (!subtree_.empty()) {
     const uint32_t id = subtree_.back();
     subtree_.pop_back();
-    touched_.push_back(id);
-    if (const WinNodeVisual* c = find(id)) subtree_.insert(subtree_.end(), c->children.begin(), c->children.end());
+    WinNodeVisual* c = find_mut(id);
+    if (c == nullptr) continue;
+    touch(*c);
+    if (c->subtree_pass == touch_pass_) continue;  // an ancestor moved too: already queued
+    c->subtree_pass = touch_pass_;
+    subtree_.insert(subtree_.end(), c->children.begin(), c->children.end());
   }
 }
 
@@ -248,6 +261,7 @@ void NveWinVisualTree::settle_damage() {
     v->bounds = now;
   }
   touched_.clear();
+  ++touch_pass_;
 }
 
 Rect NveWinVisualTree::take_damage() noexcept {
@@ -319,17 +333,19 @@ void NveWinVisualTree::Adapter::update(Handle& handle, const host::NodeData& nod
   WinNodeVisual& v = *handle;
   ++tree->updated_;
   ++tree->revision_;
-  tree->touched_.push_back(v.id);
+  tree->touch(v);
   if (v.synced && v.visual.z_index != node.visual.z_index) tree->resort_.push_back(node.parent);
   // A visibility / opacity change repaints descendants that may overflow this node's bounds.
   if (v.synced && !v.children.empty() &&
       (v.visual.opacity != node.visual.opacity || v.visual.visibility != node.visual.visibility)) {
     tree->full_damage_ = true;
   }
+  const bool reparented = v.synced && v.parent != node.parent;
   v.parent = node.parent;
   const Rect local = rect_of(node.local);
-  // Descendants move with a container's origin; their cached damage bounds must follow.
-  if (v.synced && (local.x != v.local.x || local.y != v.local.y)) tree->touch_descendants(v);
+  // Descendants move with a container's origin (or its new parent); their cached damage bounds
+  // must follow.
+  if (reparented || (v.synced && (local.x != v.local.x || local.y != v.local.y))) tree->touch_descendants(v);
   v.local = local;
   v.content = rect_of(node.content);
   // Resources are re-read when their id changed or the frame republished them (same id, new bytes).
@@ -380,7 +396,7 @@ void NveWinVisualTree::Adapter::move(Handle& handle, const host::NodeGeometry& n
   if (local.x != v.local.x || local.y != v.local.y) tree->touch_descendants(v);  // they move with it
   v.local = local;
   v.content = rect_of(node.content);
-  tree->touched_.push_back(v.id);
+  tree->touch(v);
   ++tree->revision_;
 }
 
@@ -402,14 +418,14 @@ void NveWinVisualTree::Adapter::destroy(uint32_t id, Handle& handle) {
   ++tree->revision_;
 }
 
-void NveWinVisualTree::Adapter::set_children(const host::NodeGeometry& parent, Handle* parent_view,
+void NveWinVisualTree::Adapter::set_children(const host::NodeGeometry&, Handle* parent_view,
                                              std::span<Handle* const> kids) {
   std::vector<uint32_t>& out = parent_view != nullptr ? (*parent_view)->children : tree->root_children_;
   out.clear();
   for (Handle* kid : kids) out.push_back((*kid)->id);
   if (parent_view != nullptr) {
     tree->resort((*parent_view)->paint_order, out);
-    tree->touched_.push_back(parent.id);  // reordered children repaint inside the parent
+    tree->touch(**parent_view);  // reordered children repaint inside the parent
   } else {
     tree->resort(tree->root_paint_order_, out);
     tree->full_damage_ = true;
