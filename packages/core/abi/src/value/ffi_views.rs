@@ -106,14 +106,40 @@ impl<'a> NveValueRef<'a> {
     #[inline] pub fn get(&self, key: &str) -> Option<NveValueRef<'a>> { self.as_map()?.get(key) }
 }
 
-/// The full value, recursively (bytes, elements, and entries), so two values with equal `Debug`
-/// output are equal; an invalid pointer or key prints as `Invalid`.
+const MAX_DEBUG_DEPTH: usize = 16;
+const MAX_DEBUG_BYTES_PREVIEW: usize = 64;
+
+/// Formats the value for diagnostics, capping container recursion at 16 levels and byte previews
+/// at 64 bytes so deeply nested / cyclic FFI trees or multi-megabyte buffers never overflow the
+/// stack or flood logs; an invalid pointer or key prints as `Invalid`.
 impl std::fmt::Debug for NveValueRef<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.fmt_bounded(f, 0)
+    }
+}
+
+impl NveValueRef<'_> {
+    fn fmt_bounded(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
         struct Invalid;
         impl std::fmt::Debug for Invalid {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.write_str("Invalid")
+            }
+        }
+        struct Bounded<'a>(NveValueRef<'a>, usize);
+        impl std::fmt::Debug for Bounded<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                self.0.fmt_bounded(f, self.1)
+            }
+        }
+        struct BytesPreview<'a>(&'a [u8]);
+        impl std::fmt::Debug for BytesPreview<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                if self.0.len() <= MAX_DEBUG_BYTES_PREVIEW {
+                    self.0.fmt(f)
+                } else {
+                    write!(f, "{:?}.. ({} bytes)", &self.0[..MAX_DEBUG_BYTES_PREVIEW], self.0.len())
+                }
             }
         }
         match self.tag() {
@@ -122,21 +148,33 @@ impl std::fmt::Debug for NveValueRef<'_> {
             Some(NveValueTag::I64) => f.debug_tuple("I64").field(&self.as_i64()).finish(),
             Some(NveValueTag::F64) => f.debug_tuple("F64").field(&self.as_f64()).finish(),
             Some(NveValueTag::Str) => f.debug_tuple("Str").field(&self.try_as_str()).finish(),
-            Some(NveValueTag::Bytes) => f.debug_tuple("Bytes").field(&self.as_bytes()).finish(),
-            Some(NveValueTag::Array) => match self.as_array() {
-                Some(a) => f.debug_list().entries(a.iter()).finish(),
-                None => Invalid.fmt(f),
-            },
-            Some(NveValueTag::Map) => match self.as_map() {
-                Some(m) => f
-                    .debug_map()
-                    .entries(m.try_iter().map(|e| match e {
-                        Ok((k, v)) => (Ok(k), Some(v)),
-                        Err(_) => (Err(Invalid), None),
-                    }))
-                    .finish(),
-                None => Invalid.fmt(f),
-            },
+            Some(NveValueTag::Bytes) => {
+                f.debug_tuple("Bytes").field(&self.as_bytes().map(BytesPreview)).finish()
+            }
+            Some(NveValueTag::Array) => {
+                if depth >= MAX_DEBUG_DEPTH {
+                    return f.write_str("[...]");
+                }
+                match self.as_array() {
+                    Some(a) => f.debug_list().entries(a.iter().map(|v| Bounded(v, depth + 1))).finish(),
+                    None => f.write_str("Invalid"),
+                }
+            }
+            Some(NveValueTag::Map) => {
+                if depth >= MAX_DEBUG_DEPTH {
+                    return f.write_str("{...}");
+                }
+                match self.as_map() {
+                    Some(m) => f
+                        .debug_map()
+                        .entries(m.try_iter().map(|e| match e {
+                            Ok((k, v)) => (Ok(k), Some(Bounded(v, depth + 1))),
+                            Err(_) => (Err(Invalid), None),
+                        }))
+                        .finish(),
+                    None => f.write_str("Invalid"),
+                }
+            }
             None => f.debug_tuple("InvalidTag").field(&self.raw.tag).finish(),
         }
     }

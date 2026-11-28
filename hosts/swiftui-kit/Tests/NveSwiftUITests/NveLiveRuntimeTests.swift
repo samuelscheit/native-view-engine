@@ -16,11 +16,28 @@ final class NveLiveRuntimeTests: XCTestCase {
         return path
     }
 
+    private enum RuntimeLoadError: Error, CustomStringConvertible {
+        case dlopenFailed(path: String, reason: String)
+        case missingSymbol(path: String, symbol: String)
+
+        var description: String {
+            switch self {
+            case let .dlopenFailed(path, reason): "dlopen(\(path)) failed: \(reason)"
+            case let .missingSymbol(path, symbol): "dlsym(\(path), \(symbol)) returned nil"
+            }
+        }
+    }
+
     /// The runtime's C API, `dlopen`ed once per process (the runtime is the host's library, unlike apps).
+    /// Skips only when `NVE_RUNTIME_LIB` is unset; fails if it is set but cannot be loaded.
     private static func runtimeApi() throws -> UnsafePointer<NveRuntimeApi> {
         let path = try library("NVE_RUNTIME_LIB")
-        guard let lib = dlopen(path, RTLD_NOW | RTLD_LOCAL), let sym = dlsym(lib, "nve_runtime_get_interface") else {
-            throw XCTSkip("cannot load \(path)")
+        guard let lib = dlopen(path, RTLD_NOW | RTLD_LOCAL) else {
+            let reason = dlerror().map { String(cString: $0) } ?? "unknown error"
+            throw RuntimeLoadError.dlopenFailed(path: path, reason: reason)
+        }
+        guard let sym = dlsym(lib, "nve_runtime_get_interface") else {
+            throw RuntimeLoadError.missingSymbol(path: path, symbol: "nve_runtime_get_interface")
         }
         typealias GetInterface = @convention(c) (UInt32) -> UnsafePointer<NveRuntimeApi>?
         return try XCTUnwrap(unsafeBitCast(sym, to: GetInterface.self)(NVE_RUNTIME_ABI_VERSION))

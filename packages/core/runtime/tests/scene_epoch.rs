@@ -70,11 +70,11 @@ fn every_scene_reset_bumps_the_epoch_and_plain_frames_do_not() {
     rt.attach_app(Box::new(OneFrameApp(Some(keyframe("app")), Vec::new()))).expect("attach");
     let _ = rt.tick(0.0);
     let (e4, _) = epoch(&rt);
-    assert!(e4 != e3, "attaching an app discards the submitted scene");
+    assert_eq!(e4, e3.wrapping_add(1), "attaching an app discards the submitted scene");
     let _ = rt.tick(0.0);
     assert_eq!(epoch(&rt).0, e4, "ticking an unchanged surface keeps the epoch");
     rt.detach_app().expect("detach");
-    assert!(epoch(&rt).0 != e4, "detaching the app discards its scene");
+    assert_eq!(epoch(&rt).0, e4.wrapping_add(1), "detaching the app discards its scene");
 }
 
 /// Valid `NVE2` header and first op, then an unknown op: the body fails mid-transaction.

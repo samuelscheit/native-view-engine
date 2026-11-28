@@ -321,3 +321,83 @@ fn prop_slice_and_command_slice_zero_copy_roundtrip_and_guards() {
         assert!(NveCommandSliceRef::try_from_raw(misaligned_cmd).is_none());
     }
 }
+
+#[test]
+fn debug_nve_value_ref_caps_recursion_depth_and_byte_preview() {
+    // 1. Byte preview: <= 64 bytes print in full; > 64 bytes truncate to 64 + total count.
+    let small: Vec<u8> = (0..64u8).collect();
+    let large: Vec<u8> = (0..200u8).collect();
+    let v_small = NveValue::from_bytes(&small);
+    let v_large = NveValue::from_bytes(&large);
+    // SAFETY: Stack buffers outlive the borrowed refs.
+    unsafe {
+        let s_small = format!("{:?}", v_small.as_ref());
+        assert!(!s_small.contains(".. ("), "64-byte slice prints in full: {s_small}");
+        assert!(s_small.contains("63]"), "includes last byte: {s_small}");
+
+        let s_large = format!("{:?}", v_large.as_ref());
+        assert!(s_large.contains(".. (200 bytes)"), "truncates with total length: {s_large}");
+        assert!(s_large.contains("63].. (200 bytes)"), "preview ends at 64th byte: {s_large}");
+        assert!(!s_large.contains("199"), "does not dump tail bytes: {s_large}");
+    }
+
+    // 2. Deeply nested Array (20 levels) caps at depth 16 and prints `[...]`.
+    let mut arr_nodes = [NveValue::i64(999); 21];
+    for i in (0..20).rev() {
+        arr_nodes[i] = NveValue {
+            tag: NveValueTag::Array as u32,
+            data: NveValueData {
+                array_val: NveValueArray {
+                    ptr: &arr_nodes[i + 1] as *const NveValue,
+                    len: 1,
+                },
+            },
+        };
+    }
+    // SAFETY: `arr_nodes` is stationary on the stack for the duration of formatting.
+    let s_arr = unsafe { format!("{:?}", arr_nodes[0].as_ref()) };
+    assert!(s_arr.contains("[...]"), "array depth capped at 16: {s_arr}");
+    assert!(!s_arr.contains("999"), "leaf beyond depth 16 is omitted: {s_arr}");
+
+    // 3. Deeply nested Map (20 levels) caps at depth 16 and prints `{...}`.
+    let mut map_entries = [NveMapEntry::new("k", NveValue::i64(777)); 20];
+    for i in (0..19).rev() {
+        map_entries[i].value = NveValue {
+            tag: NveValueTag::Map as u32,
+            data: NveValueData {
+                map_val: NveValueMap {
+                    ptr: &map_entries[i + 1] as *const NveMapEntry,
+                    len: 1,
+                },
+            },
+        };
+    }
+    let root_map = NveValue {
+        tag: NveValueTag::Map as u32,
+        data: NveValueData {
+            map_val: NveValueMap {
+                ptr: &map_entries[0] as *const NveMapEntry,
+                len: 1,
+            },
+        },
+    };
+    // SAFETY: `map_entries` and `root_map` are stationary on the stack during formatting.
+    let s_map = unsafe { format!("{:?}", root_map.as_ref()) };
+    assert!(s_map.contains("{...}"), "map depth capped at 16: {s_map}");
+    assert!(!s_map.contains("777"), "leaf beyond depth 16 is omitted: {s_map}");
+
+    // 4. Cyclic self-referential Array terminates cleanly without stack overflow.
+    let mut cyclic = NveValue::null();
+    cyclic = NveValue {
+        tag: NveValueTag::Array as u32,
+        data: NveValueData {
+            array_val: NveValueArray {
+                ptr: &cyclic as *const NveValue,
+                len: 1,
+            },
+        },
+    };
+    // SAFETY: `cyclic` is a live initialized `NveValue` on the stack during formatting.
+    let s_cyc = unsafe { format!("{:?}", cyclic.as_ref()) };
+    assert!(s_cyc.contains("[...]"), "cyclic value terminates at depth cap: {s_cyc}");
+}

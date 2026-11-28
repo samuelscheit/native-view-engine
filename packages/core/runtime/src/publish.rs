@@ -10,8 +10,6 @@ use crate::builder::Timer;
 use crate::state::{layout_rect_to_abi, PublishedResources, SurfaceState};
 
 impl SurfaceState {
-    /// Clears all borrowed pointers in `published_view` and `published_tables` so an early error,
-    /// app detach/swap, or unwind can never expose dangling pointers to `scene_acquire`.
     /// Discards the committed scene, layout caches and published delta into a new
     /// `scene_epoch` (the next commit starts from a different or reset store).
     pub(crate) fn reset_scene_epoch(&mut self) {
@@ -35,6 +33,8 @@ impl SurfaceState {
         }
     }
 
+    /// Clears all borrowed pointers in `published_view` and `published_tables` so an early error,
+    /// app detach/swap, or unwind can never expose dangling pointers to `scene_acquire`.
     pub(crate) fn invalidate_published_view(&mut self) {
         self.published_view = NveSceneView {
             schema_hash: NVE_RUNTIME_SCHEMA_HASH,
