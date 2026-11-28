@@ -212,9 +212,6 @@ if command -v ninja >/dev/null 2>&1; then
 fi
 
 echo "==> [2/5] Building libnve_android_shell.so + libnve_runtime (arm64-v8a, android-24)..."
-export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$NDK_CLANG_AA64"
-export CC_aarch64_linux_android="$NDK_CLANG_AA64"
-export AR_aarch64_linux_android="$NDK_AR"
 cmake -S "$SCRIPT_DIR" -B "$CMAKE_BUILD_DIR" "${CMAKE_GEN_ARGS[@]}" \
   -DNVE_RUNTIME_CARGO_TARGET=aarch64-linux-android \
   -DCMAKE_TOOLCHAIN_FILE="$NDK_DIR/build/cmake/android.toolchain.cmake" \
