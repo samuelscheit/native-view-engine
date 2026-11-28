@@ -335,21 +335,23 @@ final class RuntimeSession {
   void setHostCallbacks(ffi.Pointer<NveHostCallbacks> callbacks) =>
       api.check(api.setHostCallbacks(_live, callbacks), 'set_host_callbacks');
 
+  static final Uint8List _emptyBytes = Uint8List(0);
+
   /// Completes an asynchronous `Pending` host request and triggers the runtime wake callback.
   void completeHostRequest(int requestId, int status, [Uint8List? payload]) => api.check(
-        api.completeHostRequest(_live, requestId, status, _borrow(payload ?? Uint8List(0))),
+        api.completeHostRequest(_live, requestId, status, _borrow(payload ?? _emptyBytes)),
         'complete_host_request',
       );
 
   /// Enqueues an unsolicited host push event and triggers the runtime wake callback.
   void pushHostEvent(int serviceId, int eventId, [Uint8List? payload]) => api.check(
-        api.pushHostEvent(_live, serviceId, eventId, _borrow(payload ?? Uint8List(0))),
+        api.pushHostEvent(_live, serviceId, eventId, _borrow(payload ?? _emptyBytes)),
         'push_host_event',
       );
 
   /// Enqueues an inbound host channel message and triggers the runtime wake callback.
   void publishHostChannel(int channelId, {int flags = 0, Uint8List? payload}) => api.check(
-        api.publishHostChannel(_live, channelId, flags, _borrow(payload ?? Uint8List(0))),
+        api.publishHostChannel(_live, channelId, flags, _borrow(payload ?? _emptyBytes)),
         'publish_host_channel',
       );
 
@@ -369,6 +371,11 @@ final class RuntimeSession {
 
   /// Copies [bytes] into the reusable native block, described by [_buffer].
   NveBufferSlice _borrow(Uint8List bytes) {
+    if (bytes.isEmpty) {
+      return _buffer.ref
+        ..ptr = ffi.nullptr
+        ..len = 0;
+    }
     final block = _bytes.reserve(bytes.length);
     block.asTypedList(bytes.length).setAll(0, bytes);
     return _buffer.ref

@@ -316,26 +316,32 @@ public final class NveRuntimeSession {
     }
 
     /// Atomically persists the active scene as a Frame-0 `frame0.nve2` file on disk.
-    public func saveFrame0File(path: String, appBuildId: UInt64 = 0, envHash: UInt64 = 0) throws {
+    /// Returns `false` when the surface has no committed frame or live nodes (`NVE_RUNTIME_NOT_FOUND`).
+    @discardableResult
+    public func saveFrame0File(path: String, appBuildId: UInt64 = 0, envHash: UInt64 = 0) throws -> Bool {
         var path = path
-        try path.withUTF8 { p in
-            try check(api.pointee.save_frame0_file(handle, NveStrSlice(ptr: p.baseAddress, len: p.count), appBuildId, envHash))
+        return try path.withUTF8 { p in
+            try checkFound(api.pointee.save_frame0_file(handle, NveStrSlice(ptr: p.baseAddress, len: p.count), appBuildId, envHash))
         }
     }
 
     /// Validates and boots a persisted `frame0.nve2` file immediately.
-    public func bootFrame0File(path: String, appBuildId: UInt64 = 0, envHash: UInt64 = 0) throws {
+    /// Returns `false` on cold-start miss, corrupt file, or metadata mismatch (`NVE_RUNTIME_NOT_FOUND`).
+    @discardableResult
+    public func bootFrame0File(path: String, appBuildId: UInt64 = 0, envHash: UInt64 = 0) throws -> Bool {
         var path = path
-        try path.withUTF8 { p in
-            try check(api.pointee.boot_frame0_file(handle, NveStrSlice(ptr: p.baseAddress, len: p.count), appBuildId, envHash))
+        return try path.withUTF8 { p in
+            try checkFound(api.pointee.boot_frame0_file(handle, NveStrSlice(ptr: p.baseAddress, len: p.count), appBuildId, envHash))
         }
     }
 
     /// Validates and boots an in-memory `frame0.nve2` envelope buffer (`NSData` / bundled asset).
-    public func bootFrame0Bytes(_ envelope: Data, appBuildId: UInt64 = 0, envHash: UInt64 = 0) throws {
+    /// Returns `false` on corrupt envelope or metadata mismatch (`NVE_RUNTIME_NOT_FOUND`).
+    @discardableResult
+    public func bootFrame0Bytes(_ envelope: Data, appBuildId: UInt64 = 0, envHash: UInt64 = 0) throws -> Bool {
         try envelope.withUnsafeBytes { raw in
             let bytes = raw.bindMemory(to: UInt8.self)
-            try check(api.pointee.boot_frame0_bytes(handle, NveBufferSlice(ptr: bytes.baseAddress, len: bytes.count), appBuildId, envHash))
+            return try checkFound(api.pointee.boot_frame0_bytes(handle, NveBufferSlice(ptr: bytes.baseAddress, len: bytes.count), appBuildId, envHash))
         }
     }
 
@@ -397,6 +403,12 @@ public final class NveRuntimeSession {
     private func check(_ status: Int32) throws {
         guard status != Int32(NVE_RUNTIME_OK.rawValue) else { return }
         throw NveRuntimeError.status(code: status, message: lastError)
+    }
+
+    private func checkFound(_ status: Int32) throws -> Bool {
+        if status == Int32(NVE_RUNTIME_NOT_FOUND.rawValue) { return false }
+        try check(status)
+        return true
     }
 }
 

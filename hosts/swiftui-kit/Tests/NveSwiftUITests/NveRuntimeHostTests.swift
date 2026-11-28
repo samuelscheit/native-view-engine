@@ -453,4 +453,62 @@ final class NveRuntimeHostTests: XCTestCase {
             XCTAssertEqual(a11y.hint, "Details")
         }
     }
+
+    func testV6MeasureFrame0AndHostServicesWrappers() throws {
+        let session = try makeSession()
+
+        // 1. `measureSurface` forwards constraints & flags and decodes baselines.
+        let c = NveSizeConstraints(min_w: 20, min_h: 10, max_w: 320, max_h: 240)
+        let measured = try session.measureSurface(constraints: c, flags: NVE_MEASURE_FLAG_DRY_RUN | NVE_MEASURE_FLAG_IDEAL)
+        XCTAssertEqual([measured.width, measured.height, measured.first_baseline, measured.last_baseline], [120, 40, 28, 36])
+        XCTAssertEqual(m.measuredConstraints.count, 1)
+        XCTAssertEqual(m.measuredConstraints[0].1, NVE_MEASURE_FLAG_DRY_RUN | NVE_MEASURE_FLAG_IDEAL)
+
+        // 2. `setIntrinsicSizeInvalidatedHandler`: fires, preserves old box on failed swap, clears on nil.
+        let fired = expectation(description: "intrinsic invalidated")
+        try session.setIntrinsicSizeInvalidatedHandler { fired.fulfill() }
+        m.intrinsicSize.0?(m.intrinsicSize.1)
+        wait(for: [fired], timeout: 1)
+        m.failNextWith = Int32(NVE_RUNTIME_INVALID_ARG.rawValue)
+        XCTAssertThrowsError(try session.setIntrinsicSizeInvalidatedHandler { XCTFail("must not replace") })
+        XCTAssertNotNil(m.intrinsicSize.0, "failed swap keeps prior handler installed")
+        try session.setIntrinsicSizeInvalidatedHandler(nil)
+        XCTAssertNil(m.intrinsicSize.0)
+
+        // 3. Frame-0 `saveFrame0File` / `bootFrame0File` / `bootFrame0Bytes`: NOT_FOUND -> false, OK -> true, other -> throws.
+        XCTAssertTrue(try session.saveFrame0File(path: "/tmp/f0.nve2", appBuildId: 11, envHash: 22))
+        m.failNextWith = Int32(NVE_RUNTIME_NOT_FOUND.rawValue)
+        XCTAssertFalse(try session.saveFrame0File(path: "/tmp/empty.nve2", appBuildId: 11, envHash: 22))
+        m.failNextWith = Int32(NVE_RUNTIME_IO.rawValue)
+        XCTAssertThrowsError(try session.saveFrame0File(path: "/tmp/io.nve2"))
+
+        XCTAssertFalse(try session.bootFrame0File(path: "/tmp/miss.nve2", appBuildId: 11, envHash: 22))
+        XCTAssertFalse(try session.bootFrame0Bytes(Data([1, 2, 3]), appBuildId: 11, envHash: 22))
+        m.frame0DefaultStatus = Int32(NVE_RUNTIME_OK.rawValue)
+        XCTAssertTrue(try session.bootFrame0File(path: "/tmp/hit.nve2", appBuildId: 11, envHash: 22))
+        XCTAssertTrue(try session.bootFrame0Bytes(Data([4, 5, 6, 7]), appBuildId: 11, envHash: 22))
+        m.failNextWith = Int32(NVE_RUNTIME_INVALID_ARG.rawValue)
+        XCTAssertThrowsError(try session.bootFrame0File(path: "/tmp/attached.nve2"))
+        m.failNextWith = Int32(NVE_RUNTIME_INVALID_ARG.rawValue)
+        XCTAssertThrowsError(try session.bootFrame0Bytes(Data([4, 5])))
+        XCTAssertEqual(m.frame0Saves.count, 3)
+        XCTAssertEqual(m.frame0FileBoots.count, 3)
+        XCTAssertEqual(m.frame0BytesBoots.count, 3)
+
+        // 4. Host services callbacks & cross-thread ingress wrappers.
+        try session.setHostCallbacks(NveHostCallbacks())
+        try session.setHostCallbacks(nil)
+        try session.completeHostRequest(requestId: 77, status: 0, payload: Data([9, 8]))
+        try session.pushHostEvent(serviceId: 0x2001, eventId: 4, payload: Data([1, 2]))
+        try session.publishHostChannel(channelId: 5, flags: 1, payload: Data([3]))
+        XCTAssertEqual(m.hostCallbackSets, [true, false])
+        XCTAssertEqual(m.completedRequests.first?.0, 77)
+        XCTAssertEqual(m.completedRequests.first?.2, [9, 8])
+        XCTAssertEqual(m.pushedEvents.first?.0, 0x2001)
+        XCTAssertEqual(m.pushedEvents.first?.1, 4)
+        XCTAssertEqual(m.pushedEvents.first?.2, [1, 2])
+        XCTAssertEqual(m.publishedChannels.first?.0, 5)
+        XCTAssertEqual(m.publishedChannels.first?.1, 1)
+        XCTAssertEqual(m.publishedChannels.first?.2, [3])
+    }
 }

@@ -189,7 +189,17 @@ final class MockRuntime: @unchecked Sendable {
     var restored: [UInt8] = []
     var patches: [Int] = []
     var wake: (NveRuntimeWakeFn?, UnsafeMutableRawPointer?) = (nil, nil)
+    var intrinsicSize: (NveRuntimeIntrinsicSizeInvalidatedFn?, UnsafeMutableRawPointer?) = (nil, nil)
     var measurer: (NveRuntimeMeasureTextFn?, UnsafeMutableRawPointer?) = (nil, nil)
+    var measuredConstraints: [(NveSizeConstraints, UInt32)] = []
+    var frame0Saves: [(String, UInt64, UInt64)] = []
+    var frame0FileBoots: [(String, UInt64, UInt64)] = []
+    var frame0BytesBoots: [(Int, UInt64, UInt64)] = []
+    var frame0DefaultStatus: Int32 = Int32(NVE_RUNTIME_NOT_FOUND.rawValue)
+    var hostCallbackSets: [Bool] = []
+    var completedRequests: [(UInt64, Int32, [UInt8])] = []
+    var pushedEvents: [(UInt32, UInt32, [UInt8])] = []
+    var publishedChannels: [(UInt32, UInt32, [UInt8])] = []
 
     private var pinned: [UnsafeMutableRawPointer] = []
     private var view = NveSceneView()
@@ -203,7 +213,10 @@ final class MockRuntime: @unchecked Sendable {
         state = []; emitted = EventBatchBuilder()
         creates = 0; destroys = 0; acquires = 0; releases = 0; ticks = 0; attaches = 0; detaches = 0; loads = []
         propCounts = []; dispatched = []; viewports = []; pairedUri = ""; paired = false; restored = []; patches = []
-        wake = (nil, nil); measurer = (nil, nil)
+        wake = (nil, nil); intrinsicSize = (nil, nil); measurer = (nil, nil)
+        measuredConstraints = []; frame0Saves = []; frame0FileBoots = []; frame0BytesBoots = []
+        frame0DefaultStatus = Int32(NVE_RUNTIME_NOT_FOUND.rawValue)
+        hostCallbackSets = []; completedRequests = []; pushedEvents = []; publishedChannels = []
     }
 
     fileprivate func pin<T>(_ values: [T]) -> UnsafePointer<T>? {
@@ -388,18 +401,58 @@ final class MockRuntime: @unchecked Sendable {
             }
             return msg.count
         }
-        a.measure_surface = { _, _, _, out in
-            out?.pointee = NveSurfaceMeasure(width: 120, height: 40, first_baseline: .nan, last_baseline: .nan)
-            return MockRuntime.shared.status()
+        a.measure_surface = { _, c, flags, out in
+            let m = MockRuntime.shared
+            if let c { m.measuredConstraints.append((c.pointee, flags)) }
+            out?.pointee = NveSurfaceMeasure(width: 120, height: 40, first_baseline: 28, last_baseline: 36)
+            return m.status()
         }
-        a.set_intrinsic_size_invalidated_callback = { _, _, _ in MockRuntime.shared.status() }
-        a.save_frame0_file = { _, _, _, _ in MockRuntime.shared.status() }
-        a.boot_frame0_file = { _, _, _, _ in Int32(NVE_RUNTIME_NOT_FOUND.rawValue) }
-        a.boot_frame0_bytes = { _, _, _, _ in Int32(NVE_RUNTIME_NOT_FOUND.rawValue) }
-        a.set_host_callbacks = { _, _ in MockRuntime.shared.status() }
-        a.complete_host_request = { _, _, _, _ in MockRuntime.shared.status() }
-        a.push_host_event = { _, _, _, _ in MockRuntime.shared.status() }
-        a.publish_host_channel = { _, _, _, _ in MockRuntime.shared.status() }
+        a.set_intrinsic_size_invalidated_callback = { _, cb, ctx in
+            let m = MockRuntime.shared
+            let st = m.status()
+            if st == 0 { m.intrinsicSize = (cb, ctx) }
+            return st
+        }
+        a.save_frame0_file = { _, path, buildId, envHash in
+            let m = MockRuntime.shared
+            let s = path.ptr.map { String(decoding: UnsafeBufferPointer(start: $0, count: path.len), as: UTF8.self) } ?? ""
+            m.frame0Saves.append((s, buildId, envHash))
+            return m.status()
+        }
+        a.boot_frame0_file = { _, path, buildId, envHash in
+            let m = MockRuntime.shared
+            let s = path.ptr.map { String(decoding: UnsafeBufferPointer(start: $0, count: path.len), as: UTF8.self) } ?? ""
+            m.frame0FileBoots.append((s, buildId, envHash))
+            return m.failNextWith != nil ? m.status() : m.frame0DefaultStatus
+        }
+        a.boot_frame0_bytes = { _, buf, buildId, envHash in
+            let m = MockRuntime.shared
+            m.frame0BytesBoots.append((buf.len, buildId, envHash))
+            return m.failNextWith != nil ? m.status() : m.frame0DefaultStatus
+        }
+        a.set_host_callbacks = { _, cb in
+            let m = MockRuntime.shared
+            m.hostCallbackSets.append(cb != nil)
+            return m.status()
+        }
+        a.complete_host_request = { _, reqId, status, payload in
+            let m = MockRuntime.shared
+            let bytes = payload.ptr.map { Array(UnsafeBufferPointer(start: $0, count: payload.len)) } ?? []
+            m.completedRequests.append((reqId, status, bytes))
+            return m.status()
+        }
+        a.push_host_event = { _, serviceId, eventId, payload in
+            let m = MockRuntime.shared
+            let bytes = payload.ptr.map { Array(UnsafeBufferPointer(start: $0, count: payload.len)) } ?? []
+            m.pushedEvents.append((serviceId, eventId, bytes))
+            return m.status()
+        }
+        a.publish_host_channel = { _, channelId, flags, payload in
+            let m = MockRuntime.shared
+            let bytes = payload.ptr.map { Array(UnsafeBufferPointer(start: $0, count: payload.len)) } ?? []
+            m.publishedChannels.append((channelId, flags, bytes))
+            return m.status()
+        }
         let p = UnsafeMutablePointer<NveRuntimeApi>.allocate(capacity: 1)
         p.initialize(to: a)
         return UnsafePointer(p)

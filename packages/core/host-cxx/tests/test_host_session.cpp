@@ -364,6 +364,74 @@ void test_state_paths() {
   set_env("NVE_STATE_PATH", nullptr);
 }
 
+/// Live `libnve_runtime` test invoking all 9 Runtime ABI v6 methods end-to-end.
+void test_v6_measure_frame0_and_host_services() {
+  auto host = HostSession::create(RuntimeSession::default_config());
+  CHECK(host != nullptr);
+  if (!host) return;
+  RuntimeSession& rt = host->runtime();
+  const ScratchDir dir("nve_host_v6");
+  const fs::path f0_path = dir.path() / "frame0.nve2";
+  const std::string f0_str = f0_path.string();
+
+  int intrinsic_hits = 0;
+  auto on_intrinsic = [](void* ctx) { ++(*static_cast<int*>(ctx)); };
+  CHECK(rt.set_intrinsic_size_invalidated_callback(on_intrinsic, &intrinsic_hits) == NVE_RUNTIME_OK);
+
+  // Empty surface cannot save Frame-0 yet.
+  CHECK(rt.save_frame0_file(f0_str, 42u, 99u) == NVE_RUNTIME_NOT_FOUND);
+  CHECK(host->attach(&CounterApp::get_interface));
+  (void)host->pump();
+  CHECK(intrinsic_hits >= 1);
+
+  // `measure_surface` DRY_RUN + IDEAL against live CounterApp tree.
+  NveSizeConstraints loose{0.0f, 0.0f, 320.0f, 240.0f};
+  NveSurfaceMeasure m_dry{};
+  NveSurfaceMeasure m_ideal{};
+  CHECK(rt.measure_surface(loose, NVE_MEASURE_FLAG_DRY_RUN, &m_dry) == NVE_RUNTIME_OK);
+  CHECK(rt.measure_surface(loose, NVE_MEASURE_FLAG_DRY_RUN | NVE_MEASURE_FLAG_IDEAL, &m_ideal) == NVE_RUNTIME_OK);
+  CHECK(m_dry.width >= 0.0f && m_dry.width <= 320.0f && m_dry.height >= 0.0f && m_dry.height <= 240.0f);
+  CHECK(m_ideal.width > 0.0f && m_ideal.height > 0.0f);
+
+  // Persist Frame-0 from live attached app, then boot into a fresh runtime via file & bytes.
+  CHECK(rt.save_frame0_file(f0_str, 42u, 99u) == NVE_RUNTIME_OK);
+  CHECK(fs::exists(f0_path));
+  const std::string f0_raw = file_bytes(f0_path);
+  const std::span<const uint8_t> f0_bytes(
+      reinterpret_cast<const uint8_t*>(f0_raw.data()), f0_raw.size());
+
+  auto cold1 = RuntimeSession::create(rt.api(), RuntimeSession::default_config());
+  CHECK(cold1.has_value());
+  if (cold1) {
+    CHECK(cold1->boot_frame0_file((dir.path() / "missing.nve2").string(), 42u, 99u) == NVE_RUNTIME_NOT_FOUND);
+    CHECK(cold1->boot_frame0_file(f0_str, 42u, 99u) == NVE_RUNTIME_OK);
+    auto g = cold1->acquire_scene();
+    CHECK(g.has_value() && (*g)->frame_id() == 1u && (*g)->node_capacity() > 1u);
+  }
+  auto cold2 = RuntimeSession::create(rt.api(), RuntimeSession::default_config());
+  CHECK(cold2.has_value());
+  if (cold2) {
+    CHECK(cold2->boot_frame0_bytes(f0_bytes, 42u, 99u) == NVE_RUNTIME_OK);
+    {
+      auto g = cold2->acquire_scene();
+      CHECK(g.has_value() && (*g)->frame_id() == 1u && (*g)->node_capacity() > 1u);
+      CHECK(cold2->boot_frame0_bytes(f0_bytes, 42u, 99u) == NVE_RUNTIME_BUSY);
+    }
+    // Wrong build id after releasing scene -> NOT_FOUND.
+    CHECK(cold2->boot_frame0_bytes(f0_bytes, 43u, 99u) == NVE_RUNTIME_NOT_FOUND);
+  }
+
+  // Host callbacks & cross-thread ingress slots against live runtime.
+  NveHostCallbacks hcb{};
+  CHECK(rt.set_host_callbacks(&hcb) == NVE_RUNTIME_OK);
+  const std::array<uint8_t, 3> msg = {0x61u, 0x62u, 0x63u};
+  CHECK(rt.complete_host_request(999u, 0, msg) == NVE_RUNTIME_OK);
+  CHECK(rt.push_host_event(0x1001u, 5u, msg) == NVE_RUNTIME_OK);
+  CHECK(rt.publish_host_channel(12u, 0u, msg) == NVE_RUNTIME_OK);
+  CHECK(rt.clear_host_callbacks() == NVE_RUNTIME_OK);
+  CHECK(rt.clear_intrinsic_size_invalidated_callback() == NVE_RUNTIME_OK);
+}
+
 }  // namespace
 
 int main() {
@@ -374,6 +442,7 @@ int main() {
   test_unpair_stops_a_connecting_worker();
   test_state_files();
   test_state_paths();
+  test_v6_measure_frame0_and_host_services();
   if (g_failures != 0) {
     fprintf(stderr, "nve_host_session_test: %d failure(s)\n", g_failures);
     return 1;

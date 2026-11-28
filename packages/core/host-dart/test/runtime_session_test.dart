@@ -210,6 +210,63 @@ void _runtimeHooks(Check c, RuntimeSession session) {
   }
 }
 
+/// Runtime ABI v6 wrapper invocation against live `libnve_runtime`: `measureSurface`,
+/// `setIntrinsicSizeInvalidatedListener`, `saveFrame0File` / `bootFrame0File` / `bootFrame0Bytes`,
+/// `setHostCallbacks`, `completeHostRequest`, `pushHostEvent`, and `publishHostChannel`.
+void _v6MeasureFrame0AndHostServices(Check c, RuntimeApi api, RuntimeSession attached) {
+  // 1. `measureSurface` DRY_RUN + IDEAL + invalid constraints against live kitchen-sink scene.
+  final bounded = attached.measureSurface(minW: 0, minH: 0, maxW: 320, maxH: 240, flags: nveMeasureFlagDryRun);
+  c.that(bounded.width > 0 && bounded.width <= 320.5 && bounded.height > 0 && bounded.height <= 240.5,
+      'bounded measureSurface fits [0..320] x [0..240] (${bounded.width}x${bounded.height})');
+  final ideal = attached.measureSurface(
+      minW: 0, minH: 0, maxW: 100, maxH: 50, flags: nveMeasureFlagDryRun | nveMeasureFlagIdeal);
+  c.that(ideal.width > 0 && ideal.height > 0, 'ideal measureSurface returns positive size');
+  _expectStatus(c, NveRuntimeStatus.invalidArg, () => attached.measureSurface(minW: -1), 'negative minW rejected');
+
+  // 2. `setIntrinsicSizeInvalidatedListener`: register, re-register, and clear cleanly.
+  attached.setIntrinsicSizeInvalidatedListener(() {});
+  attached.setIntrinsicSizeInvalidatedListener(() {});
+  attached.setIntrinsicSizeInvalidatedListener(null);
+
+  // 3. Frame-0 save from live attached session -> boot via file & bytes into fresh sessions.
+  final dir = Directory.systemTemp.createTempSync('nve_frame0_');
+  try {
+    final path = '${dir.path}/frame0.nve2';
+    c.eq(attached.saveFrame0File(path, appBuildId: 77, envHash: 88), true, 'saveFrame0File persists kitchen sink');
+    c.that(File(path).existsSync(), 'frame0.nve2 exists on disk');
+    final savedBytes = File(path).readAsBytesSync();
+    c.that(savedBytes.length > 40, 'frame0.nve2 non-empty');
+
+    final cold = RuntimeSession(api, width: 390, height: 844, scaleFactor: 3);
+    try {
+      c.eq(cold.saveFrame0File('${dir.path}/empty.nve2'), false, 'empty surface saveFrame0File returns false');
+      c.eq(cold.bootFrame0File('${dir.path}/missing.nve2', appBuildId: 77, envHash: 88), false,
+          'missing frame0 file returns false');
+      c.eq(cold.bootFrame0File(path, appBuildId: 77, envHash: 88), true, 'bootFrame0File succeeds');
+      final bootedNodes = cold.withScene((s) => _summarize(s, viewportHeight: 844).$1);
+      c.that(bootedNodes > 10, 'bootFrame0File published live tree ($bootedNodes nodes)');
+      c.eq(cold.bootFrame0Bytes(savedBytes, appBuildId: 77, envHash: 88), true, 'bootFrame0Bytes succeeds');
+      c.eq(cold.bootFrame0Bytes(Uint8List.fromList([1, 2, 3, 4]), appBuildId: 77, envHash: 88), false,
+          'corrupt bootFrame0Bytes returns false');
+      c.eq(cold.bootFrame0File(path, appBuildId: 78, envHash: 88), false, 'mismatched buildId returns false');
+      c.that(!File(path).existsSync(), 'mismatched NVE2 frame0 file auto-removed');
+    } finally {
+      cold.dispose();
+    }
+  } finally {
+    dir.deleteSync(recursive: true);
+  }
+
+  // 4. Host callbacks & cross-thread ingress wrappers (both empty and non-empty payloads).
+  attached.setHostCallbacks(ffi.nullptr);
+  attached.completeHostRequest(999, 0);
+  attached.completeHostRequest(999, 0, Uint8List.fromList([1, 2, 3]));
+  attached.pushHostEvent(0x1001, 5);
+  attached.pushHostEvent(0x1001, 5, Uint8List.fromList([4, 5]));
+  attached.publishHostChannel(12);
+  attached.publishHostChannel(12, flags: 1, payload: Uint8List.fromList([6, 7]));
+}
+
 /// Real app-emitted events across the runtime C ABI: `libnve_host_fixture_app` echoes props as a
 /// structured `Custom` event (`NveBinValue` payload) and, on `malformed`, first emits a `"malformed"`
 /// custom event carrying invalid `NveBinValue` payload bytes (`[0xFF]`).
@@ -369,6 +426,7 @@ void main() {
   }
 
   _runtimeHooks(c, session);
+  _v6MeasureFrame0AndHostServices(c, api, session);
   _fixtureAppEvents(c, api);
 
   session.setViewport(800, 600, 1);
