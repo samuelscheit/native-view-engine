@@ -230,16 +230,28 @@ void runEventBatch(Check c) {
   c.eq((encCanon.surfaceId, encCanon.nodeId), (0, 0), 'encode canonicalizes index-0 handles');
 
   // `RuntimeEvent.custom` clamps `flags` to unsigned 32-bit (matching wire u32 & TS `>>> 0`)
-  // even when callers pass negative / `~0` or >32-bit values.
+  // even when callers pass negative / `~0` or >32-bit values — test both `const` folding
+  // and non-`const` runtime inputs so dart2js exercises runtime constructor codegen too.
   const expectedAll32 =
       (0xFFFFFFFF & ~(nveEventFlagUtf8Bytes | nveEventFlagInlineKeyUtf8 | nveEventFlagKeySplitBytes)) |
           nveEventFlagCustomNamed;
+  int rtVal(int v) => v;
+  final rtNegOne = rtVal(-1);
+  final rtBitNotZero = rtVal(~0);
+  final rtHighBits = rtVal(0x100000000) + nveEventFlagNoBubble + nveEventFlagUtf8Bytes;
   for (final (label, ev, expected) in [
-    ('~0', const RuntimeEvent.custom(1, 'clamped', flags: ~0), expectedAll32),
-    ('-1', const RuntimeEvent.custom(1, 'clamped', flags: -1), expectedAll32),
+    ('const ~0', const RuntimeEvent.custom(1, 'clamped', flags: ~0), expectedAll32),
+    ('const -1', const RuntimeEvent.custom(1, 'clamped', flags: -1), expectedAll32),
     (
-      'high-bits',
+      'const high-bits',
       const RuntimeEvent.custom(1, 'clamped', flags: 0x100000000 | nveEventFlagNoBubble | nveEventFlagUtf8Bytes),
+      nveEventFlagNoBubble | nveEventFlagCustomNamed,
+    ),
+    ('runtime ~0', RuntimeEvent.custom(1, 'clamped', flags: rtBitNotZero), expectedAll32),
+    ('runtime -1', RuntimeEvent.custom(1, 'clamped', flags: rtNegOne), expectedAll32),
+    (
+      'runtime high-bits',
+      RuntimeEvent.custom(1, 'clamped', flags: rtHighBits),
       nveEventFlagNoBubble | nveEventFlagCustomNamed,
     ),
   ]) {

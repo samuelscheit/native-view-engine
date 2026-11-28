@@ -603,6 +603,20 @@ fn background_fill_and_grid_tracks_reject_non_finite_and_negative_domain_floats(
     assert!(!BoxShadows::validate(&[1, 0, 0, 0, 0, black.0, 2]));
     assert!(!BoxShadows::validate(&[1, 0, 0, 0, 0, black.0, u32::MAX]));
 
+    // Multi-element [valid, invalid] list fails pre-validation without reserving or partial writes.
+    assert!(!BoxShadows::validate(&[
+        2,
+        0, 0, 0, 0, black.0, 0,
+        0, 0, (-1.0f32).to_bits(), 0, black.0, 0,
+    ]));
+    let mixed_shadows = BoxShadows::new(vec![BoxShadow::new(0.0, 4.0, 8.0, black), neg_blur]);
+    let mut empty_mixed = Vec::new();
+    assert!(!mixed_shadows.write_words(&mut empty_mixed));
+    assert_eq!(empty_mixed.capacity(), 0, "multi-element invalid tail must not reserve");
+    let mut existing_mixed = vec![0xBEEFu32];
+    assert!(!mixed_shadows.write_words(&mut existing_mixed));
+    assert_eq!(existing_mixed, vec![0xBEEF]);
+
     // Valid BoxShadows including 0 blur, negative offsets/spread, and inset=true pass.
     let valid_shadows = BoxShadows::new(vec![
         BoxShadow {

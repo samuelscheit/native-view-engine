@@ -10,11 +10,11 @@ fn unit_spec_invariant_registry_positive_and_negative() {
         "docs/BACKLOG.md".to_string(),
         r#"
 - Must enforce [INV:covered-doc-comment], [INV:covered-body-comment], [INV:cfg-test-mod-guard], [INV:ratcheted-guard], [INV:mixed-strict-ratchet], [INV:split-strict-ratchet], and [INV:cross-file-split-ratchet].
-- Also backed by ast-grep [INV:sg-tagged-inv] and [INV:sg-rule-id].
+- Also backed by ast-grep [INV:sg-tagged-inv], [INV:sg-rule-id], and [INV:sg-ratchet-collision].
 - Missing check [INV:missing-guard], non-test [INV:only-in-helper], ignored [INV:ignored-guard], should-panic [INV:should-panic-guard].
 - Dishonest guards: empty [INV:empty-test], unforced staged [INV:unforced-staged], mixed unforced [INV:mixed-unforced], and comment-spoofed [INV:comment-spoofed].
 - AST spoofing: block comment [INV:block-comment-spoof], raw string [INV:raw-string-spoof], cfg-any fn [INV:cfg-any-fn], cfg-any mod [INV:cfg-any-mod], cfg-feature fn [INV:cfg-feature-fn].
-- Recursive cfg_attr spoofing: file [INV:file-cfg-attr-dead], mod [INV:mod-cfg-attr-dead], stmt [INV:stmt-cfg-attr-dead], nested ignore [INV:nested-cfg-attr-ignore], qualified ignore [INV:qualified-cfg-attr-ignore], qualified should-panic [INV:qualified-cfg-attr-panic].
+- Recursive cfg_attr spoofing: file [INV:file-cfg-attr-dead], mod [INV:mod-cfg-attr-dead], stmt [INV:stmt-cfg-attr-dead], nested ignore [INV:nested-cfg-attr-ignore], qualified ignore [INV:qualified-cfg-attr-ignore], qualified should-panic [INV:qualified-cfg-attr-panic], edition ignore [INV:edition-prelude-ignore], edition should-panic [INV:edition-prelude-panic].
 - Dead-branch & tautology spoofing: if-false [INV:if-false-spoof], uncalled closure [INV:closure-spoof], nested fn [INV:nested-fn-spoof], cfg-any stmt [INV:cfg-any-stmt], assert-true [INV:assert-true-tautology], assert-eq-lit [INV:assert-eq-tautology], suffixed-lit [INV:suffixed-lit-tautology], empty-slice [INV:empty-slice-tautology].
 - Untested ast-grep [INV:untested-sg].
 - Malformed tag [INV:Bad_ID].
@@ -231,7 +231,11 @@ fn assert_eq_tautology_test() {
 fn suffixed_literal_tautology_test() {
     assert_eq!(1usize, 1);
     assert!(1usize == 1);
+    assert_eq!(01usize, 1);
     assert_eq!(1.0f32, 1.0);
+    assert_eq!(1f32, 1.0);
+    assert_eq!(1.0f32, 1.00);
+    assert_eq!(1e0, 1.0);
 }
 
 #[cfg_attr(all(), cfg(any()))]
@@ -280,6 +284,22 @@ fn qualified_cfg_attr_should_panic_test() {
     assert_no_violations("qualified cfg_attr should_panic", &violations);
 }
 
+/// Enforces [INV:edition-prelude-ignore].
+#[test]
+#[cfg_attr(all(), core::prelude::rust_2024::ignore)]
+fn edition_prelude_ignore_test() {
+    let violations = scan_workspace();
+    assert_no_violations("edition prelude ignore", &violations);
+}
+
+/// Enforces [INV:edition-prelude-panic].
+#[test]
+#[std::prelude::rust_2021::should_panic]
+fn edition_prelude_panic_test() {
+    let violations = scan_workspace();
+    assert_no_violations("edition prelude should_panic", &violations);
+}
+
 /// Enforces [INV:empty-slice-tautology].
 #[test]
 fn empty_slice_tautology_test() {
@@ -312,13 +332,20 @@ fn cross_file_ratchet_half_test() {
     let allowlisted = scan_allowlisted();
     assert_staged_ratchet(Stage::Post1B1D, "cross-file ceiling", 1, &allowlisted);
 }
+
+/// Enforces [INV:sg-ratchet-collision] via ratchet (must dominate strict ast-grep via `.min`).
+#[test]
+fn sg_ratchet_collision_test() {
+    let allowlisted = scan_allowlisted();
+    assert_staged_ratchet(Stage::Post1B1D, "sg collision ceiling", 1, &allowlisted);
+}
 "####
         .to_string(),
     )];
 
     let sg_rules = vec![(
         "lints/ast-grep/rules/sample.yml".to_string(),
-        r#"# [INV:sg-tagged-inv]
+        r#"# [INV:sg-tagged-inv] [INV:sg-ratchet-collision]
 id: sg-rule-id
 language: rust
 ---
@@ -373,6 +400,8 @@ language: rust
         "nested-cfg-attr-ignore",
         "qualified-cfg-attr-ignore",
         "qualified-cfg-attr-panic",
+        "edition-prelude-ignore",
+        "edition-prelude-panic",
         "if-false-spoof",
         "closure-spoof",
         "nested-fn-spoof",
@@ -391,8 +420,8 @@ language: rust
 
     let report = check_spec_invariant_coverage(&spec_docs, &guard_sources, &sg_rules, &sg_tests);
     assert_eq!(
-        report.spec_count, 37,
-        "should find 37 valid spec tags outside code spans/fences"
+        report.spec_count, 40,
+        "should find 40 valid spec tags outside code spans/fences"
     );
     assert_eq!(
         report.covered.get("covered-doc-comment"),
@@ -431,8 +460,13 @@ language: rust
         Some(&GuardStrength::Ratcheted),
         "split strict + ratchet #[test] functions across files must combine via weakest-link .min"
     );
+    assert_eq!(
+        report.covered.get("sg-ratchet-collision"),
+        Some(&GuardStrength::Ratcheted),
+        "strict ast-grep + ratcheted Rust test must combine via weakest-link .min"
+    );
     assert_eq!(report.enforced_count(), 5);
-    assert_eq!(report.ratcheted_count(), 4);
+    assert_eq!(report.ratcheted_count(), 5);
 
     let reasons: Vec<&str> = report.violations.iter().map(|v| v.reason.as_str()).collect();
     for expected in [
@@ -455,6 +489,8 @@ language: rust
         "[INV:nested-cfg-attr-ignore]",
         "[INV:qualified-cfg-attr-ignore]",
         "[INV:qualified-cfg-attr-panic]",
+        "[INV:edition-prelude-ignore]",
+        "[INV:edition-prelude-panic]",
         "[INV:if-false-spoof]",
         "[INV:closure-spoof]",
         "[INV:nested-fn-spoof]",
@@ -473,7 +509,7 @@ language: rust
     }
     assert_eq!(
         report.violations.len(),
-        29,
+        31,
         "only uncovered/spoofed/malformed tags should flag: {:?}",
         report.violations
     );

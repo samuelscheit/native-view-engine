@@ -278,18 +278,25 @@ fn is_disqualifying_cfg_meta(meta: &syn::Meta) -> bool {
 }
 
 fn is_disqualifying_test_meta(meta: &syn::Meta) -> bool {
-    is_disqualifying_cfg_meta(meta)
-        || path_is_any(
-            meta.path(),
-            &[
-                &["ignore"],
-                &["core", "prelude", "v1", "ignore"],
-                &["std", "prelude", "v1", "ignore"],
-                &["should_panic"],
-                &["core", "prelude", "v1", "should_panic"],
-                &["std", "prelude", "v1", "should_panic"],
-            ],
-        )
+    if is_disqualifying_cfg_meta(meta) {
+        return true;
+    }
+    let is_target = |id: &syn::Ident| id == "ignore" || id == "should_panic";
+    let mut segs = meta.path().segments.iter().map(|s| &s.ident);
+    match (segs.next(), segs.next(), segs.next(), segs.next(), segs.next()) {
+        (Some(a), None, _, _, _) => is_target(a),
+        (Some(root), Some(prelude), Some(edition), Some(leaf), None) => {
+            (root == "core" || root == "std")
+                && prelude == "prelude"
+                && (edition == "v1"
+                    || edition == "rust_2015"
+                    || edition == "rust_2018"
+                    || edition == "rust_2021"
+                    || edition == "rust_2024")
+                && is_target(leaf)
+        }
+        _ => false,
+    }
 }
 
 fn is_disqualifying_test_attr(attr: &syn::Attribute) -> bool {
@@ -451,10 +458,26 @@ fn lit_eq(a: &syn::Lit, b: &syn::Lit) -> bool {
     match (a, b) {
         (syn::Lit::Bool(x), syn::Lit::Bool(y)) => x.value == y.value,
         (syn::Lit::Int(x), syn::Lit::Int(y)) => {
-            x.base10_digits() == y.base10_digits() && suffix_compatible(x.suffix(), y.suffix())
+            suffix_compatible(x.suffix(), y.suffix())
+                && match (x.base10_parse::<u128>(), y.base10_parse::<u128>()) {
+                    (Ok(a), Ok(b)) => a == b,
+                    _ => x.base10_digits() == y.base10_digits(),
+                }
         }
         (syn::Lit::Float(x), syn::Lit::Float(y)) => {
-            x.base10_digits() == y.base10_digits() && suffix_compatible(x.suffix(), y.suffix())
+            suffix_compatible(x.suffix(), y.suffix())
+                && match (x.base10_parse::<f64>(), y.base10_parse::<f64>()) {
+                    (Ok(a), Ok(b)) => a == b,
+                    _ => x.base10_digits() == y.base10_digits(),
+                }
+        }
+        (syn::Lit::Int(i), syn::Lit::Float(f)) | (syn::Lit::Float(f), syn::Lit::Int(i)) => {
+            matches!(i.suffix(), "f32" | "f64")
+                && suffix_compatible(i.suffix(), f.suffix())
+                && matches!(
+                    (i.base10_digits().parse::<f64>(), f.base10_parse::<f64>()),
+                    (Ok(a), Ok(b)) if a == b
+                )
         }
         (syn::Lit::Str(x), syn::Lit::Str(y)) => x.value() == y.value(),
         (syn::Lit::ByteStr(x), syn::Lit::ByteStr(y)) => x.value() == y.value(),

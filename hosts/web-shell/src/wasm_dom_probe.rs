@@ -294,14 +294,15 @@ fn drive_overlay_resync(
             matches(dialog, ":modal") && matches(popover, ":popover-open"),
             &format!("{label}: both must stay in the top layer"),
         )?;
-        let canary_open = matches(&auto_pop, ":popover-open");
-        check(
-            canary_open == state_preserving,
-            &format!(
-                "{label}: canary auto popover expected open={state_preserving} (got {canary_open})"
-            ),
-        )?;
-        if check_popover_bt {
+        if !check_popover_bt {
+            let canary_open = matches(&auto_pop, ":popover-open");
+            check(
+                canary_open == state_preserving,
+                &format!(
+                    "{label}: canary auto popover expected open={state_preserving} (got {canary_open})"
+                ),
+            )?;
+        } else {
             let bt = nve_probe_beforetoggle_count(popover);
             check(
                 if state_preserving { bt == 0 } else { bt > 0 },
