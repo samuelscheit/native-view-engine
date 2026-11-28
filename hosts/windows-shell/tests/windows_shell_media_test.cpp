@@ -1,6 +1,7 @@
-// Windows host model (portable): accessibility semantics, inherited typography, text inputs
-// (controlled echo, submit, focus, secure / multiline), images (URL, inline bytes, invalid, fit
-// placement), box shadows, visibility, z-order, hit testing, cursors, hover, and links.
+// Windows host model (portable): inherited typography, text inputs (controlled echo, submit,
+// focus, secure / multiline), images (URL, inline bytes, invalid, fit placement), box shadows,
+// visibility, z-order, hit testing, presses (down/up targets, disabled ancestors), cursors,
+// hover, links (openable schemes only), and damage rects.
 #include "windows_test_helpers.hpp"
 
 #include <nve/host/core_resources.hpp>
@@ -16,12 +17,7 @@ namespace h = nve::host;
 
 constexpr uint32_t kColumn = 2u, kHeading = 3u, kEntry = 4u, kSecret = 5u, kNotes = 6u, kImgUrl = 7u, kImgBytes = 8u,
                    kImgBad = 9u, kHidden = 10u, kShown = 11u, kLink = 12u, kLinkText = 13u, kGrab = 14u, kHover = 15u,
-                   kCard = 16u, kBelow = 17u, kAbove = 18u, kDisabled = 19u;
-
-void a11y(h::Nve2Writer& w, uint32_t id, uint32_t role, std::string_view label) {
-  w.set(id, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_ROLE, role);
-  if (!label.empty()) (void)w.set_str(id, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_LABEL, label);
-}
+                   kCard = 16u, kBelow = 17u, kAbove = 18u, kDisabled = 19u, kBadLink = 20u, kInsideDisabled = 21u;
 
 void image(h::Nve2Writer& w, uint32_t id, uint32_t res, std::span<const uint8_t> src, uint32_t fit) {
   w.create(id);
@@ -80,7 +76,7 @@ void test_pure_helpers() {
   NVE_CHECK(outer_shadow_passes(h::BoxShadow{0, 0, 4, 0, h::rgba(0, 0, 0, 0), false}, card, 0.0f).empty());
 }
 
-void test_scene_semantics_inputs_and_pointer() {
+void test_scene_inputs_and_pointer() {
   const std::vector<uint8_t> png_bytes = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3};
   const std::vector<uint8_t> url = h::encode_image_url("data:image/png;base64,iVBORw0KGgo=");
   const std::vector<uint8_t> bytes = h::encode_image_bytes(png_bytes);
@@ -102,13 +98,12 @@ void test_scene_semantics_inputs_and_pointer() {
   w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_WEIGHT, 700u);
 
   text_node(w, kHeading, "Settings");
-  a11y(w, kHeading, NVE_ARIA_ROLE_HEADING, "");
-  w.set(kHeading, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_LEVEL, 2u);
   input(w, kEntry, "hi");
   (void)w.set_str(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_PLACEHOLDER, "Name");
   w.set(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_MAX_LENGTH, 8u);
   input(w, kSecret, "");
   w.set(kSecret, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_INPUT_KIND, NVE_INPUT_KIND_PASSWORD);
+  w.set_bool(kSecret, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_MULTILINE, true);  // secure wins
   input(w, kNotes, "line");
   w.set_bool(kNotes, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_MULTILINE, true);
   w.set_bool(kNotes, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_READ_ONLY, true);
@@ -143,12 +138,20 @@ void test_scene_semantics_inputs_and_pointer() {
   w.set_f32(kCard, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_WIDTH, 2.0f);
   w.set(kCard, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_COLOR, h::rgba(1, 2, 3));
   w.set_f32(kCard, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OPACITY, 0.5f);
-  w.create(kDisabled);
+  w.create(kDisabled);  // disabled, with a pressable child: the child takes no presses either
   sized(w, kDisabled, 50.0f, 20.0f);
   events(w, kDisabled, {NVE_EVENT_PRESS});
   w.set_bool(kDisabled, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_DISABLED, true);
+  w.create(kInsideDisabled);
+  sized(w, kInsideDisabled, 20.0f, 10.0f);
+  events(w, kInsideDisabled, {NVE_EVENT_PRESS});
+  const uint32_t disabled_kids[] = {kInsideDisabled};
+  w.set_children(kDisabled, disabled_kids);
+  w.create(kBadLink);  // a link the shell must never open
+  (void)w.set_str(kBadLink, NVE_TABLE_LINK_DESC, NVE_TABLE_LINK_HREF, "file:///C:/Windows/System32/calc.exe");
+  sized(w, kBadLink, 80.0f, 20.0f);
   const uint32_t column_kids[] = {kHeading, kEntry, kSecret, kNotes, kImgUrl, kImgBytes, kImgBad,
-                                  kHidden, kLink, kGrab, kHover, kCard, kDisabled};
+                                  kHidden, kLink, kGrab, kHover, kCard, kDisabled, kBadLink};
   w.set_children(kColumn, column_kids);
   // Overlapping absolute siblings: the earlier one has the higher z-index, so it paints on top.
   absolute(w, kAbove, 300.0f, 10.0f, 50.0f, 50.0f, 5);
@@ -165,18 +168,15 @@ void test_scene_semantics_inputs_and_pointer() {
     (void)a.w.set_str(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, upper);
   };
 
-  NveWinHost host(WinHostConfig{.width = 480.0f, .height = 900.0f});
+  const auto host_owner = make_host(WinHostConfig{.width = 480.0f, .height = 900.0f});
+  NveWinHost& host = *host_owner;
   NVE_CHECK(host.attach_interface(&ScriptedApp::get_interface));
   const NveWinVisualTree& tree = host.visual_tree();
 
-  // Semantics.
-  const WinNodeVisual& heading = node(host, kHeading);
-  NVE_CHECK(heading.semantics.role == NVE_ARIA_ROLE_HEADING && heading.semantics.level == 2u &&
-            heading.semantics.label == "Settings");
-  NVE_CHECK(node(host, kEntry).semantics.role == NVE_ARIA_ROLE_TEXT_BOX);
-  NVE_CHECK(node(host, kImgUrl).semantics.role == NVE_ARIA_ROLE_IMAGE && node(host, kImgUrl).semantics.label == "Logo");
-  NVE_CHECK(node(host, kLink).kind == h::NodeKind::Link && node(host, kLink).semantics.role == NVE_ARIA_ROLE_LINK);
-  NVE_CHECK(node(host, kDisabled).semantics.disabled && !node(host, kDisabled).wants(NVE_EVENT_PRESS));
+  // Kinds and interaction.
+  NVE_CHECK(node(host, kHeading).kind == h::NodeKind::Text && node(host, kHeading).text == "Settings");
+  NVE_CHECK(node(host, kLink).kind == h::NodeKind::Link && node(host, kImgUrl).kind == h::NodeKind::Image);
+  NVE_CHECK(node(host, kDisabled).interaction.disabled && !node(host, kDisabled).wants(NVE_EVENT_PRESS));
 
   // Inherited typography reaches every text-bearing descendant; explicit values win.
   for (const uint32_t id : {kHeading, kLinkText, kEntry}) {
@@ -190,7 +190,8 @@ void test_scene_semantics_inputs_and_pointer() {
   const WinNodeVisual& entry = node(host, kEntry);
   NVE_CHECK(entry.kind == h::NodeKind::TextInput && entry.input.value == "hi" && entry.input.placeholder == "Name" &&
             entry.input.max_length == 8u && !entry.input.secure);
-  NVE_CHECK(node(host, kSecret).input.secure && node(host, kNotes).input.multiline && node(host, kNotes).input.read_only);
+  NVE_CHECK(node(host, kSecret).input.secure && !node(host, kSecret).input.multiline);  // secure: single-line
+  NVE_CHECK(node(host, kNotes).input.multiline && node(host, kNotes).input.read_only);
   NVE_CHECK(host.dispatch_text_change(kEntry, "hey"));
   NVE_CHECK(app.last(NVE_EVENT_TEXT_CHANGE)->text == "hey" && node(host, kEntry).input.value == "HEY");
   NVE_CHECK(!host.dispatch_submit(kEntry, "HEY") && app.last(NVE_EVENT_SUBMIT)->text == "HEY");
@@ -226,12 +227,26 @@ void test_scene_semantics_inputs_and_pointer() {
   const auto* press = app.last(NVE_EVENT_PRESS);
   NVE_CHECK(approx(press->ev.x, 40.0, 0.5) && approx(press->ev.y, 45.0, 0.5));  // node-local
 
-  // Disabled nodes take no press; links report their href (the window opens it natively).
+  // A press needs the same target under the button's down and up: dragging off cancels it.
+  const size_t above_presses = app.count(NVE_EVENT_PRESS, kAbove);
+  NVE_CHECK(host.pointer_down(330.0f, 30.0f) == kAbove);
+  NVE_CHECK(host.pointer_up(5.0f, 5.0f).node_id == 0u && app.count(NVE_EVENT_PRESS, kAbove) == above_presses);
+  NVE_CHECK(host.pointer_down(330.0f, 30.0f) == kAbove && host.pointer_up(335.0f, 35.0f).dispatched);
+  NVE_CHECK(host.pointer_up(330.0f, 30.0f).node_id == 0u);  // no matching down
+
+  // Disabled nodes, and everything inside them, take no press.
   const auto [dx, dy] = center(host, kDisabled);
   NVE_CHECK(host.press_at(dx, dy).node_id == 0u);
+  const auto [ix, iy] = center(host, kInsideDisabled);
+  NVE_CHECK(host.press_target(ix, iy) == 0u && host.press_at(ix, iy).node_id == 0u);
+  NVE_CHECK(app.count(NVE_EVENT_PRESS, kInsideDisabled) == 0u);
+  // Links report openable hrefs only (the window opens them natively); others are inert.
   const auto [lx, ly] = center(host, kLinkText);
   const PressResult link = host.press_at(lx, ly);
   NVE_CHECK(link.node_id == kLink && !link.dispatched && link.href == "https://example.com/docs");
+  const auto [bx, by] = center(host, kBadLink);
+  NVE_CHECK(host.press_at(bx, by).node_id == 0u && host.press_at(bx, by).href.empty());
+  NVE_CHECK(host.cursor_at(bx, by) == NVE_CURSOR_KIND_AUTO);
 
   // Cursors: explicit kind, POINTER over links, AUTO elsewhere.
   const auto [gx, gy] = center(host, kGrab);
@@ -251,9 +266,35 @@ void test_scene_semantics_inputs_and_pointer() {
   host.pointer_leave();
   NVE_CHECK(app.count(NVE_EVENT_POINTER_ENTER, kHover) == 2u && app.count(NVE_EVENT_POINTER_LEAVE, kHover) == 2u);
 
+  // Geometry-only change (`move`): padding on the column shifts every child; positions follow.
+  const float heading_y = abs_rect(host, kHeading).y;
+  const WinNodeVisual* heading_view = tree.find(kHeading);
+  w.set(kColumn, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_PADDING_TOP, h::length_points(30.0f));
+  flush(host);
+  NVE_CHECK(approx(abs_rect(host, kHeading).y, heading_y + 30.0f, 0.5) && tree.find(kHeading) == heading_view);
+  // A resource republished under the same id (new bytes) is re-read; an unrelated update is not.
+  const std::vector<uint8_t> png2 = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 7, 7};
+  w.define_resource(41u, h::kImageSrcKind, h::encode_image_bytes(png2));
+  flush(host);
+  NVE_CHECK(node(host, kImgBytes).image.encoded == png2);
+
+  // Damage: an idle frame or a hover with no app change repaints nothing; a change repaints the
+  // view's old and new bounds (shadows included), not the surface.
+  (void)host.take_damage();
+  host.pointer_move(5.0f, 5.0f);
+  (void)host.pump();
+  NVE_CHECK(host.take_damage().empty());
+  const Rect card_rect = abs_rect(host, kCard);
+  w.set(kCard, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(9, 9, 9));
+  flush(host);
+  const Rect damage = host.take_damage();
+  NVE_CHECK(damage.x <= card_rect.x - 1.0f && damage.right() >= card_rect.right() + 1.0f);  // shadow reach
+  NVE_CHECK(damage.width < 200.0f && damage.height < 100.0f);
+
   // Removal drops the view and its text-input registration.
   w.remove(kSecret);
-  const uint32_t fewer[] = {kHeading, kEntry, kNotes, kImgUrl, kImgBytes, kImgBad, kHidden, kLink, kGrab, kHover, kCard, kDisabled};
+  const uint32_t fewer[] = {kHeading, kEntry,  kNotes, kImgUrl, kImgBytes, kImgBad, kHidden,
+                            kLink,    kGrab,   kHover, kCard,   kDisabled, kBadLink};
   w.set_children(kColumn, fewer);
   flush(host);
   NVE_CHECK(tree.find(kSecret) == nullptr && tree.text_inputs().size() == 2u);
@@ -267,5 +308,5 @@ void test_scene_semantics_inputs_and_pointer() {
 
 void nve_test_win_media_and_input() {
   test_pure_helpers();
-  test_scene_semantics_inputs_and_pointer();
+  test_scene_inputs_and_pointer();
 }

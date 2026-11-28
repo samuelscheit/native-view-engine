@@ -32,7 +32,7 @@ namespace nve::host::app_state {
 
 /// Path from UTF-8 text.
 [[nodiscard]] inline std::filesystem::path from_utf8(std::string_view s) {
-  return std::filesystem::path(std::u8string(s.begin(), s.end()));
+  return std::filesystem::path(std::u8string_view(reinterpret_cast<const char8_t*>(s.data()), s.size()));
 }
 
 /// Env var `name` as a path ("" when unset); read wide on Windows.
@@ -81,10 +81,12 @@ namespace nve::host::app_state {
 [[nodiscard]] inline std::string slug(std::string_view identity) {
   const std::string stem = utf8(from_utf8(identity).stem());
   std::string out;
+  // ASCII-only classification: `std::isalnum` / `std::tolower` follow the C locale and could
+  // admit (or fold) bytes of multi-byte UTF-8 under a non-"C" locale.
   for (const char c : stem) {
-    const auto uc = static_cast<unsigned char>(c);
-    if (std::isalnum(uc) != 0 || c == '_' || c == '-') {
-      out.push_back(static_cast<char>(std::tolower(uc)));
+    const bool upper = c >= 'A' && c <= 'Z';
+    if (upper || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+      out.push_back(upper ? static_cast<char>(c - 'A' + 'a') : c);
     } else if (!out.empty() && out.back() != '-') {
       out.push_back('-');
     }

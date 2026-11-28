@@ -12,6 +12,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -21,6 +22,7 @@
 #include <utility>
 
 #include "../generated/nve_runtime_abi.generated.h"
+#include "../generated/nve_tables.generated.h"
 #include "scene_reader.hpp"
 #include "table_reader.hpp"
 #include "utf8.h"
@@ -49,6 +51,37 @@ struct RuntimeResource {
 /// UTF-8 text as an `NveStrSlice` (NULL pointer when empty).
 [[nodiscard]] inline NveStrSlice str_slice(std::string_view text) noexcept {
   return NveStrSlice{text.empty() ? nullptr : reinterpret_cast<const uint8_t*>(text.data()), text.size()};
+}
+
+/// `NveStrSlice` as UTF-8 text (empty for NULL).
+[[nodiscard]] inline std::string_view str_view(NveStrSlice s) noexcept {
+  return s.ptr != nullptr && s.len > 0u ? std::string_view(reinterpret_cast<const char*>(s.ptr), s.len)
+                                        : std::string_view();
+}
+
+/// The default typography at `font_size` / `font_weight` (host font, `normal` line height,
+/// wrapping): what a node without `nve.typography` is measured with.
+[[nodiscard]] inline NveRuntimeTextStyle text_style(float font_size, uint16_t font_weight = 400u) noexcept {
+  NveRuntimeTextStyle s{};
+  s.font_size = font_size;
+  s.font_weight = font_weight;
+  s.line_height_unit = NVE_LINE_HEIGHT_AUTO;
+  return s;
+}
+
+/// Absolute line height in points (`0` for `normal`): points as is, percent as a multiplier of
+/// `font_size` (CSS unit-less `line-height`). Hosts hand toolkits this absolute value: some
+/// (GTK CSS) scale a unit-less factor by the font's natural line height instead of its size.
+[[nodiscard]] inline double line_height_points(uint32_t unit, float value, float font_size) noexcept {
+  if (!(value > 0.0f) || !std::isfinite(value)) return 0.0;
+  if (unit == NVE_LINE_HEIGHT_PERCENT) return static_cast<double>(value) / 100.0 * static_cast<double>(font_size);
+  if (unit == NVE_LINE_HEIGHT_POINTS) return static_cast<double>(value);
+  return 0.0;
+}
+
+/// `white-space: nowrap | pre` never wrap at the available width.
+[[nodiscard]] inline bool white_space_wraps(uint32_t white_space) noexcept {
+  return white_space != NVE_WHITE_SPACE_NO_WRAP && white_space != NVE_WHITE_SPACE_PRE;
 }
 
 /// Validated zero-copy reader over a borrowed `NveRuntimeSceneView`.
@@ -503,6 +536,18 @@ class RuntimeSession {
                                            float* out_y = nullptr) noexcept {
     if (!valid()) return NVE_RUNTIME_INVALID_ARG;
     return static_cast<NveRuntimeStatus>(api_->scroll_by(handle_, node_id, dx, dy, out_x, out_y));
+  }
+
+  /// Scrolls `node_id` to the absolute offset `(x, y)` (non-finite: keep that axis), clamped by the
+  /// runtime; `out_x` / `out_y` receive the applied offset. (A host-side composition of
+  /// `scroll_by`: the runtime keeps one relative scroll slot.)
+  [[nodiscard]] NveRuntimeStatus scroll_to(uint32_t node_id, float x, float y, float* out_x = nullptr,
+                                           float* out_y = nullptr) noexcept {
+    float cur_x = 0.0f, cur_y = 0.0f;
+    if (const NveRuntimeStatus st = scroll_by(node_id, 0.0f, 0.0f, &cur_x, &cur_y); st != NVE_RUNTIME_OK) return st;
+    const float dx = std::isfinite(x) ? x - cur_x : 0.0f;
+    const float dy = std::isfinite(y) ? y - cur_y : 0.0f;
+    return scroll_by(node_id, dx, dy, out_x, out_y);
   }
 
   [[nodiscard]] std::optional<RuntimeSceneGuard> acquire_scene(

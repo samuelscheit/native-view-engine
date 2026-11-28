@@ -36,6 +36,13 @@ void runRuntimeIngress(Check c) {
   final viewSize = ffi.sizeOf<NveRuntimeSceneView>();
   // 56 + 10 pointers is a multiple of 8 on both data models: no tail padding after `moved_indices`.
   c.eq(viewSize, 56 + 10 * _ptr, 'NveRuntimeSceneView size (136 on 64-bit, 96 on 32-bit)');
+  // The measurer's style: fixed scalars, then the family slice at 24 on every data model.
+  c.eq(ffi.sizeOf<NveRuntimeTextStyle>(), 24 + ffi.sizeOf<NveStrSlice>(), 'NveRuntimeTextStyle size');
+  c.eq(
+      _offsetOf<NveRuntimeTextStyle>(
+          ffi.sizeOf<NveRuntimeTextStyle>(), (s) => s.ref.fontFamily.ptr = ffi.Pointer.fromAddress(0x10), _ptr),
+      24,
+      'NveRuntimeTextStyle.font_family @24');
   int viewOffset(void Function(NveRuntimeSceneView v) write, [int width = 4]) =>
       _offsetOf<NveRuntimeSceneView>(viewSize, (p) => write(p.ref), width);
   c.eq(viewOffset((v) => v.schemaHash = 1, 8), 0, 'schema_hash @0');

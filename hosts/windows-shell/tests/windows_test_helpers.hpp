@@ -3,11 +3,13 @@
 #include "NveWinHost.hpp"
 
 #include <nve/host/nve2_writer.hpp>
+#include <nve/host/testing/scratch_dir.hpp>
 #include <nve/host/testing/scripted_app.hpp>
 
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <source_location>
 #include <string>
 #include <string_view>
@@ -24,9 +26,21 @@
 
 namespace nve::win::test {
 
+using host::testing::ScratchDir;
 using host::testing::ScriptedApp;
 
 inline bool approx(double a, double b, double eps = 1.5) { return std::fabs(a - b) <= eps; }
+
+/// A host surface (the factory only fails without `libnve_runtime` / DirectWrite).
+inline std::unique_ptr<NveWinHost> make_host(WinHostConfig config = {}) {
+  std::string error;
+  std::unique_ptr<NveWinHost> host = NveWinHost::create(config, &error);
+  if (host == nullptr) {
+    std::cerr << "NveWinHost::create failed: " << error << "\n";
+    std::abort();
+  }
+  return host;
+}
 
 /// Renders the `ScriptedApp`'s pending ops and mirrors them into the visual tree.
 inline void flush(NveWinHost& host) {
@@ -82,7 +96,7 @@ inline std::vector<uint32_t> paint_order(const NveWinHost& host) {
       ids.push_back(n.id);
       return true;
     }
-    void leave(const WinNodeVisual&, const PaintFrame&) {}
+    void leave(const WinNodeVisual&, const PaintFrame&, bool) {}
   } order;
   host.visual_tree().walk(order);
   return order.ids;

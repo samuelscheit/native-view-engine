@@ -1,16 +1,16 @@
 // nve-windows-shell: runs an NVE app (built-in counter demo, a `cdylib`, or a paired `nve dev`
 // server) in a native Win32 + Direct2D window, persisting the app's state across launches, or
-// renders it headlessly to a `.bmp` (`--screenshot`).
+// renders it headlessly to a `.bmp` (`--screenshot`). `wmain`: paths are UTF-16 on the command
+// line and UTF-8 inside (any code page).
 #include "NveWinHostWindow.hpp"
 
-#include <nve/host/app_state.hpp>
 #include <nve/host/demo_counter_app.hpp>
+#include <nve/host/launch_options.hpp>
 
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cmath>
-#include <cstdlib>
-#include <cstring>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -23,61 +23,53 @@ namespace {
 
 using nve::host::demo::CounterApp;
 using nve::win::NveWinHost;
-namespace app_state = nve::host::app_state;
 
-struct Options {
-  std::string dylib_path;
-  std::string pair_uri;
-  std::string pair_token;
-  std::string state_path;
+struct Options : nve::host::LaunchOptions {
   std::string screenshot_path;
-  uint32_t schema_version = 1u;
-  bool no_state = false;
-  bool reset_state = false;
-  int width = 640;
-  int height = 420;
   float scale = 1.0f;  // --screenshot only (a window follows its monitor's DPI)
 };
 
 std::atomic<HWND> g_main_window{nullptr};
 
-void print_usage(const char* argv0) {
-  std::cout << "Usage: " << argv0
-            << " [--dylib <app.dll>] [--pair <nve://|quic://|wt://|ws(s)://...>] [--pair-token <token>]"
-               " [--state <file>] [--no-state] [--reset-state] [--schema <ver>] [--width W] [--height H]"
-               " [--screenshot <out.bmp> [--scale S]]\n"
-               "Env: NVE_STATE_DISABLE=1, NVE_STATE_PATH=<file>, NVE_RESET_STATE=1\n";
+void print_usage() {
+  std::cout << "Usage: nve_windows_shell " << nve::host::kLaunchUsage << " [--screenshot <out.bmp> [--scale S]]\n"
+            << nve::host::kLaunchEnvUsage << "\n";
 }
 
-/// Runs the requested source. When pairing or the dylib load fails, runs the built-in counter
-/// instead and returns `false`: the failed app's state must neither be restored nor overwritten.
+/// Runs the requested source; `false` when pairing or the dylib failed (the caller falls back
+/// to the built-in counter, which then never touches the failed app's state).
 bool load_app(NveWinHost& host, const Options& o) {
   if (!o.pair_uri.empty()) {
     std::string error;
     if (host.connect_paired(o.pair_uri, o.pair_token, &error)) return true;
     std::cerr << "[nve-windows-shell] pairing with '" << o.pair_uri << "' failed: " << error << "\n";
-  } else if (!o.dylib_path.empty()) {
+    return false;
+  }
+  if (!o.dylib_path.empty()) {
     nve::host::ModuleError code = nve::host::ModuleError::None;
     std::string error;
     if (host.load_dylib(o.dylib_path, &code, &error)) return true;
     std::cerr << "[nve-windows-shell] loading '" << o.dylib_path << "' failed (" << static_cast<int>(code)
               << "): " << error << "\n";
-  } else {
-    return host.attach_interface(&CounterApp::get_interface);
+    return false;
   }
-  (void)host.attach_interface(&CounterApp::get_interface);
-  return false;
+  return host.attach_interface(&CounterApp::get_interface);
 }
 
-/// Restores the app state, or on `--reset-state` / `NVE_RESET_STATE` clears it (cold start).
-void restore(NveWinHost& host, const Options& o) {
-  if (o.no_state) return;
-  if (o.reset_state) {
-    if (!host.clear_state(o.state_path)) {
-      std::cerr << "[nve-windows-shell] clearing " << o.state_path << " failed: " << host.last_error() << "\n";
-    }
-  } else if (host.restore_state(o.state_path, o.schema_version)) {
-    std::cerr << "[nve-windows-shell] restored app state from " << o.state_path << "\n";
+/// Restores / clears the state per `state_action_after_load` (only once the requested app runs).
+void apply_state(NveWinHost& host, Options& o, bool loaded) {
+  switch (nve::host::state_action_after_load(o, loaded)) {
+    case nve::host::StateAction::Clear:
+      if (!host.clear_state(o.state_path)) {
+        std::cerr << "[nve-windows-shell] clearing " << o.state_path << " failed: " << host.last_error() << "\n";
+      }
+      break;
+    case nve::host::StateAction::Restore:
+      if (host.restore_state(o.state_path, o.schema_version)) {
+        std::cerr << "[nve-windows-shell] restored app state from " << o.state_path << "\n";
+      }
+      break;
+    case nve::host::StateAction::None: break;
   }
 }
 
@@ -89,21 +81,26 @@ void persist(NveWinHost& host, const Options& o, const char* trigger) {
 }
 
 int screenshot(Options& o) {
-  NveWinHost host(nve::win::WinHostConfig{.surface_id = 1u,
-                                          .width = static_cast<float>(o.width),
-                                          .height = static_cast<float>(o.height),
-                                          .scale_factor = o.scale});
-  o.no_state = !load_app(host, o) || o.no_state;
+  std::string error;
+  const auto host = NveWinHost::create(nve::win::WinHostConfig{.surface_id = 1u,
+                                                               .width = static_cast<float>(o.width),
+                                                               .height = static_cast<float>(o.height),
+                                                               .scale_factor = o.scale},
+                                       &error);
+  if (host == nullptr) {
+    std::cerr << "[nve-windows-shell] " << error << "\n";
+    return 1;
+  }
+  if (!load_app(*host, o)) return 1;  // a screenshot of a fallback app would be a false result
   // Paired frames arrive in the background: give the first one a moment.
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-  while (host.is_paired() && host.view_count() == 0u && std::chrono::steady_clock::now() < deadline) {
+  while (host->is_paired() && host->view_count() == 0u && std::chrono::steady_clock::now() < deadline) {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    (void)host.pump();
+    (void)host->pump();
   }
-  restore(host, o);
-  const auto px = [&o](int dips) { return static_cast<uint32_t>(std::max(1.0f, std::round(dips * o.scale))); };
-  std::string error;
-  if (!nve::win::render_visual_tree_to_bmp(host.visual_tree(), host.text_measurer(), px(o.width), px(o.height), o.scale,
+  apply_state(*host, o, true);
+  const auto px = [&o](int dips) { return static_cast<uint32_t>(std::max(1.0f, std::round(static_cast<float>(dips) * o.scale))); };
+  if (!nve::win::render_visual_tree_to_bmp(host->visual_tree(), host->text_measurer(), px(o.width), px(o.height), o.scale,
                                            o.screenshot_path, &error)) {
     std::cerr << "[nve-windows-shell] screenshot '" << o.screenshot_path << "' failed: " << error << "\n";
     return 1;
@@ -121,13 +118,15 @@ BOOL WINAPI on_console_ctrl(DWORD) {
 int run_window(Options& o) {
   nve::win::NveWinHostWindow window(nve::win::WinHostWindowOptions{
       .title = "NVE Windows Host Shell", .width = o.width, .height = o.height, .surface_id = 1u, .quit_on_destroy = true});
-  if (!window.create(::GetModuleHandleW(nullptr))) {
-    std::cerr << "[nve-windows-shell] creating the window failed\n";
+  std::string error;
+  if (!window.create(::GetModuleHandleW(nullptr), &error)) {
+    std::cerr << "[nve-windows-shell] creating the window failed: " << error << "\n";
     return 1;
   }
   NveWinHost& host = window.host();
-  o.no_state = !load_app(host, o) || o.no_state;
-  restore(host, o);
+  const bool loaded = load_app(host, o);
+  if (!loaded) (void)host.attach_interface(&CounterApp::get_interface);
+  apply_state(host, o, loaded);
   if (host.is_paired()) window.set_title("NVE Windows Host Shell (paired: " + o.pair_uri + ")");
   window.set_on_close_request([&host, &o](uint32_t) {
     persist(host, o, "window-close");
@@ -144,50 +143,34 @@ int run_window(Options& o) {
 
 }  // namespace
 
-int main(int argc, char* argv[]) {
+int wmain(int argc, wchar_t* argv[]) {
   Options o;
-  for (int i = 1; i < argc; ++i) {
-    const auto is = [&](const char* flag) { return std::strcmp(argv[i], flag) == 0; };
-    const bool has_value = i + 1 < argc;
-    if (is("--help") || is("-h")) {
-      print_usage(argv[0]);
-      return 0;
-    } else if (is("--no-state")) {
-      o.no_state = true;
-    } else if (is("--reset-state")) {
-      o.reset_state = true;
-    } else if (is("--dylib") && has_value) {
-      o.dylib_path = argv[++i];
-    } else if (is("--pair") && has_value) {
-      o.pair_uri = argv[++i];
-    } else if (is("--pair-token") && has_value) {
-      o.pair_token = argv[++i];
-    } else if (is("--state") && has_value) {
-      o.state_path = argv[++i];
-    } else if (is("--schema") && has_value) {
-      o.schema_version = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 10));
-    } else if (is("--width") && has_value) {
-      o.width = std::max(1, std::atoi(argv[++i]));
-    } else if (is("--height") && has_value) {
-      o.height = std::max(1, std::atoi(argv[++i]));
-    } else if (is("--screenshot") && has_value) {
-      o.screenshot_path = argv[++i];
-    } else if (is("--scale") && has_value) {
-      const float s = std::strtof(argv[++i], nullptr);
-      o.scale = std::isfinite(s) && s > 0.0f ? s : 1.0f;
-    } else {
-      std::cerr << "[nve-windows-shell] unknown argument '" << argv[i] << "'\n";
-      print_usage(argv[0]);
+  const nve::host::LaunchExtraFlag extra = [&o](std::string_view flag, const char* value) {
+    if (value == nullptr) return 0;
+    if (flag == "--screenshot") {
+      o.screenshot_path = value;
       return 2;
     }
+    if (flag == "--scale") {
+      const std::string_view v(value);
+      float s = 0.0f;
+      const auto [end, ec] = std::from_chars(v.data(), v.data() + v.size(), s);
+      if (ec != std::errc() || end != v.data() + v.size() || !std::isfinite(s) || s <= 0.0f) return 0;
+      o.scale = s;
+      return 2;
+    }
+    return 0;
+  };
+  std::string error;
+  switch (nve::host::parse_launch_args(argc, argv, o, &error, extra)) {
+    case nve::host::LaunchParse::Help: print_usage(); return 0;
+    case nve::host::LaunchParse::Error:
+      std::cerr << "[nve-windows-shell] " << error << "\n";
+      print_usage();
+      return 2;
+    case nve::host::LaunchParse::Run: break;
   }
-  // Paired apps keep their state on the `nve dev` server.
-  if (!o.no_state && o.state_path.empty() && o.pair_uri.empty()) {
-    o.state_path = app_state::resolve_path(o.dylib_path.empty() ? "nve-windows-shell-builtin" : o.dylib_path);
-  }
-  o.no_state = o.no_state || o.state_path.empty() || !o.pair_uri.empty();
-  o.reset_state = o.reset_state || app_state::reset_requested();
-
+  nve::host::resolve_launch_state(o, "nve-windows-shell-builtin");
   ::SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   return o.screenshot_path.empty() ? run_window(o) : screenshot(o);
 }

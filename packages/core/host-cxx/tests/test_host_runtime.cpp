@@ -52,6 +52,11 @@ void test_writer_round_trip_and_retained_tree() {
   w.set(4u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, length_points(40.0f));
   w.set_str(5u, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "typed");
   w.set_str(5u, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_LABEL, "Name");
+  // Content box: 2px border + 10px left / 25%-of-parent-width (50px) top / 4px right padding.
+  w.set_f32(5u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_WIDTH, 2.0f);
+  w.set(5u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_PADDING_LEFT, length_points(10.0f));
+  w.set(5u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_PADDING_TOP, length_percent(25.0f));
+  w.set(5u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_PADDING_RIGHT, length_points(4.0f));
   w.attach(6u, NVE_TABLE_SCROLL_DESC);  // defaults-only row
   CHECK(!w.set_str(3u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, std::string_view("\xFF", 1)));  // invalid UTF-8
   CHECK(!w.set(3u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, 1u));  // `Str` needs set_str
@@ -87,6 +92,17 @@ void test_writer_round_trip_and_retained_tree() {
       CHECK(res && res->kind == kImageSrcKind);
       const auto decoded = res ? decode_image_src(res->bytes) : std::nullopt;
       CHECK(decoded && decoded->is_url() && decoded->url == "file:///tmp/a.png");
+      CHECK(img.content.x == 0.0f && img.content.y == 0.0f && img.content.width == img.rect.width &&
+            img.content.height == img.rect.height);  // no border, no padding
+      const NodeData input = read_node(guard->reader(), h.tables, 5u, TextStyle{});
+      CHECK(input.rect.width == 200.0f && input.rect.height >= 54.0f);  // padding + border are in the rect
+      CHECK(input.content.x == 12.0f && input.content.y == 52.0f && input.content.width == 182.0f);
+      CHECK(input.content.height == input.rect.height - 54.0f);
+      // The content box is geometry: `move` (moved-only nodes) sees it without a full decode.
+      // (`NodeGeometry` carries nothing beyond geometry.)
+      const std::optional<NodeGeometry> moved = read_geometry(guard->reader(), h.tables, 5u);
+      CHECK(moved.has_value() && moved->content.x == input.content.x && moved->content.y == input.content.y &&
+            moved->content.width == input.content.width && moved->content.height == input.content.height);
     }
   }
 
@@ -360,23 +376,39 @@ void test_text_wrappers_are_containers() {
   CHECK(node2() == std::make_pair(NodeKind::Text, std::string("own")));
 }
 
-/// `ControlledText`: first publish writes, edit echoes are absorbed, app rewrites win, host
+/// `ControlledText`: first publish writes; synchronous answers keep accepted edits and write back
+/// transformed or rejected ones; asynchronous (paired) answers never overwrite newer typing; host
 /// writes are not edits.
 void test_controlled_text() {
   ControlledText t;
-  CHECK(t.app_published("a", ""));
-  CHECK(t.user_edited("ab") && !t.user_edited("ab"));
-  CHECK(!t.app_published("ab", "ab"));   // echo of the edit
-  CHECK(t.user_edited("abc"));
-  CHECK(!t.app_published("ab", "abc"));  // stale value while typing: keep the user's text
-  CHECK(t.app_published("ABC", "abc"));  // the app transformed the value
+  CHECK(t.app_published("1", ""));
+  // Synchronous app accepts "12" (echo republished during the dispatch, then answered).
+  CHECK(t.user_edited("12") && !t.user_edited("12"));
+  CHECK(!t.app_published("12", "12"));
+  CHECK(!t.app_answered("12") && t.app_value() == "12");
+  // A numeric field rejects "12a": nothing is republished, the answer is the old value.
+  CHECK(t.user_edited("12a"));
+  CHECK(t.app_answered("12"));           // write "12" back
+  CHECK(!t.user_edited("12"));           // the write's own change notification is no edit
+  // A transforming app ("ab" -> "AB") republishes during the dispatch: written once.
+  ControlledText up;
+  CHECK(up.app_published("", ""));
+  CHECK(up.user_edited("ab"));
+  CHECK(up.app_published("AB", "ab"));
+  CHECK(!up.app_answered("AB"));
+  // Paired: answers lag behind typing.
+  ControlledText paired;
+  CHECK(paired.app_published("", ""));
+  CHECK(paired.user_edited("a") && paired.user_edited("ab"));
+  CHECK(!paired.app_published("a", "ab"));   // stale echo of "a" while "ab" is in flight
+  CHECK(!paired.app_published("ab", "ab"));  // the latest echo
+  CHECK(paired.app_published("X", "ab"));    // a genuine app-side change
   {
-    const auto write = t.host_write();
-    CHECK(t.writing() && !t.user_edited("ABC"));
+    const auto write = paired.host_write();
+    CHECK(paired.writing() && !paired.user_edited("X"));
   }
-  CHECK(!t.writing() && !t.app_published("ABC", "ABC"));
-  CHECK(t.app_published("", "ABC"));     // the app clears the field
-  CHECK(t.user_edited("x") && !t.app_published("x", "x"));
+  CHECK(!paired.writing() && !paired.app_published("X", "X"));
+  CHECK(paired.app_published("", "X"));      // the app clears the field
 }
 
 void test_host_session_counter() {

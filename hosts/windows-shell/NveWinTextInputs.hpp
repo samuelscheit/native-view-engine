@@ -24,7 +24,7 @@ namespace nve::win {
 class WinTextInputs {
  public:
   WinTextInputs() = default;
-  ~WinTextInputs() { clear(); }
+  ~WinTextInputs() { detach(); }
   WinTextInputs(const WinTextInputs&) = delete;
   WinTextInputs& operator=(const WinTextInputs&) = delete;
 
@@ -37,6 +37,8 @@ class WinTextInputs {
   void sync(float scale);
   /// Destroys every control.
   void clear();
+  /// Destroys every control and forgets the window / host (their teardown raises no events).
+  void detach();
 
   /// `WM_COMMAND` from a control (`EN_CHANGE` / `EN_SETFOCUS` / `EN_KILLFOCUS`); `true` when handled.
   bool on_command(WPARAM wparam, LPARAM lparam);
@@ -59,11 +61,25 @@ class WinTextInputs {
     std::wstring font_key;
     std::string placeholder;
     RECT placed{};
+    RECT region{};  // window region while clipped (control coordinates)
     bool visible = false;
     bool clipped = false;
     bool multiline = false;
     bool secure = false;
     host::ControlledText text;
+  };
+
+  /// Scope of the host's own control changes: EN_* notifications raised inside are ignored.
+  class Busy {
+   public:
+    explicit Busy(bool& flag) noexcept : flag_(flag), prev_(flag) { flag_ = true; }
+    ~Busy() { flag_ = prev_; }
+    Busy(const Busy&) = delete;
+    Busy& operator=(const Busy&) = delete;
+
+   private:
+    bool& flag_;
+    bool prev_;
   };
 
   static LRESULT CALLBACK control_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, UINT_PTR node_id,
@@ -78,6 +94,7 @@ class WinTextInputs {
   NveWinHost* host_ = nullptr;
   std::unordered_map<uint32_t, Field> fields_;  // packed `NodeId` -> control
   UINT next_control_id_ = 0x4E00u;
+  bool busy_ = false;
 };
 
 }  // namespace nve::win

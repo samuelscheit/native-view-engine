@@ -514,87 +514,40 @@ suite_ios_simulator_sdk() {
     hosts/ios-shell/*.mm
 }
 
-suite_windows_host() {
-  local build_dir="$BUILD_ROOT/windows-shell"
-  cmake -S "$REPO_ROOT/hosts/windows-shell" -B "$build_dir" \
+# Configures + builds a desktop C++ host (`hosts/<name>`) and runs its CTest with the live
+# kitchen-sink `cdylib` test required (built here; never skipped silently). Extra args prefix
+# ctest (e.g. `xvfb-run -a`).
+run_desktop_host_ctest() {
+  local name="$1"
+  shift
+  local build_dir="$BUILD_ROOT/$name"
+  cmake -S "$REPO_ROOT/hosts/$name" -B "$build_dir" \
     ${CMAKE_GEN_ARGS[@]+"${CMAKE_GEN_ARGS[@]}"} \
     ${CMAKE_RN_ARGS[@]+"${CMAKE_RN_ARGS[@]}"}
   cmake --build "$build_dir"
-  # The live kitchen-sink `cdylib` test is opt-in: it runs when the dylib was built.
-  local env_prefix=()
-  if [ -f "$KITCHEN_SINK_DYLIB" ]; then
-    env_prefix=(env "NVE_TEST_KITCHEN_SINK_DYLIB=$(native_host_path "$KITCHEN_SINK_DYLIB")")
-  fi
-  ${env_prefix[@]+"${env_prefix[@]}"} ctest --test-dir "$build_dir" --output-on-failure
-}
-
-suite_qt6_host() {
-  local build_dir="$BUILD_ROOT/qt-shell"
-  cmake -S "$REPO_ROOT/hosts/qt-shell" -B "$build_dir" \
-    ${CMAKE_GEN_ARGS[@]+"${CMAKE_GEN_ARGS[@]}"} \
-    ${CMAKE_RN_ARGS[@]+"${CMAKE_RN_ARGS[@]}"}
-  cmake --build "$build_dir"
-  QT_QPA_PLATFORM=offscreen ctest --test-dir "$build_dir" --output-on-failure
+  (cd "$REPO_ROOT" && cargo build --locked -p nve-example-kitchen-sink)
   if [ ! -f "$KITCHEN_SINK_DYLIB" ]; then
     echo "error: expected kitchen-sink dylib at $KITCHEN_SINK_DYLIB" >&2
     return 1
   fi
-  if [ ! -f "$STUDIO_DYLIB" ]; then
-    echo "error: expected studio dylib at $STUDIO_DYLIB" >&2
-    return 1
-  fi
-  local host_ks host_studio
-  host_ks="$(native_host_path "$KITCHEN_SINK_DYLIB")"
-  host_studio="$(native_host_path "$STUDIO_DYLIB")"
+  NVE_TEST_KITCHEN_SINK_DYLIB="$(native_host_path "$KITCHEN_SINK_DYLIB")" \
+    "$@" ctest --test-dir "$build_dir" --output-on-failure
+}
 
-  local shell_test_bin=""
-  if [ -x "$build_dir/nve_qt_shell_test" ]; then
-    shell_test_bin="$build_dir/nve_qt_shell_test"
-  elif [ -x "$build_dir/nve_qt_shell_test.exe" ]; then
-    shell_test_bin="$build_dir/nve_qt_shell_test.exe"
-  else
-    echo "error: nve_qt_shell_test binary not found in $build_dir" >&2
-    return 1
-  fi
+suite_windows_host() {
+  run_desktop_host_ctest windows-shell
+}
 
-  QT_QPA_PLATFORM=offscreen \
-    NVE_TEST_KITCHEN_SINK_DYLIB="$host_ks" \
-    NVE_TEST_STUDIO_DYLIB="$host_studio" \
-    "$shell_test_bin"
-
-  local quick_test_bin=""
-  if [ -x "$build_dir/nve_qt_quick_test" ]; then
-    quick_test_bin="$build_dir/nve_qt_quick_test"
-  elif [ -x "$build_dir/nve_qt_quick_test.exe" ]; then
-    quick_test_bin="$build_dir/nve_qt_quick_test.exe"
-  fi
-  if [ -n "$quick_test_bin" ]; then
-    QT_QPA_PLATFORM=offscreen \
-      QT_QUICK_BACKEND=software \
-      NVE_TEST_KITCHEN_SINK_DYLIB="$host_ks" \
-      NVE_TEST_STUDIO_DYLIB="$host_studio" \
-      "$quick_test_bin"
-  fi
+suite_qt6_host() {
+  # `qt_shell_test` / `qt_quick_test` set their own offscreen platform.
+  run_desktop_host_ctest qt-shell
 }
 
 suite_gtk4_host() {
-  local build_dir="$BUILD_ROOT/gtk-shell"
-  cmake -S "$REPO_ROOT/hosts/gtk-shell" -B "$build_dir" \
-    ${CMAKE_GEN_ARGS[@]+"${CMAKE_GEN_ARGS[@]}"} \
-    ${CMAKE_RN_ARGS[@]+"${CMAKE_RN_ARGS[@]}"}
-  cmake --build "$build_dir"
-
-  local env_prefix=()
-  if [ -f "$KITCHEN_SINK_DYLIB" ] && [ -f "$STUDIO_DYLIB" ]; then
-    env_prefix=(env "NVE_TEST_KITCHEN_SINK_DYLIB=$KITCHEN_SINK_DYLIB" "NVE_TEST_STUDIO_DYLIB=$STUDIO_DYLIB")
-  elif [ -f "$KITCHEN_SINK_DYLIB" ]; then
-    env_prefix=(env "NVE_TEST_KITCHEN_SINK_DYLIB=$KITCHEN_SINK_DYLIB")
-  fi
-
   if [ "$OS_NAME" = "Linux" ] && [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ] && command -v xvfb-run >/dev/null 2>&1; then
-    ${env_prefix[@]+"${env_prefix[@]}"} xvfb-run -a ctest --test-dir "$build_dir" --output-on-failure
+    run_desktop_host_ctest gtk-shell xvfb-run -a
   else
-    ${env_prefix[@]+"${env_prefix[@]}"} ctest --test-dir "$build_dir" --output-on-failure
+    run_desktop_host_ctest gtk-shell
   fi
 }
 
@@ -796,13 +749,33 @@ fi
 # Track 1B-2 rebinds all native hosts once against `libnve_runtime`.
 LEGACY_NATIVE_REASON="temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime"
 
+# Desktop C++ hosts (Track 1B-2 Slice 2B-4): on `host-cxx` + `libnve_runtime`, always run.
+# Windows: the retained model / controller / window-manager suite runs everywhere; on Windows
+# (MINGW / MSYS / Git Bash) it adds the Direct2D, DirectWrite, WIC and live-window suite.
+if has_cmake; then
+  run_suite "Windows host" suite_windows_host "CTest (+ Direct2D / window suite on Windows) + kitchen sink"
+else
+  skip_suite "Windows host" "cmake not found"
+fi
+if has_cmake && has_qt6; then
+  run_suite "Qt 6 host" suite_qt6_host "offscreen CTest (Widgets + Quick) + kitchen sink"
+elif ! has_cmake; then
+  skip_suite "Qt 6 host" "cmake not found"
+else
+  skip_suite "Qt 6 host" "Qt6 / qmake6 not found"
+fi
+if has_cmake && command -v pkg-config >/dev/null 2>&1 && pkg-config --exists gtk4; then
+  run_suite "GTK4 host" suite_gtk4_host "CTest + kitchen sink"
+elif ! has_cmake; then
+  skip_suite "GTK4 host" "cmake not found"
+else
+  skip_suite "GTK4 host" "gtk4 not found via pkg-config"
+fi
+
 if [ "${NVE_RUN_LEGACY_NATIVE_HOSTS:-0}" != "1" ]; then
   skip_suite "C++20 Fabric bridge" "$LEGACY_NATIVE_REASON"
   skip_suite "macOS AppKit host" "$LEGACY_NATIVE_REASON"
   skip_suite "iOS Simulator SDK" "$LEGACY_NATIVE_REASON"
-  skip_suite "Windows host" "$LEGACY_NATIVE_REASON"
-  skip_suite "Qt 6 host" "$LEGACY_NATIVE_REASON"
-  skip_suite "GTK4 host" "$LEGACY_NATIVE_REASON"
   skip_suite "Android JNI host" "$LEGACY_NATIVE_REASON"
   skip_suite "Android Compose kit" "$LEGACY_NATIVE_REASON"
   skip_suite "SwiftUI host kit" "$LEGACY_NATIVE_REASON"
@@ -836,32 +809,6 @@ else
     skip_suite "iOS Simulator SDK" "requires macOS (Darwin)"
   else
     skip_suite "iOS Simulator SDK" "iphonesimulator SDK not installed"
-  fi
-
-  # 3c. Windows host: the retained model / controller / window-manager suite runs everywhere; on
-  # Windows (MINGW / MSYS / Git Bash) it adds the Direct2D, DirectWrite, WIC and live-window suite.
-  if has_cmake; then
-    run_suite "Windows host" suite_windows_host "CTest (+ Direct2D / window suite on Windows)"
-  else
-    skip_suite "Windows host" "cmake not found"
-  fi
-
-  # 4. Qt 6 host
-  if has_cmake && has_qt6; then
-    run_suite "Qt 6 host" suite_qt6_host "offscreen CTest + Widgets & Quick dylibs"
-  elif ! has_cmake; then
-    skip_suite "Qt 6 host" "cmake not found"
-  else
-    skip_suite "Qt 6 host" "Qt6 / qmake6 not found"
-  fi
-
-  # 5. GTK4 host
-  if has_cmake && command -v pkg-config >/dev/null 2>&1 && pkg-config --exists gtk4; then
-    run_suite "GTK4 host" suite_gtk4_host "CTest"
-  elif ! has_cmake; then
-    skip_suite "GTK4 host" "cmake not found"
-  else
-    skip_suite "GTK4 host" "gtk4 not found via pkg-config"
   fi
 
   # 6. Android JNI host

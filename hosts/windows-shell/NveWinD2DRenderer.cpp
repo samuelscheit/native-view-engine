@@ -1,5 +1,6 @@
 // Direct2D painting of the retained `NveWinVisualTree` (shadows, backgrounds, images, canvas draw
 // lists, DirectWrite text, rounded clips, borders, opacity groups) and the `NVE_DRAW1` renderer.
+// Values arrive sealed (`read_node`, `decode_box_shadows`): nothing here re-validates them.
 #include "NveWinD2DInternal.hpp"
 
 #include <algorithm>
@@ -13,30 +14,38 @@ using d2d_internal::to_d2d;
 namespace {
 
 float corner_radius(const WinNodeVisual& n, const Rect& r) noexcept {
-  const float v = n.visual.border_radius;
-  return std::isfinite(v) ? std::clamp(v, 0.0f, 0.5f * std::min(r.width, r.height)) : 0.0f;
+  return std::min(n.visual.border_radius, 0.5f * std::min(r.width, r.height));
 }
 
 /// One pushed `ID2D1Layer` (opacity group and/or geometric clip) with the geometry it owns.
 struct Layer {
   ID2D1Layer* layer = nullptr;
   ID2D1Geometry* mask = nullptr;
+  [[nodiscard]] bool pushed() const noexcept { return layer != nullptr; }
 };
 
-/// Paints the visual tree in `NveWinVisualTree::walk` order.
+/// What `enter` pushed, handed back to `leave` (the walk keeps it on its own stack).
+struct Pushed {
+  Layer group;  // opacity
+  Layer clip;   // rounded overflow clip
+  bool axis_clip = false;
+  explicit operator bool() const noexcept { return true; }  // always descend
+};
+
+/// Paints the visual tree in `NveWinVisualTree::walk` order; with a dirty rect, only nodes whose
+/// painted area meets it draw (all are still traversed: children may overflow their parents).
 class Painter {
  public:
-  Painter(ID2D1RenderTarget* rt, ID2D1Factory* factory, ID2D1SolidColorBrush* brush,
-          const DirectWriteTextMeasurer& text) noexcept
-      : rt_(rt), factory_(factory), brush_(brush), text_(text) {}
+  Painter(ID2D1RenderTarget* rt, ID2D1Factory* factory, ID2D1SolidColorBrush* brush, const DirectWriteTextMeasurer& text,
+          D2DPaintCache& cache, const Rect* dirty) noexcept
+      : rt_(rt), factory_(factory), brush_(brush), text_(text), cache_(cache), dirty_(dirty) {}
 
-  bool enter(const WinNodeVisual& n, const PaintFrame& f) {
+  Pushed enter(const WinNodeVisual& n, const PaintFrame& f) {
     Pushed p;
-    const float own = std::isfinite(n.visual.opacity) ? std::clamp(n.visual.opacity, 0.0f, 1.0f) : 1.0f;
-    if (own < 0.999f) p.group = push_layer(nullptr, own);
     const Rect& r = f.rect;
+    if (n.visual.opacity < 0.999f) p.group = push_layer(nullptr, n.visual.opacity, nullptr);
     const float radius = corner_radius(n, r);
-    if (f.visible && !r.empty()) {
+    if (f.visible && !r.empty() && (dirty_ == nullptr || dirty_->intersects(r.inflate(n.shadow_reach)))) {
       for (const host::BoxShadow& s : n.shadows) {
         if (!s.inset) outer_shadow(s, r, radius);
       }
@@ -44,30 +53,26 @@ class Painter {
       for (const host::BoxShadow& s : n.shadows) {
         if (s.inset) inset_shadow(s, r, radius);
       }
-      if (!n.image.empty()) image(n, r);
-      if (n.canvas && !n.draw_list.empty()) (void)render_draw_list_to_d2d(rt_, brush_, factory_, to_d2d(r), n.draw_list);
-      text(n, r);
+      if (!n.image.empty() || (n.canvas && !n.draw_list.empty())) media(n, r, radius);
+      if (n.kind == host::NodeKind::Text || n.kind == host::NodeKind::TextInput) text(n, r);
     }
     if (n.clips() && !r.empty()) {
       if (radius > 0.0f) {
-        p.clip = push_layer(rounded(r, radius), 1.0f);
+        p.clip = push_layer(rounded(r, radius), 1.0f, &r);
       } else {
         rt_->PushAxisAlignedClip(to_d2d(r), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         p.axis_clip = true;
       }
     }
-    stack_.push_back(p);
-    return true;
+    return p;
   }
 
-  void leave(const WinNodeVisual& n, const PaintFrame& f) {
-    Pushed p = stack_.back();
-    stack_.pop_back();
+  void leave(const WinNodeVisual& n, const PaintFrame& f, Pushed& p) {
     if (p.axis_clip) rt_->PopAxisAlignedClip();
     pop_layer(p.clip);
     const Rect& r = f.rect;
     const float bw = n.visual.border_width;
-    if (f.visible && !r.empty() && std::isfinite(bw) && bw > 0.0f && (n.visual.border_color >> 24u) != 0u) {
+    if (f.visible && bw > 0.0f && (n.visual.border_color >> 24u) != 0u && (dirty_ == nullptr || dirty_->intersects(r))) {
       const float half = 0.5f * bw;
       const Rect inset{r.x + half, r.y + half, r.width - bw, r.height - bw};
       if (!inset.empty()) {
@@ -84,12 +89,6 @@ class Painter {
   }
 
  private:
-  struct Pushed {
-    Layer group;  // opacity
-    Layer clip;   // rounded overflow clip
-    bool axis_clip = false;
-  };
-
   ID2D1Geometry* rounded(const Rect& r, float radius) const {
     ID2D1RoundedRectangleGeometry* g = nullptr;
     if (factory_ == nullptr || FAILED(factory_->CreateRoundedRectangleGeometry(D2D1::RoundedRect(to_d2d(r), radius, radius), &g))) {
@@ -98,26 +97,47 @@ class Painter {
     return g;
   }
 
-  /// Pushes a layer (takes `mask`); a failed push releases it and pushes nothing.
-  Layer push_layer(ID2D1Geometry* mask, float opacity) {
+  /// Pushes a layer (takes `mask`; `bounds` limits its surface, null = whole target). A failed
+  /// layer creation releases `mask` and pushes nothing.
+  Layer push_layer(ID2D1Geometry* mask, float opacity, const Rect* bounds) {
     Layer l;
     if (FAILED(rt_->CreateLayer(nullptr, &l.layer)) || l.layer == nullptr) {
       if (mask != nullptr) mask->Release();
       return Layer{};
     }
     l.mask = mask;
-    rt_->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), mask, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-                                         D2D1::IdentityMatrix(), opacity, nullptr, D2D1_LAYER_OPTIONS_NONE),
+    rt_->PushLayer(D2D1::LayerParameters(bounds != nullptr ? to_d2d(*bounds) : D2D1::InfiniteRect(), mask,
+                                         D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(), opacity, nullptr,
+                                         D2D1_LAYER_OPTIONS_NONE),
                    l.layer);
     return l;
   }
 
   void pop_layer(Layer& l) {
-    if (l.layer == nullptr) return;
+    if (!l.pushed()) return;
     rt_->PopLayer();
     l.layer->Release();
     if (l.mask != nullptr) l.mask->Release();
     l = Layer{};
+  }
+
+  /// Clips to the node's rounded rect (or its plain rect); `false` when a rounded clip could not
+  /// be built (nothing pushed: the caller must not draw unclipped).
+  bool push_clip(const Rect& r, float radius, Layer& layer, bool& axis) {
+    if (radius <= 0.0f) {
+      rt_->PushAxisAlignedClip(to_d2d(r), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+      axis = true;
+      return true;
+    }
+    ID2D1Geometry* mask = rounded(r, radius);
+    if (mask == nullptr) return false;
+    layer = push_layer(mask, 1.0f, &r);
+    return layer.pushed();
+  }
+
+  void pop_clip(Layer& layer, bool axis) {
+    if (axis) rt_->PopAxisAlignedClip();
+    pop_layer(layer);
   }
 
   void fill(const Rect& r, float radius, uint32_t rgba, float alpha) {
@@ -139,26 +159,25 @@ class Painter {
     if ((s.color >> 24u) == 0u || factory_ == nullptr) return;
     host::BoxShadow hole = s;
     hole.inset = false;
-    hole.spread_radius = -(std::isfinite(s.spread_radius) ? s.spread_radius : 0.0f);
+    hole.spread_radius = -s.spread_radius;
     const std::vector<ShadowPass> passes = outer_shadow_passes(hole, r, radius);
     if (passes.empty()) {  // the spread swallowed the hole: the whole box is shadow
       fill(r, radius, s.color, 1.0f);
       return;
     }
-    Layer clip = push_layer(rounded(r, radius), 1.0f);
-    const Rect outside = r.inflate(std::fabs(s.offset_x) + std::fabs(s.offset_y) + std::fabs(s.spread_radius) +
-                                   std::fabs(s.blur_radius) + 1.0f);
+    Layer clip;
+    bool axis = false;
+    if (!push_clip(r, radius, clip, axis)) return;  // never paint the ring unclipped
+    const Rect outside = r.inflate(std::fabs(s.offset_x) + std::fabs(s.offset_y) + std::fabs(s.spread_radius) + s.blur_radius + 1.0f);
     for (size_t k = 0; k < passes.size(); ++k) {
       const ShadowPass& h = passes[passes.size() - 1u - k];  // smallest hole covers the most
       ID2D1RectangleGeometry* outer = nullptr;
-      ID2D1Geometry* inner = h.rect.empty() ? nullptr : rounded(h.rect, h.radius);
+      ID2D1Geometry* inner = rounded(h.rect, h.radius);
       ID2D1PathGeometry* ring = nullptr;
       ID2D1GeometrySink* sink = nullptr;
-      if (SUCCEEDED(factory_->CreateRectangleGeometry(to_d2d(outside), &outer)) &&
+      if (inner != nullptr && SUCCEEDED(factory_->CreateRectangleGeometry(to_d2d(outside), &outer)) &&
           SUCCEEDED(factory_->CreatePathGeometry(&ring)) && SUCCEEDED(ring->Open(&sink))) {
-        const HRESULT combined = inner != nullptr
-                                     ? outer->CombineWithGeometry(inner, D2D1_COMBINE_MODE_EXCLUDE, nullptr, sink)
-                                     : outer->Simplify(D2D1_GEOMETRY_SIMPLIFICATION_OPTION_LINES, nullptr, sink);
+        const HRESULT combined = outer->CombineWithGeometry(inner, D2D1_COMBINE_MODE_EXCLUDE, nullptr, sink);
         if (SUCCEEDED(sink->Close()) && SUCCEEDED(combined)) {
           brush_->SetColor(to_d2d(s.color, passes[k].alpha));
           rt_->FillGeometry(ring, brush_);
@@ -169,19 +188,23 @@ class Painter {
         if (u != nullptr) u->Release();
       }
     }
-    pop_layer(clip);
+    pop_clip(clip, axis);
   }
 
-  void image(const WinNodeVisual& n, const Rect& r) {
-    ID2D1Bitmap* bmp = d2d_internal::bitmap_for(rt_, n.image);
-    if (bmp == nullptr) return;
-    const D2D1_SIZE_F size = bmp->GetSize();
-    const auto placed = place_image(n.image_fit, r, size.width, size.height);
-    if (!placed) return;
-    rt_->PushAxisAlignedClip(to_d2d(r), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    const D2D1_RECT_F src = to_d2d(placed->src);
-    rt_->DrawBitmap(bmp, to_d2d(placed->dst), 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, &src);
-    rt_->PopAxisAlignedClip();
+  /// Image and canvas content, clipped to the node's (rounded) box.
+  void media(const WinNodeVisual& n, const Rect& r, float radius) {
+    Layer clip;
+    bool axis = false;
+    if (!push_clip(r, radius, clip, axis)) return;
+    if (ID2D1Bitmap* bmp = n.image.empty() ? nullptr : cache_.bitmap(rt_, n.image)) {
+      const D2D1_SIZE_F size = bmp->GetSize();
+      if (const auto placed = place_image(n.image_fit, r, size.width, size.height)) {
+        const D2D1_RECT_F src = to_d2d(placed->src);
+        rt_->DrawBitmap(bmp, to_d2d(placed->dst), 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, &src);
+      }
+    }
+    if (n.canvas && !n.draw_list.empty()) (void)render_draw_list_to_d2d(rt_, brush_, factory_, to_d2d(r), n.draw_list);
+    pop_clip(clip, axis);
   }
 
   void text(const WinNodeVisual& n, const Rect& r) {
@@ -204,18 +227,18 @@ class Painter {
       shown = n.text;
     }
     if (shown.empty() || (style.color >> 24u) == 0u) return;
-    IDWriteTextLayout* layout = text_.create_layout(shown, style, r.width, r.height);
+    IDWriteTextLayout* layout = cache_.layout(text_, n.id, shown, style, r.width, r.height);
     if (layout == nullptr) return;
     brush_->SetColor(to_d2d(style.color, alpha));
     rt_->DrawTextLayout(D2D1::Point2F(r.x, r.y), layout, brush_, D2D1_DRAW_TEXT_OPTIONS_NONE);
-    layout->Release();
   }
 
   ID2D1RenderTarget* rt_;
   ID2D1Factory* factory_;
   ID2D1SolidColorBrush* brush_;
   const DirectWriteTextMeasurer& text_;
-  std::vector<Pushed> stack_;
+  D2DPaintCache& cache_;
+  const Rect* dirty_;
 };
 
 }  // namespace
@@ -254,7 +277,6 @@ canvas::DrawListDecodeResult render_draw_list_to_d2d(ID2D1RenderTarget* rt, ID2D
       brush->SetColor(D2D1::ColorF(c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, c.a / 255.0f));
     }
     void on_clear(const DrawClearOp& op) {
-      // Clear replaces the canvas pixels: draw the colour over the canvas box (no blending under it).
       color(op.color);
       rt->FillRectangle(D2D1::RectF(0.0f, 0.0f, w, h), brush);
     }
@@ -319,24 +341,27 @@ canvas::DrawListDecodeResult render_draw_list_to_d2d(ID2D1RenderTarget* rt, ID2D
 }
 
 HRESULT paint_visual_tree_d2d(ID2D1RenderTarget* rt, ID2D1Factory* factory, const NveWinVisualTree& tree,
-                              const DirectWriteTextMeasurer& text) {
+                              const DirectWriteTextMeasurer& text, D2DPaintCache& cache, const Rect* dirty) {
   if (rt == nullptr) return E_INVALIDARG;
   ID2D1SolidColorBrush* brush = nullptr;
   HRESULT hr = rt->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::Black), &brush);
   if (FAILED(hr)) return hr;
   rt->BeginDraw();
   rt->SetTransform(D2D1::Matrix3x2F::Identity());
+  if (dirty != nullptr) rt->PushAxisAlignedClip(to_d2d(*dirty), D2D1_ANTIALIAS_MODE_ALIASED);
   const uint32_t bg = tree.root_background();
   if ((bg >> 24u) != 0u) {
-    rt->Clear(to_d2d(bg));
+    rt->Clear(to_d2d(bg));  // (Clear honours the axis-aligned clip)
   } else {  // a transparent root shows the system window colour
     const COLORREF c = ::GetSysColor(COLOR_WINDOW);
     rt->Clear(D2D1::ColorF(GetRValue(c) / 255.0f, GetGValue(c) / 255.0f, GetBValue(c) / 255.0f, 1.0f));
   }
-  Painter painter(rt, factory, brush, text);
+  Painter painter(rt, factory, brush, text, cache, dirty);
   tree.walk(painter);
+  if (dirty != nullptr) rt->PopAxisAlignedClip();
   hr = rt->EndDraw();
   brush->Release();
+  cache.prune(tree);
   return hr;
 }
 

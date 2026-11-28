@@ -1,481 +1,448 @@
-#include "NveQtWidget.hpp"
+// Core Qt Widgets host suite: the built-in counter app mirrored into retained widgets,
+// `QFontMetrics` / `QTextLayout` measurement feeding layout (and a custom measurer), O(changed)
+// reconciliation, mouse / keyboard / simulated press dispatch, outbound events, props, live
+// resize, `cdylib` loading errors, state- and focus-preserving hot reload, app-state files, app
+// switches, and queued wakes that never outlive the host.
+#include "NveQtWidgetInternal.hpp"
 #include "qt_test_helpers.hpp"
 
-#include <QApplication>
-#include <QColor>
-#include <QCoreApplication>
-#include <QDir>
-#include <QFile>
-#include <QFont>
-#include <QLabel>
-#include <QLineEdit>
-#include <QMouseEvent>
-#include <QPalette>
-#include <QPixmap>
-#include <QScrollArea>
+#include <nve/host/demo_counter_app.hpp>
 
-#include <atomic>
-#include <cstdlib>
-#include <iostream>
-#include <string>
+#include <QKeyEvent>
+
+#include <nve/host/testing/scratch_dir.hpp>
+
+#include <filesystem>
+#include <limits>
+#include <memory>
 #include <vector>
 
 namespace {
 
-using nve::qt_test::approx_eq;
-using nve::qt_test::BinaryCmdHelper;
-using nve::qt_test::DirectOutboundQueue;
+using namespace nve::qt;
+using namespace nve::qt::test;
+using nve::host::demo::CounterApp;
+namespace host = nve::host;
 
-struct MockQtRustComponent {
-  uint32_t surface_id{1};
-  int count{0};
-  std::string title{"Initial"};
-  bool morph_text_to_wrapper{false};
-  BinaryCmdHelper cmd;
-  DirectOutboundQueue outbound;
+constexpr float kInf = std::numeric_limits<float>::infinity();
 
-  static NveAppHandle create(uint32_t sid) {
-    auto* self = new MockQtRustComponent();
-    self->surface_id = sid;
-    return self;
-  }
+NveQtNodeWidget* frame(NveQtWidget& w, uint32_t id) { return dynamic_cast<NveQtNodeWidget*>(w.nativeWidgetForNodeId(id)); }
 
-  static void destroy(NveAppHandle h) { delete static_cast<MockQtRustComponent*>(h); }
-
-  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
-    auto* self = static_cast<MockQtRustComponent*>(h);
-    self->cmd.begin(self->surface_id, frame_id);
-
-    self->cmd.create_node(2, NVE_COMP_VIEW);
-    self->cmd.create_node(3, NVE_COMP_TEXT);
-    self->cmd.create_node(4, NVE_COMP_PRESSABLE);
-    self->cmd.create_node(5, NVE_COMP_TEXT);
-    self->cmd.create_node(6, NVE_COMP_SCROLL_VIEW);
-    self->cmd.create_node(7, NVE_COMP_TEXT_INPUT);
-
-    if (self->morph_text_to_wrapper) {
-      self->cmd.create_node(8, NVE_COMP_TEXT);
-      self->cmd.set_children(5, {8});
-      self->cmd.set_text(8, "WrappedChild");
-      self->cmd.set_style(8, 0x00000000u, 0xFFFFFFFFu, 0, 0.0f, 0.0f, 1.0f, 14.0f);
-    } else {
-      self->cmd.set_children(5, {});
-      self->cmd.set_text(5, "LeafText");
-    }
-
-    self->cmd.set_children(NVE_ROOT_NODE_ID, {2});
-    self->cmd.set_children(2, {3, 4, 5, 6});
-    self->cmd.set_children(6, {7});
-
-    self->cmd.set_layout(2, 1, 2, 100.0f, 2, 100.0f, 0.0f, 20.0f, 10.0f);
-    self->cmd.set_style(2, 0xFF202020u, 0xFFFFFFFFu, 0xFF404040u, 1.0f, 8.0f, 1.0f, 16.0f);
-
-    self->cmd.set_layout(3, 0, 1, 120.0f, 1, 40.0f, 0.0f, 0.0f, 0.0f);
-    self->cmd.set_text(3, self->title + ":" + std::to_string(self->count));
-    self->cmd.set_style(3, 0x00000000u, 0xFFFFFFFFu, 0, 0.0f, 0.0f, 1.0f, 18.0f);
-
-    self->cmd.set_layout(4, 0, 0, 0.0f, 1, 40.0f, 1.0f, 0.0f, 0.0f);
-    self->cmd.set_style(4, 0xFFFF5500u, 0xFFFFFFFFu, 0xFFFFFFFFu, 1.5f, 12.0f, 0.95f, 16.0f);
-
-    self->cmd.set_layout(5, 0, 1, 80.0f, 0, 0.0f, 0.0f, 0.0f, 0.0f);
-    self->cmd.set_style(5, 0x00000000u, 0xFF38BDF8u, 0, 0.0f, 0.0f, 1.0f, 14.0f);
-
-    self->cmd.set_layout(6, 0, 1, 80.0f, 1, 40.0f, 0.0f, 0.0f, 0.0f);
-    self->cmd.set_layout(7, 0, 1, 70.0f, 1, 30.0f, 0.0f, 0.0f, 0.0f);
-    self->cmd.set_text(7, "hello");
-    self->cmd.set_style(7, 0xFFFFFFFFu, 0xFF000000u, 0, 0.0f, 0.0f, 1.0f, 14.0f);
-
-    return self->cmd.finish();
-  }
-
-  static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
-    auto* self = static_cast<MockQtRustComponent*>(h);
-    if (batch.ptr == nullptr) return 0u;
-    for (uint32_t i = 0u; i < batch.len; ++i) {
-      const NveDirectEvent& ev = batch.ptr[i];
-      if (ev.kind == static_cast<uint8_t>(nve::EventKind::Press) && ev.node_id == 4u) {
-        ++self->count;
-        self->outbound.push_custom(
-            self->surface_id,
-            4u,
-            ev.timestamp_us,
-            "onIncrement",
-            "{\"count\":" + std::to_string(self->count) + "}");
-        return 1u;
-      }
-    }
-    return 0u;
-  }
-
-  static uint32_t set_props(NveAppHandle h, const NveMapEntry* entries, uint32_t count) {
-    auto* self = static_cast<MockQtRustComponent*>(h);
-    for (uint32_t i = 0u; i < count; ++i) {
-      const auto k = nve::str_slice_view(entries[i].key);
-      if (k == "title" && entries[i].value.tag == NVE_VAL_STR) {
-        const auto v = nve::str_slice_view(entries[i].value.data.str_val);
-        self->title.assign(v.data(), v.size());
-      } else if (k == "morph" && entries[i].value.tag == NVE_VAL_BOOL) {
-        self->morph_text_to_wrapper = entries[i].value.data.bool_val != 0u;
-      }
-    }
-    self->outbound.push_custom(
-        self->surface_id, NVE_ROOT_NODE_ID, 777u, "onPropsApplied", "{\"ok\":true}");
-    return 1u;
-  }
-
-  static NveEventBatch drain_emitted_events(NveAppHandle h) {
-    return static_cast<MockQtRustComponent*>(h)->outbound.drain();
-  }
-
-  static uint32_t apply_hot_patch(NveAppHandle h, NveBufferSlice patch) {
-    auto* self = static_cast<MockQtRustComponent*>(h);
-    self->title.assign(reinterpret_cast<const char*>(patch.ptr), patch.len);
-    return 1u;
-  }
-
-  static NveBufferSlice snapshot_state(NveAppHandle) { return {nullptr, 0}; }
-  static void restore_state(NveAppHandle, NveBufferSlice) {}
-
-  static const void* get_interface(uint32_t interface_id) {
-    static const NveSurfaceApi kSurface{
-        .create = &create,
-        .destroy = &destroy,
-        .render = &render,
-        .dispatch_events = &dispatch_events,
-    };
-    static const NveComponentApi kComponent{
-        .set_props = &set_props,
-        .drain_emitted_events = &drain_emitted_events,
-    };
-    static const NveDevApi kDev{
-        .apply_hot_patch = &apply_hot_patch,
-        .snapshot_state = &snapshot_state,
-        .restore_state = &restore_state,
-    };
-    switch (interface_id) {
-      case NVE_IFACE_SURFACE: return &kSurface;
-      case NVE_IFACE_COMPONENT: return &kComponent;
-      case NVE_IFACE_DEV: return &kDev;
-      default: return nullptr;
-    }
-  }
-};
-
-void send_left_click(QWidget* target, const QPointF& local_pos) {
-  const QPointF global_pos = target->mapToGlobal(local_pos);
-  QMouseEvent press(
-      QEvent::MouseButtonPress, local_pos, global_pos, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-  QMouseEvent release(
-      QEvent::MouseButtonRelease, local_pos, global_pos, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
-  QCoreApplication::sendEvent(target, &press);
-  QCoreApplication::sendEvent(target, &release);
+std::string text_of(NveQtWidget& w, uint32_t id) {
+  const NveQtNodeWidget* f = frame(w, id);
+  return f != nullptr ? f->text().toStdString() : std::string("<none>");
 }
 
-void test_error_codes_and_stateful_fixture() {
-  nve::qt::NveQtWidget widget;
-  widget.resize(400, 240);
+void test_counter_widgets_measurement_and_events() {
+  NveQtWidget widget(QtHostConfig{.surface_id = 7u, .width = 480.0f, .height = 360.0f});
+  QtHost& host = widget.host();
+  NVE_CHECK(!host.is_loaded() && widget.viewCount() == 0u && host.surface_id() == 7u);
+  NVE_CHECK(widget.width() == 480 && widget.height() == 360);
 
-  int err_code = 0;
-  QString err_msg;
+  // QTextLayout measurement: monotonic in size and weight, wraps under a width constraint.
+  const NveIntrinsicSize small = measure_text("Hello NVE", host::text_style(16.0f), kInf);
+  const NveIntrinsicSize big = measure_text("Hello NVE", host::text_style(32.0f), kInf);
+  const NveIntrinsicSize bold = measure_text("Hello NVE", host::text_style(16.0f, 800u), kInf);
+  const NveIntrinsicSize wrapped = measure_text("Hello NVE wrapping text", host::text_style(16.0f), 40.0f);
+  NVE_CHECK(small.width > 0.0f && small.height > 0.0f);
+  NVE_CHECK(big.width > small.width * 1.5f && big.height > small.height);
+  NVE_CHECK(bold.width >= small.width);
+  NVE_CHECK(wrapped.width <= 41.0f && wrapped.height > small.height * 1.5f);
+  NVE_CHECK(measure_text("", host::text_style(16.0f), kInf).width == 0.0f);
+  NVE_CHECK(measure_text("a\nb", host::text_style(16.0f), kInf).height > small.height * 1.5f);  // hard breaks
+  NVE_CHECK(measure_text("Hello", host::text_style(16.0f), std::nanf("")).width ==
+            measure_text("Hello", host::text_style(16.0f), kInf).width);  // NaN: unbounded
 
-  NVE_CHECK(!widget.loadDylib(QString(), 1, &err_code, &err_msg));
-  NVE_CHECK(err_code == 1 && !err_msg.isEmpty());
+  std::vector<int64_t> counts;
+  host.set_event_callback([&counts](std::span<const NveDirectEvent> evs) {
+    for (const NveDirectEvent& ev : evs) {
+      if (ev.kind == NVE_EVENT_CUSTOM && ev.value.tag == NVE_VAL_I64) counts.push_back(ev.value.data.i64_val);
+    }
+  });
 
-  err_code = 0;
-  err_msg.clear();
-  NVE_CHECK(!widget.loadDylib(QStringLiteral("/nonexistent/libnve_missing.dylib"), 1, &err_code, &err_msg));
-  NVE_CHECK(err_code == 1 && !err_msg.isEmpty());
+  NVE_CHECK(host.attach_interface(&CounterApp::get_interface));
+  NVE_CHECK(host.is_loaded() && widget.viewCount() == 5u);
+  NveQtNodeWidget* column = frame(widget, CounterApp::kColumn);
+  NveQtNodeWidget* title = frame(widget, CounterApp::kTitle);
+  NveQtNodeWidget* inc = frame(widget, CounterApp::kIncrement);
+  NveQtNodeWidget* count = frame(widget, CounterApp::kCount);
+  NveQtNodeWidget* reset = frame(widget, CounterApp::kReset);
+  NVE_CHECK(column && title && inc && count && reset);
+  NVE_CHECK(column->parentWidget() == &widget);
+  NVE_CHECK(title->parentWidget() == column && count->parentWidget() == column);
+  NVE_CHECK(title->content() == NodeContent::Text && text_of(widget, CounterApp::kTitle) == "NVE native host");
+  NVE_CHECK(text_of(widget, CounterApp::kCount) == "Count: 0");
+  NVE_CHECK(widget.nativeWidgetForNodeId(1u) == &widget && widget.nativeWidgetForNodeId(99u) == nullptr);
+  NVE_CHECK(widget.nodeIdForNativeWidget(inc) == CounterApp::kIncrement && widget.nodeIdForNativeWidget(&widget) == 0u);
 
-  err_code = 0;
-  err_msg.clear();
-  NVE_CHECK(!widget.loadDylib(QStringLiteral(NVE_TEST_NO_ENTRY_DYLIB), 1, &err_code, &err_msg));
-  NVE_CHECK(err_code == 2 && !err_msg.isEmpty());
-
-  err_code = 0;
-  err_msg.clear();
-  NVE_CHECK(!widget.loadDylib(QStringLiteral(NVE_TEST_NO_SURFACE_DYLIB), 1, &err_code, &err_msg));
-  NVE_CHECK(err_code == 3 && !err_msg.isEmpty());
-  NVE_CHECK(!widget.isAppLoaded());
-
-  err_code = -1;
-  err_msg = QStringLiteral("stale");
-  NVE_CHECK(widget.loadDylib(QStringLiteral(NVE_TEST_VALID_DYLIB), 7, &err_code, &err_msg));
-  NVE_CHECK(err_code == 0 && err_msg.isEmpty());
-  NVE_CHECK(widget.isAppLoaded());
-  NVE_CHECK(widget.surfaceId() == 7);
-  NVE_CHECK(widget.nodeCount() == 3);
-
-  auto* lbl = qobject_cast<QLabel*>(widget.nativeWidgetForNodeId(3));
-  NVE_CHECK(lbl != nullptr && lbl->text() == QStringLiteral("Fixture:0"));
-
-  widget.simulatePressOnNodeId(2, 5.0f, 5.0f);
-  widget.simulatePressOnNodeId(2, 5.0f, 5.0f);
-  lbl = qobject_cast<QLabel*>(widget.nativeWidgetForNodeId(3));
-  NVE_CHECK(lbl != nullptr && lbl->text() == QStringLiteral("Fixture:2"));
-
-  NVE_CHECK(!widget.reloadDylib(QStringLiteral("/nonexistent/fail.dylib"), &err_code, &err_msg));
-  NVE_CHECK(err_code == 1);
-  NVE_CHECK(qobject_cast<QLabel*>(widget.nativeWidgetForNodeId(3))->text() == QStringLiteral("Fixture:2"));
-
-  NVE_CHECK(!widget.reloadDylib(QStringLiteral(NVE_TEST_NO_ENTRY_DYLIB), &err_code, &err_msg));
-  NVE_CHECK(err_code == 2);
-  NVE_CHECK(qobject_cast<QLabel*>(widget.nativeWidgetForNodeId(3))->text() == QStringLiteral("Fixture:2"));
-
-  NVE_CHECK(!widget.reloadDylib(QStringLiteral(NVE_TEST_NO_SURFACE_DYLIB), &err_code, &err_msg));
-  NVE_CHECK(err_code == 3);
-  NVE_CHECK(qobject_cast<QLabel*>(widget.nativeWidgetForNodeId(3))->text() == QStringLiteral("Fixture:2"));
-
-  NVE_CHECK(widget.reloadDylib(QStringLiteral(NVE_TEST_VALID_DYLIB), &err_code, &err_msg));
-  NVE_CHECK(err_code == 0 && err_msg.isEmpty());
-  lbl = qobject_cast<QLabel*>(widget.nativeWidgetForNodeId(3));
-  NVE_CHECK(lbl != nullptr && lbl->text() == QStringLiteral("Fixture:2"));
-
-  NVE_CHECK(widget.loadDylib(QStringLiteral(NVE_TEST_VALID_DYLIB), 7, &err_code, &err_msg));
-  lbl = qobject_cast<QLabel*>(widget.nativeWidgetForNodeId(3));
-  NVE_CHECK(lbl != nullptr && lbl->text() == QStringLiteral("Fixture:0"));
-}
-
-void test_attach_props_events_morph_and_measurer() {
-  nve::qt::NveQtWidget widget;
-  widget.resize(520, 180);
-
-  auto base_measurer = nve::qt::NveQtWidget::makeQtTextMeasurer();
-  const NveIntrinsicSize empty_sz = base_measurer("", 16.0f, 0.0f);
-  NVE_CHECK(empty_sz.width == 0.0f && empty_sz.height == 0.0f);
-  const NveIntrinsicSize s14 = base_measurer("NATIVE VIEW ENGINE", 14.0f, 0.0f);
-  const NveIntrinsicSize s28 = base_measurer("Count: 0", 28.0f, 0.0f);
-  NVE_CHECK(s14.width > 40.0f && s14.height >= 14.0f);
-  NVE_CHECK(s28.width > 40.0f && s28.height > s14.height);
-  const NveIntrinsicSize wrapped =
-      base_measurer("This is a long sentence that wraps onto multiple lines", 16.0f, 90.0f);
-  NVE_CHECK(wrapped.width <= 92.0f && wrapped.height > s14.height * 2.0f);
-
-  std::atomic<int> measure_calls{0};
-  widget.setTextMeasurer(
-      [&](std::string_view text, float font_size, float max_width) -> NveIntrinsicSize {
-        measure_calls.fetch_add(1, std::memory_order_relaxed);
-        return base_measurer(text, font_size, max_width);
-      });
-
-  std::vector<nve::DecodedEvent> received_events;
-  widget.setOnNveEvent([&](const nve::DecodedEvent& ev) { received_events.push_back(ev); });
-
-  NVE_CHECK(widget.attachInterface(&MockQtRustComponent::get_interface, 9));
-  NVE_CHECK(widget.surfaceId() == 9);
-  NVE_CHECK(widget.nodeCount() == 7);
-  if (nve::fabric_host_has_yoga_layout()) {
-    NVE_CHECK(measure_calls.load() > 0);
+  // Children stacked in scene order (paint order: later siblings on top).
+  std::vector<QWidget*> stack;
+  for (QObject* o : column->children()) {
+    if (auto* w = qobject_cast<QWidget*>(o); w != nullptr && w->property(kNodeIdProperty).isValid()) stack.push_back(w);
   }
+  NVE_CHECK((stack == std::vector<QWidget*>{title, inc, count, reset}));
 
-  QWidget* container = widget.nativeWidgetForNodeId(2);
-  auto* label3 = qobject_cast<QLabel*>(widget.nativeWidgetForNodeId(3));
-  QWidget* button4 = widget.nativeWidgetForNodeId(4);
-  QWidget* morph5 = widget.nativeWidgetForNodeId(5);
-  auto* scroll6 = qobject_cast<QScrollArea*>(widget.nativeWidgetForNodeId(6));
-  auto* edit7 = qobject_cast<QLineEdit*>(widget.nativeWidgetForNodeId(7));
+  // The runtime laid out text with this host's measurer: the title is exactly its measured size.
+  const NveIntrinsicSize title_size = measure_text("NVE native host", host::text_style(22.0f), kInf);
+  NVE_CHECK(approx(title->width(), title_size.width, 1.0) && approx(title->height(), title_size.height, 1.0));
+  NVE_CHECK(column->width() == 480 && column->height() > reset->y() + reset->height());
+  NVE_CHECK(title->x() == 24 && title->y() == 24);  // column padding
+  NVE_CHECK(count->x() == 24 && count->y() > title->y() + 40);
 
-  NVE_CHECK(container != nullptr && label3 != nullptr && button4 != nullptr);
-  NVE_CHECK(qobject_cast<QLabel*>(morph5) != nullptr);
-  NVE_CHECK(scroll6 != nullptr && edit7 != nullptr);
-  NVE_CHECK(label3->parentWidget() == container);
-  NVE_CHECK(button4->parentWidget() == container);
-  NVE_CHECK(edit7->parentWidget() == scroll6->widget());
-  NVE_CHECK(label3->text() == QStringLiteral("Initial:0"));
-  NVE_CHECK(label3->testAttribute(Qt::WA_TransparentForMouseEvents));
-  NVE_CHECK(edit7->text() == QStringLiteral("hello"));
-
-  if (nve::fabric_host_has_yoga_layout()) {
-    NVE_CHECK(approx_eq(container->width(), 520.0));
-    NVE_CHECK(approx_eq(label3->x(), 20.0) && approx_eq(label3->width(), 120.0));
-    NVE_CHECK(approx_eq(button4->x(), 150.0) && approx_eq(button4->width(), 170.0));
-  }
-
-  NVE_CHECK(widget.applyProps(nve::PropMap{{"title", std::string("Updated")}}));
-  NVE_CHECK(label3->text() == QStringLiteral("Updated:0"));
-  NVE_CHECK(received_events.size() == 1);
-  NVE_CHECK(received_events[0].name == "onPropsApplied");
-
-  widget.simulatePressOnNodeId(4, 10.0f, 10.0f);
-  NVE_CHECK(label3->text() == QStringLiteral("Updated:1"));
-  NVE_CHECK(received_events.size() == 2);
-  NVE_CHECK(received_events[1].name == "onIncrement");
-
-  send_left_click(button4, QPointF(10.0, 10.0));
-  NVE_CHECK(label3->text() == QStringLiteral("Updated:2"));
-  NVE_CHECK(received_events.size() == 3);
-
-  NVE_CHECK(widget.applyProps(nve::PropMap{{"morph", true}}));
-  QWidget* morph5_wrapper = widget.nativeWidgetForNodeId(5);
-  NVE_CHECK(morph5_wrapper != nullptr && morph5_wrapper != morph5);
-  NVE_CHECK(qobject_cast<QLabel*>(morph5_wrapper) == nullptr);
-  auto* child8 = qobject_cast<QLabel*>(widget.nativeWidgetForNodeId(8));
-  NVE_CHECK(child8 != nullptr && child8->parentWidget() == morph5_wrapper);
-  NVE_CHECK(child8->text() == QStringLiteral("WrappedChild"));
-
-  NVE_CHECK(widget.applyProps(nve::PropMap{{"morph", false}}));
-  QWidget* morph5_leaf = widget.nativeWidgetForNodeId(5);
-  auto* morph5_label = qobject_cast<QLabel*>(morph5_leaf);
-  NVE_CHECK(morph5_label != nullptr);
-  NVE_CHECK(morph5_label->text() == QStringLiteral("LeafText"));
-
-  if (nve::fabric_host_has_yoga_layout()) {
-    widget.show();
-    widget.resize(620, 180);
-    QCoreApplication::processEvents();
-    NVE_CHECK(approx_eq(button4->width(), 270.0));
-  }
-}
-
-void test_real_counter_dylib() {
-  const char* dylib_env = std::getenv("NVE_TEST_KITCHEN_SINK_DYLIB");
-  if (dylib_env == nullptr || dylib_env[0] == '\0') {
-    return;
-  }
-
-  nve::qt::NveQtWidget widget;
-  widget.resize(1280, 800);
-
-  auto base_measurer = nve::qt::NveQtWidget::makeQtTextMeasurer();
-  std::atomic<int> counter_measure_calls{0};
-  widget.setTextMeasurer(
-      [&](std::string_view text, float font_size, float max_width) -> NveIntrinsicSize {
-        counter_measure_calls.fetch_add(1, std::memory_order_relaxed);
-        return base_measurer(text, font_size, max_width);
-      });
-
-  int err_code = -1;
-  QString err_msg;
-  const QString counter_path = QString::fromUtf8(dylib_env);
-  NVE_CHECK(widget.loadDylib(counter_path, 1, &err_code, &err_msg));
-  NVE_CHECK(err_code == 0 && err_msg.isEmpty());
-  if (nve::fabric_host_has_yoga_layout()) {
-    NVE_CHECK(counter_measure_calls.load() >= 4);
-  }
-
+  // Visuals: column background; buttons: background, radius, white inherited text, padded content box.
+  NVE_CHECK(column->visual().background == QColor(248, 250, 252));
+  NVE_CHECK(inc->visual().background == QColor(37, 99, 235) && inc->visual().radius == 8.0);
+  NVE_CHECK(inc->text_style().color == QColor(255, 255, 255) && inc->text_style().font.pixelSize() == 16);
+  NVE_CHECK(inc->content_box() == QRectF(16.0, 0.0, inc->width() - 32.0, 40.0) && inc->height() == 40);
+  NVE_CHECK(title->text_style().color == QColor(15, 23, 42) && title->text_style().font.pixelSize() == 22);
+  // Painted pixels: the button's fill inside its rounded box, the column behind it.
   widget.show();
-  QCoreApplication::processEvents();
+  const QImage img = render(&widget);
+  const QPoint edge = inc->mapTo(&widget, QPoint(3, 20));
+  const QPoint corner = inc->mapTo(&widget, QPoint(0, 0));
+  NVE_CHECK(same_rgb(pixel(img, edge.x(), edge.y()), 37, 99, 235));
+  NVE_CHECK(same_rgb(pixel(img, 470, column->height() - 5), 248, 250, 252));
+  NVE_CHECK(same_rgb(pixel(img, corner.x(), corner.y()), 248, 250, 252, 40));  // rounded corner cut
 
-  auto collect_labels = [&]() { return widget.findChildren<QLabel*>(); };
-  const auto find_label = [&](const QString& text) -> QLabel* {
-    for (QLabel* lbl : collect_labels()) {
-      if (lbl->text() == text) return lbl;
+  // Semantics: buttons are activatable + focusable, the title a heading.
+  const auto inc_sem = widget.accessibilityInfoForNodeId(CounterApp::kIncrement);
+  NVE_CHECK(inc_sem && inc_sem->label == "Increment" && inc_sem->role == QAccessible::Button);
+  NVE_CHECK(inc_sem->activatable && inc_sem->focusable && !inc_sem->disabled);
+  NVE_CHECK(widget.accessibilityInfoForNodeId(CounterApp::kTitle)->role == QAccessible::Heading);
+  NVE_CHECK(inc->focusPolicy() == Qt::StrongFocus && title->focusPolicy() == Qt::NoFocus);
+  NVE_CHECK(inc->cursor().shape() == Qt::PointingHandCursor);
+
+  // Mouse click -> Press -> app -> new frame: only the changed label is reconciled.
+  const uint64_t before = widget.reconcileUpdateCount();
+  click(inc, QPointF(4.0, 4.0));
+  NVE_CHECK(text_of(widget, CounterApp::kCount) == "Count: 1");
+  NVE_CHECK(frame(widget, CounterApp::kCount) == count);  // retained, not recreated
+  const uint64_t delta = widget.reconcileUpdateCount() - before;
+  NVE_CHECK(delta >= 1u && delta <= 3u);
+  // A click on the (unsubscribed) title or released outside the button does nothing.
+  click(title, QPointF(2.0, 2.0));
+  {
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(2, 2), inc->mapToGlobal(QPointF(2, 2)), Qt::LeftButton,
+                      Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(-5, -5), inc->mapToGlobal(QPointF(-5, -5)),
+                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(inc, &press);
+    QApplication::sendEvent(inc, &release);
+  }
+  NVE_CHECK(text_of(widget, CounterApp::kCount) == "Count: 1");
+  // Keyboard activation (Space / Enter) of a focusable button.
+  QKeyEvent space(QEvent::KeyPress, Qt::Key_Space, Qt::NoModifier, QStringLiteral(" "));
+  QApplication::sendEvent(inc, &space);
+  NVE_CHECK(text_of(widget, CounterApp::kCount) == "Count: 2");
+  NVE_CHECK(host.simulate_press(CounterApp::kIncrement));
+  NVE_CHECK(!host.simulate_press(CounterApp::kTitle));  // not subscribed: no change
+  NVE_CHECK(text_of(widget, CounterApp::kCount) == "Count: 3");
+  NVE_CHECK((counts == std::vector<int64_t>{1, 2, 3}));
+  NVE_CHECK(host.pump() == 0u);  // idle frame: nothing to reconcile
+
+  // Component props.
+  const std::string retitle = "Retitled";
+  NveMapEntry prop{};
+  prop.key = NveStrSlice{reinterpret_cast<const uint8_t*>("title"), 5u};
+  prop.value.tag = NVE_VAL_STR;
+  prop.value.data.str_val = NveStrSlice{reinterpret_cast<const uint8_t*>(retitle.data()), retitle.size()};
+  NVE_CHECK(host.apply_props(std::span<const NveMapEntry>(&prop, 1u)));
+  NVE_CHECK(text_of(widget, CounterApp::kTitle) == "Retitled");
+  const uint8_t bogus_patch[] = {1, 2, 3};
+  NVE_CHECK(!host.apply_hot_patch(bogus_patch));  // no templates: a no-op
+  NVE_CHECK(text_of(widget, CounterApp::kCount) == "Count: 3");
+
+  // Live resize relayouts retained widgets in place.
+  widget.resize(600, 300);
+  NVE_CHECK(column->width() == 600 && frame(widget, CounterApp::kColumn) == column);
+  NVE_CHECK(host.config().width == 600.0f && widget.sizeHint() == QSize(600, 300));
+  widget.hide();
+}
+
+// The measurer lays text out with exactly the font and paragraph metrics the label paints.
+void test_measurer_typography_matches_paint() {
+  NveQtWidget widget(QtHostConfig{.width = 300.0f, .height = 200.0f});
+  const NveRuntimeTextStyle base = host::text_style(16.0f);
+  constexpr std::string_view kNarrow = "iiiiiiiiiiiiiiii";
+  NveRuntimeTextStyle mono = base;
+  mono.font_family = NveStrSlice{reinterpret_cast<const uint8_t*>("NoSuchFontNve, monospace"), 24u};
+  NVE_CHECK(measure_text(kNarrow, mono, kInf).width > measure_text(kNarrow, base, kInf).width * 1.5f);
+  NVE_CHECK(text_style(mono).font.families().size() == 2);  // trimmed, split list (not one bogus name)
+  NveRuntimeTextStyle spaced = base;
+  spaced.letter_spacing = 3.0f;
+  NVE_CHECK(measure_text(kNarrow, spaced, kInf).width > measure_text(kNarrow, base, kInf).width + 30.0f);
+  const std::string_view sentence = "Hello wrapping text that is long";
+  const NveIntrinsicSize one_line = measure_text(sentence, base, kInf);
+  NveRuntimeTextStyle nowrap = base;
+  nowrap.white_space = NVE_WHITE_SPACE_NO_WRAP;
+  NVE_CHECK(measure_text(sentence, nowrap, 60.0f).height == one_line.height);
+  const NveIntrinsicSize min_content = measure_text(sentence, base, 0.0f);  // 0 wraps, it is not "unbounded"
+  NVE_CHECK(min_content.width < one_line.width && min_content.height > one_line.height);
+  NveRuntimeTextStyle tall = base;
+  tall.line_height = 250.0f;
+  tall.line_height_unit = NVE_LINE_HEIGHT_PERCENT;  // 40px line boxes
+  NVE_CHECK(approx(measure_text("a\nb", tall, kInf).height, 80.0, 1.0));
+  tall.max_lines = 1u;
+  NVE_CHECK(approx(measure_text(sentence, tall, 60.0f).height, 40.0, 1.0));
+
+  // Painted (`host::TextStyle`) and measured (`NveRuntimeTextStyle`) map to one Qt style.
+  host::TextStyle painted;
+  painted.font_size = 18.0f;
+  painted.font_weight = 700u;
+  painted.font_style = NVE_FONT_STYLE_ITALIC;
+  painted.font_family = "Courier, monospace";
+  painted.letter_spacing = 1.5f;
+  painted.line_height = host::LengthValue{NVE_LENGTH_PERCENT, 150.0f};
+  painted.white_space = NVE_WHITE_SPACE_PRE;
+  painted.max_lines = 3u;
+  NveRuntimeTextStyle measured = host::text_style(18.0f, 700u);
+  measured.font_style = NVE_FONT_STYLE_ITALIC;
+  measured.font_family = NveStrSlice{reinterpret_cast<const uint8_t*>(painted.font_family.data()),
+                                     painted.font_family.size()};
+  measured.letter_spacing = 1.5f;
+  measured.line_height = 150.0f;
+  measured.line_height_unit = NVE_LINE_HEIGHT_PERCENT;
+  measured.white_space = NVE_WHITE_SPACE_PRE;
+  measured.max_lines = 3u;
+  const QtTextStyle p = text_style(painted);
+  const QtTextStyle m = text_style(measured);
+  NVE_CHECK(p.font == m.font && p.wrap == m.wrap && !m.wrap && p.max_lines == m.max_lines);
+  NVE_CHECK(approx(p.line_height, 27.0, 0.01) && p.line_height == m.line_height);
+}
+
+void test_custom_measurer_and_surface_id() {
+  NveQtWidget widget(QtHostConfig{.width = 300.0f, .height = 200.0f});
+  QtHost& host = widget.host();
+  int calls = 0;
+  host.set_text_measurer([&calls](std::string_view text, const NveRuntimeTextStyle&, float) {
+    ++calls;
+    return NveIntrinsicSize{static_cast<float>(text.size()) * 10.0f, 17.0f};
+  });
+  ScriptedApp app;
+  app.w.create(1u);
+  text_node(app.w, 2u, "abcd");
+  const uint32_t kids[] = {2u};
+  app.w.set_children(1u, kids);
+  NVE_CHECK(host.attach_interface(&ScriptedApp::get_interface));
+  QWidget* t = widget.nativeWidgetForNodeId(2u);
+  NVE_CHECK(calls > 0 && t->height() == 17);
+  host.set_text_measurer({});  // back to QTextLayout: relayouts
+  NVE_CHECK(approx(t->height(), measure_text("abcd", host::text_style(16.0f), kInf).height, 1.0));
+
+  // A new surface id recreates the session: the app and its views are dropped.
+  host.set_surface_id(9u);
+  NVE_CHECK(host.surface_id() == 9u && !host.is_loaded() && widget.viewCount() == 0u);
+  // The old app instance is destroyed with its session; a new app mounts into the fresh replica.
+  NVE_CHECK(app.destroys == 1u);
+  ScriptedApp next;
+  next.w.create(1u);
+  text_node(next.w, 2u, "again");
+  next.w.set_children(1u, kids);
+  NVE_CHECK(host.attach_interface(&ScriptedApp::get_interface));
+  NVE_CHECK(next.creates == 1u && widget.viewCount() == 1u);
+  NVE_CHECK(dynamic_cast<NveQtNodeWidget*>(widget.nativeWidgetForNodeId(2u))->text() == "again");
+}
+
+void test_modules_hot_reload_and_state() {
+  NveQtWidget widget;
+  QtHost& host = widget.host();
+  nve::host::ModuleError err = nve::host::ModuleError::None;
+  std::string msg;
+  NVE_CHECK(!host.load_dylib("", &err, &msg) && err == nve::host::ModuleError::Open);
+  NVE_CHECK(!host.load_dylib("/nonexistent/libnope.so", &err, &msg) && err == nve::host::ModuleError::Open);
+  NVE_CHECK(!host.load_dylib(NVE_TEST_NO_ENTRY_MODULE, &err, &msg) && err == nve::host::ModuleError::MissingEntry);
+  NVE_CHECK(!host.load_dylib(NVE_TEST_NO_SURFACE_MODULE, &err, &msg) &&
+            err == nve::host::ModuleError::MissingSurface);
+  NVE_CHECK(!host.load_dylib(NVE_TEST_PARTIAL_SURFACE_MODULE, &err, &msg) &&
+            err == nve::host::ModuleError::MissingSurface);
+  NVE_CHECK(!host.is_loaded() && widget.viewCount() == 0u);
+
+  // The dev loop: one app path, rebuilt in place between reloads.
+  const nve::host::testing::ScratchDir dir("nve-qt-app");
+  const std::string app_path = dir.file("app" + std::filesystem::path(NVE_TEST_COUNTER_MODULE).extension().string());
+  const auto build = [&](const char* fixture) {
+    std::filesystem::copy_file(fixture, app_path, std::filesystem::copy_options::overwrite_existing);
+  };
+  build(NVE_TEST_COUNTER_MODULE);
+  NVE_CHECK(host.load_dylib(app_path, &err, &msg));
+  NVE_CHECK(host.is_loaded() && widget.viewCount() == 5u);
+  NVE_CHECK(host.simulate_press(CounterApp::kIncrement));
+  NVE_CHECK(host.simulate_press(CounterApp::kIncrement));
+  NVE_CHECK(text_of(widget, CounterApp::kCount) == "Count: 2");
+
+  // Focus a button, then hot reload: state carries over (`NveDevApi`), views and focus survive.
+  widget.show();
+  widget.activateWindow();
+  NveQtNodeWidget* inc = frame(widget, CounterApp::kIncrement);
+  inc->setFocus(Qt::OtherFocusReason);
+  spin();
+  NVE_CHECK(inc->hasFocus());
+  NVE_CHECK(!host.reload_dylib(NVE_TEST_NO_SURFACE_MODULE, &err, &msg));  // a failed reload keeps the app
+  NVE_CHECK(host.simulate_press(CounterApp::kIncrement));
+  NVE_CHECK(text_of(widget, CounterApp::kCount) == "Count: 3");
+  // Reloading the rebuilt file runs its NEW code (a press counts 2) and carries the state.
+  build(NVE_TEST_COUNTER_DOUBLE_MODULE);
+  NVE_CHECK(host.reload_dylib(app_path, &err, &msg));
+  NVE_CHECK(text_of(widget, CounterApp::kCount) == "Count: 3");
+  NVE_CHECK(widget.viewCount() == 5u && frame(widget, CounterApp::kIncrement) == inc && inc->hasFocus());
+  NVE_CHECK(host.simulate_press(CounterApp::kIncrement));
+  NVE_CHECK(text_of(widget, CounterApp::kCount) == "Count: 5");
+  widget.hide();
+
+  // App-state file (runtime `StateFile`): save, mutate, restore; a newer file / missing file
+  // refuse; clearing is a cold start.
+  const std::string path = dir.file("state.nvestate");
+  NVE_CHECK(host.save_state(path, 4u));
+  NVE_CHECK(host.simulate_press(CounterApp::kReset));
+  NVE_CHECK(text_of(widget, CounterApp::kCount) == "Count: 0");
+  NVE_CHECK(!host.restore_state(path, 3u));  // written by a newer schema: refused, kept
+  NVE_CHECK(!host.restore_state(path + ".missing", 4u));
+  NVE_CHECK(host.restore_state(path, 4u));
+  NVE_CHECK(text_of(widget, CounterApp::kCount) == "Count: 5");
+  NVE_CHECK(host.clear_state(path) && !std::filesystem::exists(path) && !host.restore_state(path, 4u));
+  NVE_CHECK(host.clear_state(path));  // already gone: still a cold start
+
+  // Switching apps: views of nodes the new app does not have are dropped; a reused id keeps its
+  // view only when its native kind matches.
+  ScriptedApp app;
+  app.w.create(1u);
+  text_node(app.w, 2u, "scripted");
+  app.w.create(3u);
+  app.w.set_bool(3u, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_MULTILINE, false);
+  (void)app.w.set_str(3u, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "v");
+  const uint32_t kids[] = {2u, 3u};
+  app.w.set_children(1u, kids);
+  NVE_CHECK(host.attach_interface(&ScriptedApp::get_interface));
+  NVE_CHECK(widget.viewCount() == 2u && text_of(widget, 2u) == "scripted");
+  NVE_CHECK(dynamic_cast<QLineEdit*>(widget.nativeWidgetForNodeId(3u)) != nullptr);  // title -> input: recreated
+  NVE_CHECK(widget.nativeWidgetForNodeId(CounterApp::kCount) == nullptr);
+  NVE_CHECK(widget.nativeWidgetForNodeId(2u)->parentWidget() == &widget);
+  spin();  // deferred deletes of the dropped widgets
+}
+
+uint64_t frame_id(QtHost& host) {
+  NveRuntimeMetrics m{};
+  NVE_CHECK(host.session().runtime().metrics(&m) == NVE_RUNTIME_OK);
+  return m.frame_id;
+}
+
+void test_queued_wakes_never_outlive_the_host() {
+  // Wakes are queued to the UI thread (never run inline) and dropped once the host is gone.
+  ScriptedApp app;
+  app.w.create(1u);
+  app.w.create(2u);
+  app.w.attach(2u, NVE_TABLE_SCROLL_DESC);
+  size_node(app.w, 2u, 100.0f, 50.0f);
+  app.w.create(3u);
+  size_node(app.w, 3u, 100.0f, 400.0f);
+  const uint32_t inner[] = {3u};
+  app.w.set_children(2u, inner);
+  const uint32_t kids[] = {2u};
+  app.w.set_children(1u, kids);
+  {
+    auto widget = std::make_unique<NveQtWidget>();
+    NVE_CHECK(widget->host().attach_interface(&ScriptedApp::get_interface));
+    // A runtime scroll wakes the host: the offset is published by the queued pump, not inline.
+    const auto moved = widget->host().scroll_by(2u, 0.0f, 30.0f);
+    NVE_CHECK(moved && approx(moved->y(), 30.0, 0.01));
+    const uint64_t frames = frame_id(widget->host());
+    spin();
+    NVE_CHECK(frame_id(widget->host()) > frames);
+    // Another wake queued, then the host dies before it runs: the queued call is dropped.
+    NVE_CHECK(widget->host().scroll_by(2u, 0.0f, 10.0f).has_value());
+    widget.reset();
+    spin();  // ASan / UBSan: no use after free
+  }
+  NVE_CHECK(app.creates == 1u && app.destroys == 1u);
+}
+
+void test_live_kitchen_sink_if_configured() {
+  const char* path = std::getenv("NVE_TEST_KITCHEN_SINK_DYLIB");
+  if (path == nullptr || *path == '\0') return;
+  NveQtWidget widget(QtHostConfig{.surface_id = 1u, .width = 1280.0f, .height = 800.0f});
+  QtHost& host = widget.host();
+  nve::host::ModuleError err = nve::host::ModuleError::None;
+  std::string msg;
+  NVE_CHECK(host.load_dylib(path, &err, &msg) && err == nve::host::ModuleError::None);
+  NVE_CHECK(host.is_loaded() && widget.viewCount() > 10u);
+
+  // Text views: leaves painting text (a Dioxus `text { "Count: " {n} }` wrapper is a View whose
+  // runs are child leaves, so no frame both paints text and holds node children).
+  const auto labels = [&] {
+    std::vector<NveQtNodeWidget*> out;
+    const auto walk = [&](auto& self, QObject* o) -> void {
+      if (auto* f = dynamic_cast<NveQtNodeWidget*>(o); f != nullptr && f->content() == NodeContent::Text) out.push_back(f);
+      for (QObject* c : o->children()) self(self, c);
+    };
+    walk(walk, &widget);
+    return out;
+  };
+  const auto has_node_children = [](const QWidget* w) {
+    for (const QObject* c : w->children()) {
+      if (c->property(kNodeIdProperty).isValid()) return true;
+    }
+    return false;
+  };
+  const auto find_label = [&](std::string_view text) -> NveQtNodeWidget* {
+    for (NveQtNodeWidget* f : labels()) {
+      if (f->text().toStdString() == text) return f;
     }
     return nullptr;
   };
-
-  NVE_CHECK(collect_labels().size() >= 4);
-  QLabel* title_lbl = find_label(QStringLiteral("NVE Kitchen Sink"));
-  QLabel* count_lbl = find_label(QStringLiteral("Count: 0"));
-  QLabel* inc_lbl = find_label(QStringLiteral("Increment +"));
-  QLabel* reset_lbl = find_label(QStringLiteral("Reset"));
-  NVE_CHECK(title_lbl != nullptr && count_lbl != nullptr && inc_lbl != nullptr && reset_lbl != nullptr);
-
-  NVE_CHECK(count_lbl->font().pixelSize() == 28);
-  for (QLabel* lbl : {title_lbl, count_lbl, inc_lbl, reset_lbl}) {
-    NVE_CHECK(lbl->width() > 20 && lbl->height() >= 14);
-    NVE_CHECK(lbl->palette().color(QPalette::WindowText).alpha() == 255);
-    NVE_CHECK(lbl->testAttribute(Qt::WA_TransparentForMouseEvents));
-  }
-
-  const auto snapshots = widget.session().snapshot_nodes();
-  uint32_t inc_pressable_id = 0;
-  uint32_t reset_pressable_id = 0;
-  QWidget* top_card = nullptr;
-  for (const auto& snap : snapshots) {
-    if (snap.kind == NVE_COMP_VIEW && snap.border_radius >= 8.0f && snap.layout.width > 200.0f &&
-        snap.layout.height > 60.0f) {
-      top_card = widget.nativeWidgetForNodeId(snap.node_id);
+  // The nearest ancestor node (or the label itself) with a press action.
+  const auto pressable = [&](QWidget* w) -> uint32_t {
+    for (; w != nullptr && w != &widget; w = w->parentWidget()) {
+      const uint32_t id = widget.nodeIdForNativeWidget(w);
+      if (id != 0u && widget.accessibilityInfoForNodeId(id)->activatable) return id;
     }
-    if (snap.kind == NVE_COMP_PRESSABLE) {
-      QWidget* btn = widget.nativeWidgetForNodeId(snap.node_id);
-      if (btn != nullptr) {
-        if (btn->isAncestorOf(inc_lbl)) inc_pressable_id = snap.node_id;
-        if (btn->isAncestorOf(reset_lbl)) reset_pressable_id = snap.node_id;
-      }
-    }
-  }
-
-  NVE_CHECK(top_card != nullptr && top_card->width() > 200 && top_card->height() > 60);
-  NVE_CHECK(inc_pressable_id != 0 && reset_pressable_id != 0);
-
-  QWidget* inc_btn = widget.nativeWidgetForNodeId(inc_pressable_id);
-  QWidget* reset_btn = widget.nativeWidgetForNodeId(reset_pressable_id);
-  NVE_CHECK(inc_btn != nullptr && reset_btn != nullptr);
-
-  const int title_y = title_lbl->mapTo(&widget, QPoint(0, 0)).y();
-  const int count_y = count_lbl->mapTo(&widget, QPoint(0, 0)).y();
-  const int inc_btn_y = inc_btn->mapTo(&widget, QPoint(0, 0)).y();
-  NVE_CHECK(title_y < count_y && count_y + count_lbl->height() < inc_btn_y);
-
-  auto assert_centered_in_button = [](QLabel* lbl, QWidget* btn) {
-    const QPoint top_left = lbl->mapTo(btn, QPoint(0, 0));
-    const double lbl_cx = static_cast<double>(top_left.x()) + static_cast<double>(lbl->width()) * 0.5;
-    const double lbl_cy = static_cast<double>(top_left.y()) + static_cast<double>(lbl->height()) * 0.5;
-    NVE_CHECK(approx_eq(lbl_cx, static_cast<double>(btn->width()) * 0.5, 3.0));
-    NVE_CHECK(approx_eq(lbl_cy, static_cast<double>(btn->height()) * 0.5, 3.0));
+    return 0u;
   };
-  assert_centered_in_button(inc_lbl, inc_btn);
-  assert_centered_in_button(reset_lbl, reset_btn);
 
-  widget.simulatePressOnNodeId(inc_pressable_id, 20.0f, 20.0f);
-  widget.simulatePressOnNodeId(inc_pressable_id, 20.0f, 20.0f);
-  QCoreApplication::processEvents();
-  NVE_CHECK(find_label(QStringLiteral("Count: 2")) != nullptr);
-
-  const char* shot_path = std::getenv("NVE_TEST_SCREENSHOT_PATH");
-  if (shot_path != nullptr && shot_path[0] != '\0') {
-    QPixmap pix = widget.grab();
-    NVE_CHECK(!pix.isNull() && pix.width() == 640 && pix.height() == 420);
-    NVE_CHECK(pix.save(QString::fromUtf8(shot_path), "PNG"));
+  NVE_CHECK(find_label("NVE Kitchen Sink") != nullptr && find_label("Count: 0") != nullptr);
+  size_t measured = 0u;
+  for (NveQtNodeWidget* l : labels()) {
+    NVE_CHECK(!has_node_children(l));  // leaves only
+    if (!l->isVisibleTo(&widget) || l->text().isEmpty()) continue;
+    NVE_CHECK(l->width() > 0 && l->height() >= 10);  // measured layout
+    ++measured;
   }
+  NVE_CHECK(measured > 10u);
+  const uint32_t inc = pressable(find_label("Increment +"));
+  const uint32_t reset = pressable(find_label("Reset"));
+  NVE_CHECK(inc != 0u && reset != 0u && inc != reset);
+  click(widget.nativeWidgetForNodeId(inc), QPointF(3.0, 3.0));  // a real click on the pressable node
+  NVE_CHECK(find_label("Count: 1") != nullptr);
+  NVE_CHECK(host.simulate_press(inc) && find_label("Count: 2") != nullptr);
+  NVE_CHECK(host.simulate_press(reset) && find_label("Count: 0") != nullptr);
+  for (int i = 0; i < 3; ++i) NVE_CHECK(host.simulate_press(inc));
+  NVE_CHECK(find_label("Count: 3") != nullptr);
 
-  err_code = -1;
-  err_msg.clear();
-  NVE_CHECK(widget.reloadDylib(counter_path, &err_code, &err_msg));
-  NVE_CHECK(err_code == 0 && err_msg.isEmpty());
-  QCoreApplication::processEvents();
-  NVE_CHECK(find_label(QStringLiteral("Count: 2")) != nullptr);
-
-  uint32_t reset_after_reload = 0;
-  QLabel* reset_lbl_after = find_label(QStringLiteral("Reset"));
-  NVE_CHECK(reset_lbl_after != nullptr);
-  for (const auto& snap : widget.session().snapshot_nodes()) {
-    if (snap.kind == NVE_COMP_PRESSABLE) {
-      QWidget* btn = widget.nativeWidgetForNodeId(snap.node_id);
-      if (btn != nullptr && btn->isAncestorOf(reset_lbl_after)) {
-        reset_after_reload = snap.node_id;
-        break;
-      }
-    }
-  }
-  NVE_CHECK(reset_after_reload != 0);
-
-  widget.simulatePressOnNodeId(reset_after_reload, 20.0f, 20.0f);
-  QCoreApplication::processEvents();
-  NVE_CHECK(find_label(QStringLiteral("Count: 0")) != nullptr);
-  const NveMapEntry reset_initial[1] = {
-      NveMapEntry{nve::make_str_slice("initialCount"), nve::make_i64_value(0)},
-  };
-  NVE_CHECK(widget.applyProps(reset_initial, 1u));
+  const size_t views = widget.viewCount();
+  NveQtNodeWidget* count = find_label("Count: 3");
+  NVE_CHECK(host.reload_dylib(path, &err, &msg));
+  NVE_CHECK(find_label("Count: 3") == count && widget.viewCount() == views);  // state + views kept
+  spin();
 }
 
-} // namespace
+}  // namespace
 
+void nve_test_qt_input_and_scroll();
 void nve_test_qt_a11y_and_media();
 void nve_test_qt_canvas_and_pair();
 void nve_test_qt_window_manager();
 
-int main(int argc, char* argv[]) {
-  QApplication app(argc, argv);
-
-  test_error_codes_and_stateful_fixture();
-  test_attach_props_events_morph_and_measurer();
-  test_real_counter_dylib();
+int main(int argc, char** argv) {
+  QApplication qapp(argc, argv);
+  test_counter_widgets_measurement_and_events();
+  test_measurer_typography_matches_paint();
+  test_custom_measurer_and_surface_id();
+  test_modules_hot_reload_and_state();
+  test_queued_wakes_never_outlive_the_host();
+  test_live_kitchen_sink_if_configured();
+  nve_test_qt_input_and_scroll();
   nve_test_qt_a11y_and_media();
   nve_test_qt_canvas_and_pair();
   nve_test_qt_window_manager();
-
-  std::cout << "nve_qt_shell_test passed ("
-            << (nve::fabric_host_has_yoga_layout() ? "Yoga+JSI+Qt6" : "Standalone+Qt6") << ")\n";
+  std::cout << "nve_qt_shell_test: ok\n";
   return 0;
 }

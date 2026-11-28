@@ -1,227 +1,245 @@
 #pragma once
 
-#include "NveQtCommon.hpp"
+#include "NveQtPaint.hpp"
+#include "NveQtText.hpp"
 #include "NveQtWidget.hpp"
 
-#include <QColor>
-#include <QLineEdit>
-#include <QPixmap>
-#include <QString>
-#include <QWidget>
+#include <nve/host/controlled_text.hpp>
+#include <nve/host/retained_tree.hpp>
 
+#include <QImage>
+#include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QString>
+
+#include <cmath>
 #include <cstdint>
-#include <functional>
 #include <span>
 #include <string>
-#include <string_view>
-#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
-class QFocusEvent;
-class QInputMethodEvent;
-class QMouseEvent;
-class QPaintEvent;
 class QScrollArea;
 
 namespace nve::qt {
 
+struct QtNodeView;
+
+/// Native widget family of a node; the `RetainedTree` tag, so a change recreates the view.
+enum class NativeKind : uint32_t { Node, LineEdit, TextEdit, Scroll };
+
 inline constexpr const char* kNodeIdProperty = "nveNodeId";
-inline constexpr const char* kA11yRoleProperty = "nveAccessibleRole";
-inline constexpr const char* kA11yValueProperty = "nveAccessibleValue";
-inline constexpr const char* kImageSrcProperty = "nveImageSrc";
-inline constexpr const char* kImageDecodedProperty = "nveImageDecoded";
-inline constexpr const char* kImageSizeProperty = "nveImageSize";
-inline constexpr const char* kImageResizeModeProperty = "nveImageResizeMode";
 
-void ensureAccessibleFactoryInstalled();
-void applyWidgetAccessibility(QWidget* widget, const NodeSemantics& sem);
+// --- Hooks the node widgets call (NveQtWidgetReconciler.cpp) -----------------------------------
+void view_hover(QtNodeView* view, NveEventKind kind, QPointF pos);
+void view_focus(QtNodeView* view, bool focused);
+/// Press / link activation (node-local point); may destroy the view: touch nothing afterwards.
+void view_activate(QtNodeView* view, QPointF pos);
 
-inline float opacityFromU8(uint8_t opacity_u8) noexcept {
-  return static_cast<float>(opacity_u8) / 255.0f;
-}
+/// Custom-painted frame of one node: background, inset shadows, content, border; press, hover,
+/// focus and keyboard activation; accessible through its node's semantics.
+class NveQtNodeWidget final : public QWidget, public SemanticsCarrier {
+ public:
+  NveQtNodeWidget(QtNodeView* view, QWidget* parent);
+  /// Called when the view is destroyed (the widget may outlive it until `deleteLater`).
+  void detach() noexcept { view_ = nullptr; }
 
-void applyWidgetOpacity(QWidget* widget, float opacity);
+  void set_visual(const BoxVisual& visual, const QRectF& content_box, bool clip_rounded);
+  /// Content (`QtHost::resolve_content`); call `update()` after changing it.
+  [[nodiscard]] NodePaint& edit_paint() noexcept { return paint_; }
 
-/// IME-safe `QLineEdit` subclass supporting `Qt::WA_InputMethodEnabled`, preedit vs commit
-/// disambiguation without dropping multi-byte CJK/accented characters, `placeholder`,
-/// `secureTextEntry`, focus/blur, and Return-key submit.
+  [[nodiscard]] const NodePaint& paint() const noexcept { return paint_; }
+  [[nodiscard]] NodeContent content() const noexcept { return paint_.content; }
+  [[nodiscard]] const QString& text() const noexcept { return paint_.text; }
+  [[nodiscard]] const QtTextStyle& text_style() const noexcept { return paint_.style; }
+  [[nodiscard]] const QImage& image() const noexcept { return paint_.image; }
+  [[nodiscard]] uint8_t fit() const noexcept { return paint_.fit; }
+  [[nodiscard]] const BoxVisual& visual() const noexcept { return paint_.visual; }
+  [[nodiscard]] QRectF content_box() const noexcept { return paint_.content_box; }
+  [[nodiscard]] std::span<const uint8_t> draw_list() const noexcept { return paint_.draw_list; }
+
+  [[nodiscard]] const NodeSemantics& semantics() const noexcept override;
+  void activate() override;
+
+ protected:
+  void paintEvent(QPaintEvent* event) override;
+  void resizeEvent(QResizeEvent* event) override;
+  void mousePressEvent(QMouseEvent* event) override;
+  void mouseReleaseEvent(QMouseEvent* event) override;
+  void mouseMoveEvent(QMouseEvent* event) override;
+  void enterEvent(QEnterEvent* event) override;
+  void leaveEvent(QEvent* event) override;
+  void focusInEvent(QFocusEvent* event) override;
+  void focusOutEvent(QFocusEvent* event) override;
+  void keyPressEvent(QKeyEvent* event) override;
+
+ private:
+  void update_mask();
+
+  QtNodeView* view_;
+  NodePaint paint_;
+  bool pressed_ = false;
+};
+
+/// Outer box shadows of a node, a sibling stacked right below it (a widget cannot paint outside
+/// its own rect). Transparent for input.
+class NveQtShadowWidget final : public QWidget {
+ public:
+  explicit NveQtShadowWidget(QWidget* parent);
+  /// `box`: the node's rect in the parent's coordinates.
+  void set_shadow(const BoxVisual& visual, const QRectF& box);
+  [[nodiscard]] const BoxVisual& visual() const noexcept { return visual_; }
+
+ protected:
+  void paintEvent(QPaintEvent* event) override;
+
+ private:
+  BoxVisual visual_;
+  QRectF box_;  // in parent coordinates
+};
+
+/// Single-line text input (IME-aware: composition is never clobbered or dispatched mid-preedit).
 class NveQtLineEdit final : public QLineEdit {
  public:
-  using TextChangeHandler = std::function<void(uint32_t, std::string_view)>;
-  using SubmitHandler = std::function<void(uint32_t, std::string_view)>;
-  using FocusHandler = std::function<void(uint32_t, bool)>;
-
-  NveQtLineEdit(
-      uint32_t node_id,
-      TextChangeHandler on_text_change,
-      SubmitHandler on_submit,
-      FocusHandler on_focus,
-      QWidget* parent = nullptr);
-
-  void applySemantics(const NodeSemantics& sem);
-  void applySceneText(const QString& next_text);
+  NveQtLineEdit(QtNodeView* view, QWidget* parent);
+  void detach() noexcept { view_ = nullptr; }
+  [[nodiscard]] bool composing() const noexcept { return composing_; }
 
  protected:
   void inputMethodEvent(QInputMethodEvent* event) override;
   void focusInEvent(QFocusEvent* event) override;
   void focusOutEvent(QFocusEvent* event) override;
+  void enterEvent(QEnterEvent* event) override;
+  void leaveEvent(QEvent* event) override;
 
  private:
-  void dispatchCurrentTextIfChanged();
-
-  uint32_t node_id_{0};
-  TextChangeHandler on_text_change_;
-  SubmitHandler on_submit_;
-  FocusHandler on_focus_;
-  QString last_dispatched_text_;
-  QString last_scene_text_;
-  bool has_synced_scene_{false};
-  bool composing_ime_{false};
-  bool updating_programmatically_{false};
+  QtNodeView* view_;
+  bool composing_ = false;
 };
 
-/// Lightweight custom-painted container widget for `NVE_NODE_KIND_VIEW`,
-/// `NVE_NODE_KIND_PRESSABLE`, and wrapper `NVE_NODE_KIND_TEXT` nodes.
-class NveQtBoxWidget final : public QWidget {
+/// Multi-line text input.
+class NveQtTextEdit final : public QPlainTextEdit {
  public:
-  using PressHandler = std::function<void(uint32_t, float, float)>;
-
-  explicit NveQtBoxWidget(uint32_t node_id, PressHandler on_press, QWidget* parent = nullptr);
-
-  void applyStyle(const NveRenderNode& node, bool interactive);
-  void setInteractive(bool interactive);
+  NveQtTextEdit(QtNodeView* view, QWidget* parent);
+  void detach() noexcept { view_ = nullptr; }
+  [[nodiscard]] bool composing() const noexcept { return composing_; }
 
  protected:
-  void paintEvent(QPaintEvent* event) override;
-  void mousePressEvent(QMouseEvent* event) override;
-  void mouseReleaseEvent(QMouseEvent* event) override;
+  void inputMethodEvent(QInputMethodEvent* event) override;
+  void focusInEvent(QFocusEvent* event) override;
+  void focusOutEvent(QFocusEvent* event) override;
+  void enterEvent(QEnterEvent* event) override;
+  void leaveEvent(QEvent* event) override;
 
  private:
-  uint32_t node_id_{0};
-  PressHandler on_press_;
-  QColor bg_color_{0, 0, 0, 0};
-  QColor border_color_{0, 0, 0, 0};
-  float border_width_{0.0f};
-  float border_radius_{0.0f};
-  float opacity_{1.0f};
-  bool interactive_{false};
-  bool pressed_{false};
+  QtNodeView* view_;
+  bool composing_ = false;
 };
 
-/// Native `QWidget` for `NVE_NODE_KIND_IMAGE` rendering cached `QPixmap`s from `NveQtImageCache`
-/// with all 4 React Native `resizeMode`s (`cover`, `contain`, `stretch`, `center`) and rounded clip.
-class NveQtImageWidget final : public QWidget {
- public:
-  using PressHandler = std::function<void(uint32_t, float, float)>;
+/// One retained node view: its widgets and every binding it owns (no side tables).
+struct QtNodeView {
+  NveQtWidget::Impl* host = nullptr;
+  uint32_t id = 0u;  // packed `NodeId`
+  NativeKind kind = NativeKind::Node;
+  QWidget* widget = nullptr;          // the node's widget (owned)
+  NveQtNodeWidget* frame = nullptr;   // painted frame (Node, Scroll); null for inputs
+  QScrollArea* scroll = nullptr;      // Scroll
+  QWidget* content = nullptr;         // where children are placed
+  NveQtLineEdit* line = nullptr;      // LineEdit
+  NveQtTextEdit* text_edit = nullptr; // TextEdit
+  NveQtShadowWidget* shadow = nullptr;  // outer shadows (owned), null when none
 
-  explicit NveQtImageWidget(uint32_t node_id, PressHandler on_press, QWidget* parent = nullptr);
+  NveLayoutRect local{};
+  int32_t z = 0;
+  uint32_t order = 0u;  // index in the parent's scene children
+  bool visible = true;
+  NodeSemantics sem;
+  std::string href;
+  uint32_t event_mask = 0u;
+  bool wants_press = false;
+  bool hovered = false;
+  BoxVisual visual;
+  bool clips = false;   // `overflow` != visible (rounded frames mask their children)
+  QColor text_color;    // inputs: the style sheet's text color
 
-  void applyNode(
-      const NveRenderNode& node,
-      std::string_view src,
-      ImageResizeMode resize_mode,
-      bool interactive);
-  void setResizeMode(ImageResizeMode resize_mode);
-  void setInteractive(bool interactive);
+  // Scroll: programmatic targets (`requested_scroll_*`) applied once, after content extents.
+  float requested_x = NAN;
+  float requested_y = NAN;
+  bool request_pending = false;
+  uint8_t axes = NVE_SCROLL_AXES_VERTICAL;
+  bool scrolling_programmatically = false;
 
- protected:
-  void paintEvent(QPaintEvent* event) override;
-  void mousePressEvent(QMouseEvent* event) override;
-  void mouseReleaseEvent(QMouseEvent* event) override;
+  bool synced = false;  // updated at least once
 
- private:
-  uint32_t node_id_{0};
-  PressHandler on_press_;
-  QColor bg_color_{0, 0, 0, 0};
-  QColor border_color_{0, 0, 0, 0};
-  float border_width_{0.0f};
-  float border_radius_{0.0f};
-  float opacity_{1.0f};
-  bool interactive_{false};
-  bool pressed_{false};
-  std::string image_src_;
-  ImageResizeMode resize_mode_{ImageResizeMode::Cover};
-  QPixmap pixmap_;
+  // Text input (controlled value).
+  host::ControlledText text;
+  uint32_t max_length = 0u;
+
+  AppliedResources applied;
+  uint64_t redraw_count = 0u;  // canvas repaints
 };
 
-class NveQtWidget::Impl {
+class NveQtWidget::Impl final : public QtHost {
  public:
-  explicit Impl(NveQtWidget* owner);
-  ~Impl();
+  Impl(NveQtWidget* owner, QtHostConfig config);
+  ~Impl() override;
 
-  NveSurfaceConfig currentSurfaceConfig(uint32_t surface_id) const;
-  void refreshRawPropsFromView(const NveSceneView& view);
-  void syncViews(bool check_raw_props = false);
-  void clearViews();
-  bool connectPairedConfig(
-      const nve::PairClientConfig& config,
-      uint32_t surface_id,
-      QString* out_error_message);
-  size_t pollPairedFramesImpl();
-
-  const NodeSemantics* findSemantics(uint32_t node_id) const noexcept;
-  ImageResizeMode findResizeMode(uint32_t node_id) const noexcept;
-
-  void handlePressFromWidget(uint32_t node_id, float x, float y);
-  void handleScrollFromWidget(uint32_t node_id, QScrollArea* scroll);
-
-  NveDirectEvent makeBaseEvent(uint32_t node_id, nve::EventKind kind, uint8_t payload_tag) const;
-  uint32_t dispatchSingleDirectEvent(const NveDirectEvent& ev);
-  uint32_t dispatchPress(uint32_t node_id, float x, float y);
-  uint32_t dispatchScroll(
-      uint32_t node_id,
-      float offset_x,
-      float offset_y,
-      float content_width,
-      float content_height);
-  uint32_t dispatchTextChange(uint32_t node_id, std::string_view text);
-  uint32_t dispatchSubmit(uint32_t node_id, std::string_view text);
-  uint32_t dispatchFocus(uint32_t node_id, bool focused);
-
-  void syncChildrenImpl(
-      uint32_t parent_id,
-      QWidget** parent_view,
-      const std::vector<QWidget*>& resolved_children);
-
-  struct QtViewAdapter {
-    Impl* self{nullptr};
-
-    void update_root(const NveSceneView& view, const NveRenderNode& node);
-    QWidget* create_view(const NveSceneView& view, const NveRenderNode& node);
-    void update_view(const NveSceneView& view, QWidget*& widget, const NveRenderNode& node);
-    void destroy_view(uint32_t node_id, QWidget*& view);
-
-    template <typename LookupFn>
-    void sync_children(
-        uint32_t parent_id,
-        QWidget** parent_view,
-        std::span<const uint32_t> child_ids,
-        LookupFn&& lookup_fn) {
-      std::vector<QWidget*> resolved;
-      resolved.reserve(child_ids.size());
-      for (uint32_t child_id : child_ids) {
-        QWidget** child_slot = lookup_fn(child_id);
-        if (child_slot != nullptr && *child_slot != nullptr) {
-          resolved.push_back(*child_slot);
-        }
-      }
-      self->syncChildrenImpl(parent_id, parent_view, resolved);
-    }
+  /// `RetainedTree` adapter (NveQtWidgetReconciler.cpp).
+  struct Adapter {
+    using Handle = QtNodeView*;
+    Impl* host = nullptr;
+    uint32_t tag(const host::NodeData& node) const;
+    Handle create(const host::NodeData& node);
+    void update(Handle& view, const host::NodeData& node);
+    /// Geometry-only change (`read_geometry` data): reposition and re-box, nothing decoded.
+    void move(Handle& view, const host::NodeGeometry& node);
+    void update_root(const host::NodeData& node);
+    void destroy(uint32_t id, Handle& view);
+    void set_children(const host::NodeGeometry& parent, Handle* parent_view, std::span<Handle* const> kids);
+    /// Canvas draw list: a republish under the same id re-runs `update`.
+    uint32_t module_resource(const host::NodeData& node) const { return host->canvas_.at(node.index).draw_list; }
   };
 
-  NveQtWidget* owner_{nullptr};
-  nve::NativeHostSession session_;
-  QtViewAdapter adapter_;
-  nve::IncrementalSceneReconciler<QWidget*, QtViewAdapter> reconciler_;
-  std::unordered_map<uint32_t, NodeSemantics> node_semantics_;
-  std::unordered_map<uint32_t, ImageResizeMode> node_resize_modes_;
-  std::unordered_map<uint32_t, bool> node_interactive_;
-  QColor root_bg_color_{0, 0, 0, 0};
-  uint32_t surface_id_{1};
-  uint64_t reconcile_update_count_{0};
-  bool raw_props_initialized_{false};
-  bool in_sync_views_{false};
-  bool destroying_{false};
+  [[nodiscard]] QtNodeView* find(uint32_t id) noexcept;
+  void on_native_scroll(QtNodeView& view);
+  void on_text_edited(QtNodeView& view);
+  void on_submit(QtNodeView& view);
+
+  NveQtWidget* owner_;
+  host::SceneTables tables_;
+  canvas::CanvasTable canvas_;
+  host::RetainedTree<Adapter> tree_;
+  Adapter adapter_{this};
+  std::unordered_set<QtNodeView*> scroll_views_;
+  std::unordered_set<QWidget*> restack_;
+  NodeSemantics root_sem_;
+  QColor root_background_{Qt::transparent};
+  uint64_t reconcile_update_count_ = 0u;
+  uint64_t reconcile_move_count_ = 0u;
+  bool tearing_down_ = false;
+
+ protected:
+  void clear_views() override;
+  size_t sync_views(const host::RuntimeSceneGuard& scene) override;
+  bool tree_resource_unchanged(const host::RuntimeSceneReader& scene, uint32_t id,
+                               uint32_t applied) const noexcept override {
+    return tree_.resource_unchanged(scene, id, applied);
+  }
+  void after_sync() override;
+
+ private:
+  friend struct Adapter;
+  void place(QtNodeView& v, const host::NodeGeometry& node);
+  void apply_box(QtNodeView& v, const host::NodeGeometry& node);
+  void update_geometry(QtNodeView& v, const host::NodeData& node);
+  void update_visual(QtNodeView& v, const host::NodeData& node);
+  void update_content(QtNodeView& v, const host::NodeData& node);
+  void update_text_input(QtNodeView& v, const host::NodeData& node);
+  void update_scroll(QtNodeView& v, const host::NodeData& node);
+  void update_interaction(QtNodeView& v, const host::NodeData& node);
+  void apply_semantics(QtNodeView& v, const host::NodeData& node);
+  void restack(QWidget* container);
+  void update_scroll_extents();
 };
 
-} // namespace nve::qt
+}  // namespace nve::qt

@@ -68,7 +68,7 @@ struct Recorder {
     ++destroys;
     views.erase(id);
   }
-  void set_children(const NodeData&, Handle* parent, std::span<Handle* const> kids) {
+  void set_children(const NodeGeometry&, Handle* parent, std::span<Handle* const> kids) {
     std::vector<uint32_t>& out = parent != nullptr ? (*parent)->children : root_children;
     out.clear();
     for (Handle* k : kids) {
@@ -81,7 +81,7 @@ struct Recorder {
 /// `Recorder` plus `move`: geometry-only changes are recorded apart from `update`s.
 struct MovingRecorder : Recorder {
   int moves = 0;
-  void move(Handle& h, const NodeData& n) {
+  void move(Handle& h, const NodeGeometry& n) {
     h->local = n.local;
     ++h->moves;
     ++moves;

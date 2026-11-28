@@ -92,7 +92,7 @@ NvePlatformFont *platform_font(float size, uint16_t weight, bool italic) {
 #endif
 }
 
-void native_text_measure(void *ctx, NveStrSlice text, float font_size, uint32_t font_weight, float max_width,
+void native_text_measure(void *ctx, NveStrSlice text, const NveRuntimeTextStyle *style, float max_width,
                          float *out_width, float *out_height) {
   (void)ctx;
   *out_width = 0.0f;
@@ -102,7 +102,9 @@ void native_text_measure(void *ctx, NveStrSlice text, float font_size, uint32_t 
     NSString *str = [[NSString alloc] initWithBytes:text.ptr length:text.len encoding:NSUTF8StringEncoding];
     if (str == nil) return;
     const CGFloat limit = (max_width > 0.0f && std::isfinite(max_width)) ? static_cast<CGFloat>(max_width) : CGFLOAT_MAX;
-    NSDictionary *attrs = @{NSFontAttributeName : platform_font(font_size, static_cast<uint16_t>(std::min(font_weight, 1000u)), false)};
+    NSDictionary *attrs = @{
+      NSFontAttributeName : platform_font(style->font_size, style->font_weight, style->font_style != NVE_FONT_STYLE_NORMAL)
+    };
 #if TARGET_OS_OSX
     const NSRect bounds = [str boundingRectWithSize:NSMakeSize(limit, CGFLOAT_MAX)
                                             options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading

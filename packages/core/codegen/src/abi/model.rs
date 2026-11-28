@@ -14,7 +14,7 @@ use nve_abi::table::{
 };
 use nve_hash::{Key64, PRIME1, xxh64};
 
-use super::layout::{RecordLayout, layout_records};
+use super::layout::{RecordLayout, layout_records, layout_records_on};
 use crate::error::CodegenError;
 
 /// A 64-bit value with its `(lo, hi)` `u32` halves: Dart / TypeScript spell only the halves, so
@@ -192,14 +192,15 @@ pub const RUNTIME_HANDLE: &str = "NveRuntimeHandle";
 
 impl<'a> RuntimeAbiModel<'a> {
     /// Validates `callbacks` / `slots` (every type a known scalar, record, handle, or callback
-    /// typedef; every parameter named) on top of `base`.
+    /// typedef; every parameter named) on top of `base`, whose records the runtime records may
+    /// store by value (`NveRuntimeTextStyle::font_family: NveStrSlice`).
     pub fn new(
         file: &'a AbiFileDescriptor,
-        base: &AbiModel<'_>,
+        base: &AbiModel<'a>,
         callbacks: &'static [RuntimeFnSignature],
         slots: &'static [RuntimeFnSignature],
     ) -> Result<Self, CodegenError> {
-        let records = layout_records(&[file])?;
+        let records = layout_records_on(&base.records, &[file])?;
         super::validate::abi(&[file], &records)?;
         if let Some(r) = records
             .iter()

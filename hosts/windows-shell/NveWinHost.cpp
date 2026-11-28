@@ -1,8 +1,8 @@
 #include "NveWinHost.hpp"
 
+#include <nve/host/urls.hpp>
+
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
 #include <utility>
 
 namespace nve::win {
@@ -11,34 +11,34 @@ namespace {
 
 float positive_or(float v, float fallback) noexcept { return std::isfinite(v) && v > 0.0f ? v : fallback; }
 
-bool takes_press_or_link(const WinNodeVisual& v) noexcept {
-  return v.wants(NVE_EVENT_PRESS) || (!v.href.empty() && !v.interaction.disabled);
-}
-
 bool hover_target(const WinNodeVisual& v) noexcept {
   return v.wants(NVE_EVENT_POINTER_ENTER) || v.wants(NVE_EVENT_POINTER_LEAVE);
 }
 
 }  // namespace
 
-NveWinHost::NveWinHost(WinHostConfig config) : config_(config) {
-  config_.surface_id = config_.surface_id != 0u ? config_.surface_id : 1u;
-  config_.width = positive_or(config_.width, 640.0f);
-  config_.height = positive_or(config_.height, 420.0f);
-  config_.scale_factor = positive_or(config_.scale_factor, 1.0f);
-
-  NveRuntimeConfig rc = host::RuntimeSession::default_config(config_.surface_id, config_.width, config_.height);
-  rc.scale_factor = config_.scale_factor;
-  std::string error;
-  session_ = host::HostSession::create(rc, &error);
-  if (!session_) {  // libnve_runtime is linked in: an ABI mismatch is a build bug
-    std::fprintf(stderr, "nve-windows-shell: %s\n", error.c_str());
-    std::abort();
-  }
+std::unique_ptr<NveWinHost> NveWinHost::create(WinHostConfig config, std::string* error) {
+  config.surface_id = config.surface_id != 0u ? config.surface_id : 1u;
+  config.width = positive_or(config.width, 640.0f);
+  config.height = positive_or(config.height, 420.0f);
+  config.scale_factor = positive_or(config.scale_factor, 1.0f);
+  NveRuntimeConfig rc = host::RuntimeSession::default_config(config.surface_id, config.width, config.height);
+  rc.scale_factor = config.scale_factor;
+  std::unique_ptr<host::HostSession> session = host::HostSession::create(rc, error);
+  if (!session) return nullptr;
+  std::unique_ptr<NveWinHost> host(new NveWinHost(config, std::move(session)));
 #if defined(_WIN32)
-  (void)session_->runtime().set_text_measurer(&DirectWriteTextMeasurer::measure_trampoline, &measurer_);
+  if (!host->measurer_.valid()) {
+    if (error != nullptr) *error = "DirectWrite is unavailable (DWriteCreateFactory failed)";
+    return nullptr;
+  }
+  (void)host->session_->runtime().set_text_measurer(&DirectWriteTextMeasurer::measure_trampoline, &host->measurer_);
 #endif
+  return host;
 }
+
+NveWinHost::NveWinHost(WinHostConfig config, std::unique_ptr<host::HostSession> session)
+    : config_(config), session_(std::move(session)) {}
 
 NveWinHost::~NveWinHost() {
   session_->set_wake_poster({});
@@ -53,7 +53,7 @@ NveWinHost::~NveWinHost() {
 // --- App sources -------------------------------------------------------------------------------
 
 void NveWinHost::source_changed() {
-  hovered_ = 0u;  // hover belongs to the previous source's nodes
+  hovered_ = pressed_ = 0u;  // hover / press targets belong to the previous source's nodes
   (void)pump();
 }
 
@@ -167,18 +167,39 @@ bool NveWinHost::simulate_press(uint32_t node_id, float x, float y) {
   return dispatch(session_->events().press(node_id, x, y));
 }
 
-PressResult NveWinHost::press_at(float x, float y) {
+uint32_t NveWinHost::press_target(float x, float y) const {
+  uint32_t target = 0u;
+  for (const WinNodeVisual* v = tree_.hit_test(x, y); v != nullptr; v = tree_.find(v->parent)) {
+    if (v->interaction.disabled) return 0u;  // disables itself and everything inside it
+    if (target == 0u && (v->wants(NVE_EVENT_PRESS) || host::openable_link(v->href))) target = v->id;
+  }
+  return target;
+}
+
+uint32_t NveWinHost::pointer_down(float x, float y) {
+  pressed_ = press_target(x, y);
+  return pressed_;
+}
+
+PressResult NveWinHost::pointer_up(float x, float y) {
   PressResult r;
-  const WinNodeVisual* target = tree_.nearest(tree_.hit_test(x, y), takes_press_or_link);
-  if (target == nullptr) return r;
-  r.node_id = target->id;
+  const uint32_t down = std::exchange(pressed_, 0u);
+  const uint32_t id = press_target(x, y);
+  const WinNodeVisual* target = id != 0u && id == down ? tree_.find(id) : nullptr;
+  if (target == nullptr || syncing_) return r;
+  r.node_id = id;
   if (!target->wants(NVE_EVENT_PRESS)) {
-    r.href = target->href;
+    r.href = target->href;  // `press_target` admitted it: an openable link
     return r;
   }
   r.dispatched = true;
-  r.changed = dispatch_pointer(r.node_id, NVE_EVENT_PRESS, x, y);  // may destroy `target`
+  r.changed = dispatch_pointer(id, NVE_EVENT_PRESS, x, y);  // may destroy `target`
   return r;
+}
+
+PressResult NveWinHost::press_at(float x, float y) {
+  (void)pointer_down(x, y);
+  return pointer_up(x, y);
 }
 
 bool NveWinHost::scrolled(const WinNodeVisual& node, float x, float y) {
@@ -215,12 +236,8 @@ bool NveWinHost::wheel_at(float x, float y, float dx, float dy) {
 bool NveWinHost::dispatch_scroll(uint32_t node_id, float offset_x, float offset_y) {
   const WinNodeVisual* node = tree_.find(node_id);
   if (node == nullptr || syncing_) return false;
-  host::RuntimeSession& rt = session_->runtime();
   float x = 0.0f, y = 0.0f;
-  if (rt.scroll_by(node_id, 0.0f, 0.0f, &x, &y) != NVE_RUNTIME_OK ||
-      rt.scroll_by(node_id, offset_x - x, offset_y - y, &x, &y) != NVE_RUNTIME_OK) {
-    return false;
-  }
+  if (session_->runtime().scroll_to(node_id, offset_x, offset_y, &x, &y) != NVE_RUNTIME_OK) return false;
   return scrolled(*node, x, y);
 }
 
@@ -260,7 +277,7 @@ uint8_t NveWinHost::cursor_at(float x, float y) const {
       })) {
     return c->interaction.cursor;
   }
-  const auto link = [](const WinNodeVisual& v) { return !v.href.empty() && !v.interaction.disabled; };
+  const auto link = [](const WinNodeVisual& v) { return !v.interaction.disabled && host::openable_link(v.href); };
   return static_cast<uint8_t>(tree_.nearest(hit, link) != nullptr ? NVE_CURSOR_KIND_POINTER : NVE_CURSOR_KIND_AUTO);
 }
 

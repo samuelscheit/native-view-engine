@@ -14,8 +14,10 @@ Framework-agnostic host runtime for `native-view-engine`.
   `scroll_by`) guarded by a per-surface reader/writer lock (`scene_acquire` / `scene_release`).
   While a reader holds the scene, `resource_payload` borrows any published resource's canonical
   bytes + kind (codec-less module kinds stay opaque exact wire bytes).
-- Embedding-host hooks: `set_text_measurer` (native text measurement; NULL restores the
-  heuristic), and app capabilities `set_props` (`NVE_IFACE_COMPONENT`), `drain_emitted_events`,
+- Embedding-host hooks: `set_text_measurer` (native text measurement with each text node's
+  resolved, inherited typography as `NveRuntimeTextStyle`: family, size, weight, style, letter
+  spacing, line height, white-space, word-break / overflow-wrap, max lines; `nowrap` / `pre` get
+  an unconstrained width; NULL restores the heuristic), and app capabilities `set_props` (`NVE_IFACE_COMPONENT`), `drain_emitted_events`,
   `snapshot_state` / `restore_state`, `apply_hot_patch` (`NVE_IFACE_DEV`); an app without the
   capability yields `RuntimeError::Unsupported` / `NVE_RUNTIME_UNSUPPORTED`.
 - Exposes generic `WakeBridge`, `RuntimeApp`, and `FrameTickHook` extension points so hosts can

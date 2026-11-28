@@ -1,6 +1,7 @@
 //! Zero-copy [`NveRuntimeSceneView`] publication from the active `NodeStore`: invalidation,
 //! pointer-drift validation, and per-frame publish of rows, rects, slabs, tables, and resources.
 
+use nve_abi::table::NVE_ROW_INDEX_PAGE_LEN;
 use nve_abi::{slab_ptr, NveNodeRow, NveRuntimeSceneView, NveScrollOffset, NVE_RUNTIME_SCHEMA_HASH};
 use nve_layout::ScrollOffsets;
 use nve_store::{ChangeSet, NodeId, NodeStore, TableSlot};
@@ -73,6 +74,8 @@ impl SurfaceState {
                 || tv.owners != slab_ptr(t.owners)
                 || tv.row_index_dir_len as usize != t.row_index_dir.len()
                 || tv.row_index_dir != slab_ptr(t.row_index_dir)
+                || tv.row_index_page_count as usize * NVE_ROW_INDEX_PAGE_LEN as usize
+                    != t.row_index_pages.len()
                 || tv.row_index_pages != slab_ptr(t.row_index_pages)
             {
                 return false;

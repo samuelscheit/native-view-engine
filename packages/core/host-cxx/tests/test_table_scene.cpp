@@ -464,6 +464,20 @@ void test_runtime_scene_reader_and_session_mock() {
     CHECK(!nve::host::RuntimeSceneReader::open(&misaligned, Key64{NVE_RUNTIME_SCHEMA_HASH}, &align_err)
                .has_value());
     CHECK(align_err == SceneError::MisalignedSlab);
+    // `moved_indices`: NULL with a count, or misaligned, is rejected the same way.
+    NveRuntimeSceneView moved = state.view;
+    moved.moved_count = 2u;
+    moved.moved_indices = nullptr;
+    align_err = SceneError::None;
+    CHECK(!nve::host::RuntimeSceneReader::open(&moved, Key64{NVE_RUNTIME_SCHEMA_HASH}, &align_err).has_value());
+    CHECK(align_err == SceneError::NullSlab);
+    moved.moved_indices = reinterpret_cast<const uint32_t*>(unaligned_buf + 1u);
+    align_err = SceneError::None;
+    CHECK(!nve::host::RuntimeSceneReader::open(&moved, Key64{NVE_RUNTIME_SCHEMA_HASH}, &align_err).has_value());
+    CHECK(align_err == SceneError::MisalignedSlab);
+    alignas(uint32_t) const std::array<uint32_t, 2> moved_ids = {1u, 1u};
+    moved.moved_indices = moved_ids.data();
+    CHECK(nve::host::RuntimeSceneReader::open(&moved, Key64{NVE_RUNTIME_SCHEMA_HASH}).has_value());
 
     // Corrupted view MUST release reader lock immediately instead of leaking!
     state.corrupt_view = true;

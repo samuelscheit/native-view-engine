@@ -40,7 +40,19 @@ pub fn bitmap_font_metrics(font_size: f32) -> BitmapFontMetrics {
 pub struct BitmapFontTextMeasurer;
 
 impl nve_layout::TextMeasurer for BitmapFontTextMeasurer {
-    fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
+    fn measure(
+        &self,
+        text: &str,
+        style: &nve_layout::TextStyle<&str>,
+        max_width: Option<f32>,
+    ) -> (f32, f32) {
+        self.measure_text(text, style.font_size, max_width.filter(|_| style.wraps()))
+    }
+}
+
+impl BitmapFontTextMeasurer {
+    /// Measures `text` at `font_size` under an optional `max_width` wrapping bound.
+    pub fn measure_text(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
         if text.is_empty() {
             return (0.0, 0.0);
         }

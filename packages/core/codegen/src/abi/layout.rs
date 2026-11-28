@@ -276,7 +276,19 @@ impl RecordLayout<'_> {
 pub fn layout_records<'a>(
     files: &[&'a AbiFileDescriptor],
 ) -> Result<Vec<RecordLayout<'a>>, CodegenError> {
-    let mut shapes: BTreeMap<&'a str, Shape> = BTreeMap::new();
+    layout_records_on(&[], files)
+}
+
+/// [`layout_records`] for files whose records may store records of an already laid out header
+/// they include (`base`), e.g. the runtime ABI storing `NveStrSlice` by value.
+pub fn layout_records_on<'a>(
+    base: &[RecordLayout<'a>],
+    files: &[&'a AbiFileDescriptor],
+) -> Result<Vec<RecordLayout<'a>>, CodegenError> {
+    let mut shapes: BTreeMap<&'a str, Shape> = base
+        .iter()
+        .map(|r| (r.name, Shape { size: r.size, align: r.align }))
+        .collect();
     let mut enums: BTreeSet<&'a str> = BTreeSet::new();
     let embedded = embedded_by_value(files);
     // Enums have no storable shape (C enums are `int`-sized), so every by-value use, also through

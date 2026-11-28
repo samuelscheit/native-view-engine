@@ -256,6 +256,49 @@ void test_a11y_inputs_images_and_styles() {
   NVE_CHECK(host.active_css().find(cls) == std::string::npos);
 }
 
+/// A controlled numeric field: the app keeps digits only. Rejecting an edit republishes nothing,
+/// so the host must write the app's value back after the (synchronous) dispatch.
+void test_rejecting_controlled_input() {
+  constexpr uint32_t kNumber = 2u;
+  ScriptedApp app;
+  h::Nve2Writer& w = app.w;
+  w.create(1u);
+  w.create(kNumber);
+  (void)w.set_str(kNumber, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "1");
+  w.set(kNumber, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_EVENT_MASK, h::event_bit(NVE_EVENT_TEXT_CHANGE));
+  const uint32_t kids[] = {kNumber};
+  w.set_children(1u, kids);
+  std::string value = "1";
+  app.on_event = [&value](ScriptedApp& a, const h::testing::RecordedEvent& e) {
+    if (e.ev.kind != NVE_EVENT_TEXT_CHANGE) return;
+    std::string digits;
+    for (const char c : e.text) {
+      if (c >= '0' && c <= '9') digits.push_back(c);
+    }
+    if (digits == value) return;  // rejected: nothing changes, nothing is republished
+    value = digits;
+    (void)a.w.set_str(kNumber, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, value);
+  };
+  NveGtkHost host;
+  NVE_CHECK(host.attach_interface(&ScriptedApp::get_interface));
+  GtkWidget* entry = host.widget_for_node_id(kNumber);
+  NVE_CHECK(GTK_IS_ENTRY(entry) && std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "1");
+  int at = 1;
+  gtk_editable_insert_text(GTK_EDITABLE(entry), "a", 1, &at);  // rejected
+  NVE_CHECK(app.count(NVE_EVENT_TEXT_CHANGE, kNumber) == 1u && app.last(NVE_EVENT_TEXT_CHANGE)->text == "1a");
+  NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "1");
+  at = 1;
+  gtk_editable_insert_text(GTK_EDITABLE(entry), "2", 1, &at);  // accepted
+  NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "12" && value == "12");
+  at = 0;
+  gtk_editable_insert_text(GTK_EDITABLE(entry), "x9", 2, &at);  // transformed: "x912" -> "912"
+  NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "912" && value == "912");
+  NVE_CHECK(app.count(NVE_EVENT_TEXT_CHANGE, kNumber) == 3u);  // write-backs never echo upstream
+}
+
 }  // namespace
 
-void nve_test_gtk_a11y_and_media() { test_a11y_inputs_images_and_styles(); }
+void nve_test_gtk_a11y_and_media() {
+  test_a11y_inputs_images_and_styles();
+  test_rejecting_controlled_input();
+}

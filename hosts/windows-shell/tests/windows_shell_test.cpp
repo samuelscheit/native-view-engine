@@ -1,7 +1,7 @@
 // Core Windows host suite (portable: runs on every OS against libnve_runtime): the built-in counter
 // app mirrored into the retained visual tree, O(changed) reconciliation, surface-point presses,
 // outbound events, props, resize, `cdylib` loading errors, state-preserving hot reload, app-state
-// files, and an optional live kitchen-sink `cdylib` (`NVE_TEST_KITCHEN_SINK_DYLIB`).
+// files, and the live kitchen-sink `cdylib` (`NVE_TEST_KITCHEN_SINK_DYLIB`).
 #include "windows_test_helpers.hpp"
 
 #include <nve/host/demo_counter_app.hpp>
@@ -20,7 +20,8 @@ namespace h = nve::host;
 std::string text_of(const NveWinHost& host, uint32_t id) { return node(host, id).text; }
 
 void test_counter_model_and_events() {
-  NveWinHost host(WinHostConfig{.surface_id = 7u, .width = 480.0f, .height = 360.0f});
+  const auto host_owner = make_host(WinHostConfig{.surface_id = 7u, .width = 480.0f, .height = 360.0f});
+  NveWinHost& host = *host_owner;
   NVE_CHECK(!host.is_loaded() && host.view_count() == 0u && host.surface_id() == 7u);
 
   std::vector<int64_t> counts;
@@ -51,16 +52,12 @@ void test_counter_model_and_events() {
   NVE_CHECK(approx(title.x, 24.0, 0.5) && approx(title.y, 24.0, 0.5) && title.width > 40.0f);
   NVE_CHECK(abs_rect(host, CounterApp::kCount).y > title.y + 40.0f);
 
-  // Styles, typography, semantics.
+  // Styles, typography, interaction.
   const WinNodeVisual& inc = node(host, CounterApp::kIncrement);
   NVE_CHECK(inc.visual.background == h::rgba(37, 99, 235) && approx(inc.visual.border_radius, 8.0, 0.01));
   NVE_CHECK(inc.text_style.color == h::rgba(255, 255, 255) && approx(inc.text_style.font_size, 16.0, 0.01));
   NVE_CHECK(approx(node(host, CounterApp::kTitle).text_style.font_size, 22.0, 0.01));
   NVE_CHECK(node(host, CounterApp::kColumn).visual.background == h::rgba(248, 250, 252));
-  NVE_CHECK(inc.semantics.role == NVE_ARIA_ROLE_BUTTON && inc.semantics.label == "Increment");
-  NVE_CHECK(node(host, CounterApp::kTitle).semantics.role == NVE_ARIA_ROLE_HEADING);
-  NVE_CHECK(node(host, CounterApp::kCount).semantics.role == NVE_ARIA_ROLE_TEXT &&
-            node(host, CounterApp::kCount).semantics.label == "Count: 0");
   NVE_CHECK(inc.wants(NVE_EVENT_PRESS) && inc.interaction.focusable && !node(host, CounterApp::kTitle).wants(NVE_EVENT_PRESS));
 
   // Surface-point press -> app -> new frame: only the changed label is reconciled, views retained.
@@ -106,7 +103,8 @@ void test_counter_model_and_events() {
 }
 
 void test_modules_hot_reload_and_state() {
-  NveWinHost host;
+  const auto host_owner = make_host();
+  NveWinHost& host = *host_owner;
   h::ModuleError err = h::ModuleError::None;
   std::string msg;
   NVE_CHECK(!host.load_dylib("", &err, &msg) && err == h::ModuleError::Open);
@@ -118,9 +116,8 @@ void test_modules_hot_reload_and_state() {
 
   // The dev loop: one app path, rebuilt in place between reloads (the runtime loads a private
   // copy, so the rebuilt file is neither cached by the loader nor locked against the rebuild).
-  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "nve_win_app_files_test";
-  std::filesystem::remove_all(dir);
-  std::filesystem::create_directories(dir);
+  const ScratchDir scratch("nve_win_app_files_test");
+  const std::filesystem::path& dir = scratch.path();
   const std::string app_path =
       (dir / ("app" + std::filesystem::path(NVE_TEST_COUNTER_MODULE).extension().string())).string();
   const auto build = [&](const char* fixture) {
@@ -157,7 +154,6 @@ void test_modules_hot_reload_and_state() {
   NVE_CHECK(host.restore_state(path, 4u));
   NVE_CHECK(text_of(host, CounterApp::kCount) == "Count: 5");
   NVE_CHECK(host.clear_state(path) && !std::filesystem::exists(path) && !host.restore_state(path, 4u));
-  std::filesystem::remove_all(dir);
 
   // Switching apps drops the previous app's views.
   ScriptedApp app;
@@ -170,35 +166,64 @@ void test_modules_hot_reload_and_state() {
   NVE_CHECK(host.visual_tree().find(CounterApp::kCount) == nullptr);
 }
 
-/// Live Rust `cdylib` (opt-in): loads, mirrors a non-trivial tree, presses the first pressable
-/// node, and hot-reloads in place.
+/// Live Rust kitchen-sink `cdylib` (`NVE_TEST_KITCHEN_SINK_DYLIB`, required by check-all): its
+/// texts are laid out (non-empty rects), surface-point presses on its buttons count, and the
+/// count survives a hot reload.
 void test_live_kitchen_sink_if_configured() {
   const char* path = std::getenv("NVE_TEST_KITCHEN_SINK_DYLIB");
   if (path == nullptr || *path == '\0') return;
-  NveWinHost host(WinHostConfig{.width = 1280.0f, .height = 800.0f});
+  const auto host_owner = make_host(WinHostConfig{.width = 1280.0f, .height = 800.0f});
+  NveWinHost& host = *host_owner;
   h::ModuleError err = h::ModuleError::None;
   std::string msg;
-  NVE_CHECK(host.load_dylib(path, &err, &msg));
-  NVE_CHECK(host.view_count() > 10u);
-  size_t texts = 0u;
-  uint32_t pressable = 0u;
+  NVE_CHECK(host.load_dylib(path, &err, &msg) && err == h::ModuleError::None);
+  NVE_CHECK(host.is_loaded() && host.view_count() > 10u);
   struct Scan {
-    size_t* texts;
-    uint32_t* pressable;
+    std::vector<const WinNodeVisual*> texts;
+    size_t laid_out = 0u;
     bool enter(const WinNodeVisual& n, const PaintFrame& f) {
-      *texts += !n.text.empty() ? 1u : 0u;
-      if (*pressable == 0u && n.wants(NVE_EVENT_PRESS) && f.visible && !f.rect.empty()) *pressable = n.id;
+      if (!n.text.empty() && f.visible) {
+        texts.push_back(&n);
+        laid_out += f.rect.width > 0.0f && f.rect.height >= 10.0f ? 1u : 0u;
+      }
       return true;
     }
-    void leave(const WinNodeVisual&, const PaintFrame&) {}
-  } scan{&texts, &pressable};
+    void leave(const WinNodeVisual&, const PaintFrame&, bool) {}
+  };
+  const auto find_text = [&host](std::string_view text) -> const WinNodeVisual* {
+    Scan scan;
+    host.visual_tree().walk(scan);
+    for (const WinNodeVisual* t : scan.texts) {
+      if (t->text == text) return t;
+    }
+    return nullptr;
+  };
+  Scan scan;
   host.visual_tree().walk(scan);
-  NVE_CHECK(texts > 3u && pressable != 0u);
-  const auto [px, py] = center(host, pressable);
-  NVE_CHECK(host.press_at(px, py).dispatched);
+  NVE_CHECK(scan.laid_out > 10u && scan.laid_out == scan.texts.size());  // measured layout everywhere
+  NVE_CHECK(find_text("NVE Kitchen Sink") != nullptr && find_text("Count: 0") != nullptr);
+  const auto button = [&](std::string_view label) {
+    const WinNodeVisual* t = find_text(label);
+    const WinNodeVisual* b = t != nullptr ? host.visual_tree().nearest(t, [](const WinNodeVisual& v) {
+      return v.wants(NVE_EVENT_PRESS);
+    }) : nullptr;
+    return b != nullptr ? b->id : 0u;
+  };
+  const uint32_t inc = button("Increment +");
+  const uint32_t reset = button("Reset");
+  NVE_CHECK(inc != 0u && reset != 0u && inc != reset);
+  const auto tap = [&host](uint32_t id) {
+    const auto [x, y] = center(host, id);
+    return host.press_at(x, y).dispatched;
+  };
+  NVE_CHECK(tap(inc) && find_text("Count: 1") != nullptr);
+  NVE_CHECK(tap(inc) && find_text("Count: 2") != nullptr);
+  NVE_CHECK(tap(reset) && find_text("Count: 0") != nullptr);
+  for (int i = 0; i < 3; ++i) NVE_CHECK(tap(inc));
+  NVE_CHECK(find_text("Count: 3") != nullptr);
   const size_t views = host.view_count();
   NVE_CHECK(host.reload_dylib(path, &err, &msg));
-  NVE_CHECK(host.view_count() == views);
+  NVE_CHECK(find_text("Count: 3") != nullptr && host.view_count() == views);
 }
 
 }  // namespace

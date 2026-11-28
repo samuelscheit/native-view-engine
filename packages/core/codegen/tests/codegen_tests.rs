@@ -373,7 +373,10 @@ fn export_rn_generates_valid_five_file_package_and_roundtrips_through_import_rn(
     let rnw = &out.windows_component_view_hpp.content;
     assert!(rnw.contains("#include \"NveRnwComponentView.hpp\""));
     assert!(rnw.contains("class NveCounterCardRnwComponentView"));
-    assert!(rnw.contains("nve::win::NveRnwComponentHost"));
+    assert!(rnw.contains("std::shared_ptr<nve::win::NveWinHost> host_;"));
+    assert!(rnw.contains("struct NveCounterCardRnwEventCallbacks"));
+    assert!(!rnw.contains("NveRnwComponentHost"));
+    assert!(!rnw.contains("NveBridge.generated.hpp"));  // never pulls the RN Fabric C++ bridge in
     assert!(rnw.contains("register_nve_counter_card_rnw_component"));
     assert!(rnw.contains("nve::win::register_nve_rnw_component"));
     assert!(rnw.contains("L\"NveCounterCard\""));

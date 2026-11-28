@@ -559,10 +559,11 @@ fn parity_custom_text_measurer_wrapping_and_dynamic_text_updates() {
     };
 
     let measurer: Arc<dyn TextMeasurer> =
-        Arc::new(|text: &str, font_size: f32, max_width: Option<f32>| {
+        Arc::new(|text: &str, style: &nve_layout::TextStyle<&str>, max_width: Option<f32>| {
             if text.is_empty() {
                 return (0.0, 0.0);
             }
+            let font_size = style.font_size;
             let char_w = font_size * 0.5;
             let line_h = font_size * 1.25;
             let raw_w = text.chars().count() as f32 * char_w;

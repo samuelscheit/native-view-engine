@@ -131,9 +131,11 @@ bool open_nve_dylib(
 /// Safely `dlclose` a handle if non-null and zero the pointer.
 void close_dylib(void * _Nullable &handle) noexcept;
 
-/// `NveRuntimeMeasureTextFn` for runtime layout: system font at size / CSS weight via
-/// `boundingRectWithSize:` (macOS adds `NSTextFieldCell`'s 4pt horizontal inset).
-void native_text_measure(void *_Nullable ctx, NveStrSlice text, float font_size, uint32_t font_weight,
+/// `NveRuntimeMeasureTextFn` for runtime layout: the system font the views paint (size / CSS
+/// weight / italic, `platform_font`) via `boundingRectWithSize:` (macOS adds
+/// `NSTextFieldCell`'s 4pt horizontal inset). Apple views do not paint family, letter spacing,
+/// line height, or max lines yet, so measurement ignores them too (paint parity).
+void native_text_measure(void *_Nullable ctx, NveStrSlice text, const NveRuntimeTextStyle *_Nonnull style,
                          float max_width, float *_Nonnull out_width, float *_Nonnull out_height);
 
 /// System font for `size` / CSS `weight` / italic.

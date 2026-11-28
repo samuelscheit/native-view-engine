@@ -104,12 +104,9 @@ impl<'s> LayoutView<'s> {
                 AvailableSpace::MinContent => Some(0.0),
                 AvailableSpace::MaxContent => None,
             });
-        let (mw, mh) = self.measurer.measure_with_weight(
-            text,
-            resolved.font_size,
-            resolved.font_weight,
-            max_width,
-        );
+        let (mw, mh) = self
+            .measurer
+            .measure(text, &resolved.in_store(self.store), max_width);
         let safe_w = if mw.is_finite() && mw >= 0.0 { mw } else { 0.0 };
         let safe_h = if mh.is_finite() && mh >= 0.0 { mh } else { 0.0 };
         let floor = ratio.unwrap_or(Size::ZERO);

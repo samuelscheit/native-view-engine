@@ -38,7 +38,23 @@ public enum NveRuntimeError: Error, Equatable {
 /// Host text measurement used by runtime layout (`set_text_measurer`). Runs on the owner thread
 /// during `tick`; `maxWidth` is non-finite when unconstrained.
 public protocol NveTextMeasuring: AnyObject {
-    func measure(text: String, fontSize: CGFloat, fontWeight: UInt16, maxWidth: CGFloat) -> CGSize
+    /// Measures `text` with the node's resolved typography (`style.font_family` is borrowed for
+    /// the call); `maxWidth` is `.infinity` when unconstrained.
+    func measure(text: String, style: NveRuntimeTextStyle, maxWidth: CGFloat) -> CGSize
+}
+
+public extension NveRuntimeTextStyle {
+    /// Default typography at `size` / CSS `weight` (system font, `normal` line height, wrapping).
+    static func sized(_ size: Float, weight: UInt16 = 400, italic: Bool = false) -> NveRuntimeTextStyle {
+        var s = NveRuntimeTextStyle()
+        s.font_size = size
+        s.font_weight = weight
+        s.font_style = UInt8(italic ? NVE_FONT_STYLE_ITALIC : NVE_FONT_STYLE_NORMAL)
+        s.line_height_unit = UInt8(NVE_LINE_HEIGHT_AUTO)
+        return s
+    }
+
+    var isItalic: Bool { UInt32(font_style) != NVE_FONT_STYLE_NORMAL }
 }
 
 /// One `libnve_runtime` surface: RAII over `NveRuntimeApi` + `NveRuntimeHandle`.
@@ -250,9 +266,9 @@ public final class NveRuntimeSession {
         let next = measurer.map { Unmanaged.passRetained(MeasurerBox($0)) }
         let status = next == nil
             ? api.pointee.set_text_measurer(handle, nil, nil)
-            : api.pointee.set_text_measurer(handle, { ctx, text, size, weight, maxWidth, outW, outH in
-                guard let ctx, let outW, let outH else { return }
-                let s = Unmanaged<MeasurerBox>.fromOpaque(ctx).takeUnretainedValue().measure(text, size, weight, maxWidth)
+            : api.pointee.set_text_measurer(handle, { ctx, text, style, maxWidth, outW, outH in
+                guard let ctx, let style, let outW, let outH else { return }
+                let s = Unmanaged<MeasurerBox>.fromOpaque(ctx).takeUnretainedValue().measure(text, style.pointee, maxWidth)
                 outW.pointee = s.width
                 outH.pointee = s.height
             }, next?.toOpaque())
@@ -296,11 +312,9 @@ private final class MeasurerBox {
     let measurer: NveTextMeasuring
     init(_ measurer: NveTextMeasuring) { self.measurer = measurer }
 
-    func measure(_ text: NveStrSlice, _ fontSize: Float, _ weight: UInt32, _ maxWidth: Float) -> (width: Float, height: Float) {
+    func measure(_ text: NveStrSlice, _ style: NveRuntimeTextStyle, _ maxWidth: Float) -> (width: Float, height: Float) {
         let string = text.ptr.map { String(decoding: UnsafeBufferPointer(start: $0, count: text.len), as: UTF8.self) } ?? ""
-        let size = measurer.measure(
-            text: string, fontSize: CGFloat(fontSize), fontWeight: UInt16(clamping: weight),
-            maxWidth: maxWidth.isFinite ? CGFloat(maxWidth) : .infinity)
+        let size = measurer.measure(text: string, style: style, maxWidth: maxWidth.isFinite ? CGFloat(maxWidth) : .infinity)
         return (Float(size.width), Float(size.height))
     }
 }
